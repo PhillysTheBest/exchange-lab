@@ -1,0 +1,11 @@
+build/
+*.o
+*.exe
+*.obj
+*.pdb
+*.ilk
+
+# Kalshi credentials — never committed
+*.pem
+*.key
+.env
