@@ -21,15 +21,39 @@
 
 #include <array>
 
+#ifdef PX_DEBUG
+#include <cassert>
+#endif
+
 namespace px {
 
 class ShadowBook {
 public:
     // Sets a level's total resting quantity directly (mask updated to match).
     // Same semantics as OrderBook::shadow_set_level, on a much smaller struct.
+    //
+    // A single price level shares one `qty_` slot regardless of side — it can
+    // only ever represent one side's resting interest at a time (a normalized
+    // book is never simultaneously a bid and an ask at the same price; that
+    // would just be a cross). So setting a level on one side always
+    // proactively clears the OTHER side's occupancy bit at that price,
+    // unconditionally, before deciding this side's own bit from
+    // new_total_qty: found while writing check_invariants below — the
+    // original version only cleared the other side's bit on the
+    // new_total_qty > 0 branch, so a level flipping sides *to a zero
+    // quantity* (side A held real qty; side B "sets" the same price to 0)
+    // still overwrote the shared qty_ slot via the unconditional assignment
+    // above, while leaving side A's mask bit stale/set — qty_ said empty,
+    // side A's mask said occupied. A second-order version of the same bug
+    // the first fix only half-closed. Caught by tests/test_replay_fuzz.cpp's
+    // adversarial side-flip fuzzing (which legitimate Kalshi data shouldn't
+    // produce, but adversarial/malformed input reaching here could), not by
+    // inspection.
     void set_level(Side side, Price price, Qty new_total_qty) noexcept {
         qty_[static_cast<std::size_t>(price)] = new_total_qty;
         detail::Mask128& mask = (side == Side::Buy) ? bid_mask_ : ask_mask_;
+        detail::Mask128& other = (side == Side::Buy) ? ask_mask_ : bid_mask_;
+        other.clear(price);
         if (new_total_qty > 0) mask.set(price);
         else                   mask.clear(price);
     }
@@ -65,6 +89,28 @@ public:
         out = static_cast<Price>(lo);
         return true;
     }
+
+#ifdef PX_DEBUG
+    // Unlike OrderBook::check_invariants (order_book.hpp), there is no order
+    // pool/FIFO here to cross-check total_qty against — this is the entire
+    // invariant available on a struct that's just a Qty array plus two
+    // occupancy bitmasks: a level's mask occupancy must agree with whether
+    // its quantity is nonzero, and — since qty_ is shared across sides — a
+    // level can never be occupied by both masks at once. Used by
+    // tests/test_replay_fuzz.cpp to confirm adversarial input never leaves
+    // the shadow book in a state where a mask bit and its qty have silently
+    // diverged.
+    void check_invariants() const {
+        for (int p = 0; p < kNumLevels; ++p) {
+            const auto pp = static_cast<Price>(p);
+            const bool nonzero = qty_[static_cast<std::size_t>(p)] > 0;
+            const bool bid_set = bid_mask_.test(pp);
+            const bool ask_set = ask_mask_.test(pp);
+            assert(!(bid_set && ask_set) && "a single price level can't be both a bid and an ask level");
+            assert((bid_set || ask_set) == nonzero && "mask occupancy must agree with qty > 0");
+        }
+    }
+#endif
 
 private:
     std::array<Qty, kNumLevels> qty_{};

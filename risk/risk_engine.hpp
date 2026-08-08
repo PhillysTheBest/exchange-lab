@@ -101,6 +101,14 @@ struct RiskConfig {
     std::int64_t bucket_capacity_tokens = 100;
     std::int64_t bucket_refill_per_sec  = 100;
     std::int64_t tokens_per_order       = 10;
+    // Kalshi's documented per-request cost (10 tokens) is stated for requests
+    // generally, not broken out by endpoint — whether a cancel actually costs
+    // the same as a create is an assumption, not a confirmed fact, same
+    // epistemic status as tokens_per_order's own citation above. Kept as an
+    // independently tunable field (default matching tokens_per_order) rather
+    // than hard-reusing that field in code, so it can be corrected in one
+    // place if real per-endpoint cost data ever surfaces.
+    std::int64_t tokens_per_cancel      = 10;
 
     Cash  max_exposure_cents = 10'000; // e.g. $100 max |position| notional per market
     Price fat_finger_min     = 5;
@@ -127,6 +135,26 @@ public:
         if (projected_notional > cfg_.max_exposure_cents) return Verdict::RejectExposure;
 
         if (!bucket_.try_consume(cfg_.tokens_per_order, now_ns)) return Verdict::RejectRateLimited;
+        return Verdict::Accept;
+    }
+
+    // A cancel only ever reduces exposure, so fat-finger/exposure checks
+    // don't apply — this exists purely to make cancels pay the rate limiter
+    // too (see tokens_per_cancel's caveat above), so a strategy that
+    // cancels-and-replaces in a loop can't bypass the same budget a stream of
+    // new orders would be subject to.
+    //
+    // Known gap, not fixed here: this engine's exposure check (above) only
+    // ever accounts for *filled* position (via record_fill) — resting
+    // exposure from GTC orders that haven't traded yet is invisible to it. A
+    // market-making strategy resting quotes on both sides at once
+    // (strategy/passive_market_maker.hpp) therefore has real worst-case
+    // exposure this check never saw at any single order's entry time. Same
+    // "advisory, not escrowed" simplification px/trader.hpp already documents
+    // for the offline engine; staying out of an escrow model is a deliberate
+    // scope boundary, not an oversight.
+    [[nodiscard]] Verdict check_cancel(std::int64_t now_ns) noexcept {
+        if (!bucket_.try_consume(cfg_.tokens_per_cancel, now_ns)) return Verdict::RejectRateLimited;
         return Verdict::Accept;
     }
 

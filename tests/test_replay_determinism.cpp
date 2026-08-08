@@ -22,6 +22,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -74,14 +75,18 @@ constexpr std::size_t kExpectedBookEvents = 4 /* SnapshotBegin + 3 levels */ + 1
 
     RingA ring_a;
     RingC ring_c; // unused (no exec reports in this test) but required by Brain::run's signature
-    RingB ring_b; // unused (no signals registered, so nothing is ever pushed to it)
+    RingB ring_b; // unused (no strategies registered, so nothing is ever pushed to it)
     OracleRing oracle_ring; // left empty — no oracle thread, see file header
 
     risk::RiskConfig risk_cfg;
-    Brain brain(risk_cfg);
+    // Heap-allocated, not a stack local — see pipeline/brain.hpp's SIZE
+    // WARNING (~780 KB; a stack-local Brain crashes with a stack overflow on
+    // a default-size thread stack, found the hard way during Stage 3
+    // development).
+    auto brain = std::make_unique<Brain>(risk_cfg);
 
     std::atomic<bool> stop{false};
-    std::thread brain_thread([&] { brain.run(ring_a, oracle_ring, ring_c, ring_b, stop); });
+    std::thread brain_thread([&] { brain->run(ring_a, oracle_ring, ring_c, ring_b, stop); });
 
     for (const auto& raw : kFrames) {
         FeedMsg fm;
@@ -90,14 +95,14 @@ constexpr std::size_t kExpectedBookEvents = 4 /* SnapshotBegin + 3 levels */ + 1
     }
 
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (brain.book_events_applied() < kExpectedBookEvents && std::chrono::steady_clock::now() < deadline) {
+    while (brain->book_events_applied() < kExpectedBookEvents && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::yield();
     }
 
     stop.store(true, std::memory_order_relaxed);
     brain_thread.join();
 
-    return brain.book(market); // by value — thread has already joined, no lifetime issue
+    return brain->book(market); // by value — thread has already joined, no lifetime issue
 }
 
 void test_replay_converges_to_exact_expected_state() {

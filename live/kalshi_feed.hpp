@@ -4,17 +4,22 @@
 //
 // SCHEMA STATUS: the outer envelope (`type`/`sid`/`seq`/`msg`) and every field
 // this file reads (`market_ticker`, `price_dollars`, `delta_fp`,
-// `yes_dollars_fp`/`no_dollars_fp`, `yes_bid_dollars`/`yes_ask_dollars`) are
+// `yes_dollars_fp`/`no_dollars_fp`, `yes_bid_dollars`/`yes_ask_dollars`,
+// `yes_price_dollars`/`count_fp`/`taker_book_side`/`ts_ms` for `trade`) are
 // confirmed against Kalshi's published AsyncAPI spec (docs.kalshi.com/asyncapi.yaml)
 // — this supersedes an earlier version of this file that guessed at unquoted
-// integer fields (`price`/`delta`/`yes`/`no`) and was wrong. One thing remains
+// integer fields (`price`/`delta`/`yes`/`no`) and was wrong. Two things remain
 // genuinely unconfirmed rather than verified: whether `seq` is scoped per
 // subscription (shared across every market_ticker on that sid) or per market
-// within a subscription. See the SEQ SCOPING comment on request_resync below
-// for how that uncertainty is handled without guessing wrong in the unsafe
-// direction. Endpoint defaults to Kalshi's **demo** environment; pointing this
-// at production is a change the caller of connect() makes explicitly (see
-// KalshiConfig::host).
+// within a subscription (see the SEQ SCOPING comment on request_resync below),
+// and the exact semantic distinction between the `trade` message's
+// `taker_side`/`taker_outcome_side`/`taker_book_side` fields — this file reads
+// only `taker_book_side` (bid/ask) and derives Buy/Sell from it by the same
+// standard convention Kalshi's own V2 REST order side field uses (crossing
+// the ask means buying — see kalshi_rest.cpp), not from a confirmed field-by-
+// field trade-message capture. Endpoint defaults to Kalshi's **demo**
+// environment; pointing this at production is a change the caller of
+// connect() makes explicitly (see KalshiConfig::host).
 #pragma once
 
 #include "kalshi_auth.hpp"
@@ -43,7 +48,7 @@ struct KalshiConfig {
     std::string private_key_path; // PEM file — read at runtime, never embedded in source
 };
 
-enum class FeedMsgKind : std::uint8_t { Unknown, Subscribed, Snapshot, Delta, Ticker };
+enum class FeedMsgKind : std::uint8_t { Unknown, Subscribed, Snapshot, Delta, Ticker, Trade };
 
 struct FeedLevel {
     Side  side;  // normalized YES-relative — see normalize.hpp
@@ -84,6 +89,17 @@ struct FeedMsg {
     // Ticker only.
     Price ticker_yes_bid = 0;
     Price ticker_yes_ask = 0;
+
+    // Trade only. trade_price is already YES-relative (Kalshi reports
+    // yes_price_dollars uniformly regardless of which token actually traded,
+    // same as the snapshot's yes_dollars_fp array — no normalize() call
+    // needed here). trade_side is derived from taker_book_side — see the
+    // SCHEMA STATUS note above this struct. trade_ts_ms is the trade's own
+    // exchange timestamp, not receipt time.
+    Side trade_side = Side::Buy;
+    Price trade_price = 0;
+    Qty trade_qty = 0;
+    std::int64_t trade_ts_ms = 0;
 };
 
 // Pure, stateful gap detector for the `seq` field — isolated from the

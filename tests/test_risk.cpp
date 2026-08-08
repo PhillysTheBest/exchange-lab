@@ -140,6 +140,49 @@ void test_on_rate_limited_response_forces_reject() {
     PX_CHECK(risk.check(0, Side::Buy, 50, 1, t) == Verdict::RejectRateLimited);
 }
 
+// ---- RiskEngine::check_cancel ------------------------------------------------
+
+void test_check_cancel_accepts_with_budget() {
+    RiskConfig cfg;
+    RiskEngine risk(cfg);
+    std::int64_t t = 0;
+    PX_CHECK(risk.check_cancel(t) == Verdict::Accept);
+}
+
+void test_check_cancel_shares_the_same_bucket_as_check() {
+    // A cancel-and-replace loop can't dodge the rate limiter by only ever
+    // "cancelling" — check_cancel spends from the identical TokenBucket
+    // check() does, not a separate, independently-refilling budget.
+    RiskConfig cfg; // defaults: 100 cap, 100/sec refill, 10/order, 10/cancel -> 10 total actions burst
+    cfg.max_exposure_cents = 1'000'000;
+    RiskEngine risk(cfg);
+    std::int64_t t = 0;
+    for (int i = 0; i < 5; ++i) PX_CHECK(risk.check(0, Side::Buy, 50, 1, t) == Verdict::Accept);
+    for (int i = 0; i < 5; ++i) PX_CHECK(risk.check_cancel(t) == Verdict::Accept);
+    PX_CHECK(risk.check_cancel(t) == Verdict::RejectRateLimited); // bucket exhausted by the combined spend
+}
+
+void test_check_cancel_independent_token_cost() {
+    RiskConfig cfg;
+    cfg.tokens_per_cancel = 25; // deliberately different from tokens_per_order, to prove it's a distinct knob
+    cfg.bucket_capacity_tokens = 100;
+    cfg.bucket_refill_per_sec = 100;
+    RiskEngine risk(cfg);
+    std::int64_t t = 0;
+    for (int i = 0; i < 4; ++i) PX_CHECK(risk.check_cancel(t) == Verdict::Accept); // 4*25 = 100, exactly the bucket
+    PX_CHECK(risk.check_cancel(t) == Verdict::RejectRateLimited);
+}
+
+void test_check_cancel_refills_over_time() {
+    RiskConfig cfg;
+    RiskEngine risk(cfg);
+    std::int64_t t = 0;
+    for (int i = 0; i < 10; ++i) PX_CHECK(risk.check_cancel(t) == Verdict::Accept); // exhaust
+    PX_CHECK(risk.check_cancel(t) == Verdict::RejectRateLimited);
+    t += kSec; // a full second later, fully refilled
+    PX_CHECK(risk.check_cancel(t) == Verdict::Accept);
+}
+
 } // namespace
 
 int main() {
@@ -153,5 +196,9 @@ int main() {
     test_rate_limit_rejects_after_bucket_exhausted();
     test_check_order_fat_finger_before_rate_limit();
     test_on_rate_limited_response_forces_reject();
+    test_check_cancel_accepts_with_budget();
+    test_check_cancel_shares_the_same_bucket_as_check();
+    test_check_cancel_independent_token_cost();
+    test_check_cancel_refills_over_time();
     PX_TEST_REPORT_AND_RETURN();
 }

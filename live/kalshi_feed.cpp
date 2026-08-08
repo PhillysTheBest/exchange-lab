@@ -100,7 +100,34 @@ bool parse_feed_message(std::string_view raw, FeedMsg& out, std::string& error) 
         return true;
     }
 
-    // Recognized-but-unhandled or genuinely unknown type (trade, fill,
+    if (type == "trade") {
+        out.kind = FeedMsgKind::Trade;
+        std::string_view ticker, book_side;
+        long long price_cents = 0, qty = 0, ts_ms = 0;
+        if (!json_extract_string(raw, "market_ticker", ticker) ||
+            !json_extract_dollars_as_cents(raw, "yes_price_dollars", price_cents) ||
+            !json_extract_fixed_point_qty(raw, "count_fp", qty) ||
+            !json_extract_string(raw, "taker_book_side", book_side) ||
+            !json_extract_int(raw, "ts_ms", ts_ms)) {
+            error = "trade message missing a required field";
+            return false;
+        }
+        if (price_cents < kMinPrice || price_cents > kMaxPrice) {
+            error = "trade yes_price_dollars out of [1,99] cent range";
+            return false;
+        }
+        out.market_ticker = std::string(ticker);
+        // "ask" means the taker crossed the ask (bought); "bid" means they
+        // crossed the bid (sold) — see this file's SCHEMA STATUS note for why
+        // this is the field this project reads, not taker_side/taker_outcome_side.
+        out.trade_side = (book_side == "ask") ? Side::Buy : Side::Sell;
+        out.trade_price = static_cast<Price>(price_cents);
+        out.trade_qty = static_cast<Qty>(qty < 0 ? 0 : qty);
+        out.trade_ts_ms = ts_ms;
+        return true;
+    }
+
+    // Recognized-but-unhandled or genuinely unknown type (fill,
     // market_lifecycle_v2, error, ...) — not this project's concern yet, and
     // deliberately not treated as an error: a type we don't act on arriving on
     // the wire is routine, not exceptional.
