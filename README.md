@@ -615,6 +615,117 @@ mingw32-make test    # now also builds/runs test_market_state, test_strategies,
 mingw32-make bench    # now also builds/runs bench_strategy
 ```
 
+## Stage 4 — proving the whole thing, adversarially, end to end
+
+Stages 1–3 each proved their own layer correct in isolation. Stage 4 asks a
+different question: does the *assembled* system — Ingress through Strategy
+through Risk through Gateway, real threads, real rings — actually hold up
+under real timing and real hostile input, not just each piece's own unit
+tests? See [PERFORMANCE.md](PERFORMANCE.md) for the full report (the
+optimization history, every measured number in one place, and the
+methodology behind each one); this section is the summary.
+
+### The dry-run loop, proven closed — including cancellation
+
+[`tests/test_pipeline_e2e.cpp`](tests/test_pipeline_e2e.cpp) runs Ingress,
+a real `Brain` thread, and a real `Gateway` thread together, driven by
+scripted WS frames through the actual production parse path, closing the
+loop with a `SimulatedExchangeSink` — a Sink standing in for a well-behaved
+exchange's REST responses (no network, no credentials), because the real
+`DryRunSink` **cannot** close this loop: `Gateway::handle_new_order` returns
+immediately after `if (!did_send) return;`, since dry-running against
+nothing means there's no response to parse. That's correct and intentional,
+but it also means Acked/Fill/Cancelled/`OwnOrderUpdate` — and cancellation
+itself, which `OrderTracker`'s whole design depends on an order having
+actually been acked first — are silently unexercised by just running
+`kalshi_pipeline.exe` in its default mode. Two scenarios prove the full
+BUY/SELL/CANCEL/ACK/FILL/`OwnOrderUpdate` set closes correctly, including
+Gateway correctly resolving Brain's own `OrderId` back to the same Kalshi
+UUID a cancel needs to target.
+
+### Strategy behavior, not just strategy speed
+
+`tests/test_strategies.cpp` grew from 59 to 76 checks: exact-threshold
+boundary tests (a value sitting precisely on a decision boundary must land on
+the "acts" side, not fall through via an off-by-one), degenerate-input tests
+(a one-sided or empty book must return `None`, not crash or silently read
+garbage), and narrative sequences (the same strategy instance, watching one
+market's depth evolve step by step, crossing from Wait into Join into Cross
+in the right order — not three disconnected snapshots). The header now also
+states explicitly which decision categories aren't reachable and why:
+`Improve` is defined in the `Strategy` interface but no shipped strategy
+produces it, and `TradeFlow` deliberately never crosses (see its own file
+header) — both facts, not gaps in test coverage.
+
+### Adversarial input, extended past the book into the whole pipeline
+
+`tests/test_replay_fuzz.cpp` (Stage 3) already found one real bug this way.
+[`tests/test_hostile_events.cpp`](tests/test_hostile_events.cpp) extends the
+same methodology — real threads, real rings, adversarial input, not a
+reimplemented shortcut — to duplicate/reordered feed messages, partial
+fills, cancel/fill races, connection failure, risk rejection, and an
+unrecognized message type. Two categories are explicitly **not** covered,
+and said so rather than silently skipped: reconnect (there is no reconnect
+logic — `Ingress::run` has no retry loop at all, a gap this section flags,
+not fakes) and market halt/resolution-*aware* trading (Kalshi's
+`market_lifecycle_v2` decodes to `Unknown` and is safely ignored, which is
+different from — and short of — any strategy actually reacting to a halt).
+
+**Three more real bugs, found by writing this test, not by inspection:**
+
+1. `live/kalshi_feed.hpp`'s `SeqTracker` doc comment promised "won't trust
+   the stream again until the next Snapshot" after a gap — the code didn't
+   deliver on it. The very next delta after a gap was accepted
+   unconditionally, silently re-baselining off of it; a duplicate or
+   reordered delta arriving in that window would have been applied with zero
+   verification. Fixed with an explicit `desynced_` state that drops
+   everything until a real Snapshot arrives.
+2. & 3. `strategy/order_tracker.hpp` had two independent zombie/double-count
+   bugs in the fill-at-entry path — see the Stage 3 section above for the
+   first (a fully-resolved order left a permanent entry, silently disabling
+   `OrderBookImbalance`/`TradeFlow` after their first trade) and
+   [`live/kalshi_gateway.hpp`](live/kalshi_gateway.hpp)'s matching
+   unbounded-map-growth fix. Stage 4 found a second, sharper one: `on_fill`
+   independently subtracted the fill amount from `remaining_qty`, even
+   though `on_acked` (called immediately before it, for the exact same
+   synchronous event) had already set `remaining_qty` to Kalshi's own
+   authoritative post-fill number — double-counting the identical fill. A
+   10-lot order reported as "6 remaining, 4 filled" was ending up tracked as
+   2 remaining. Fixed by making `on_fill` accumulate `filled_qty` only,
+   never re-derive `remaining_qty` — every remaining-quantity update in this
+   codebase now comes from an authoritative Kalshi-reported number
+   (`on_acked`'s `remaining_count`, `on_cancelled`'s `reduced_by`), never a
+   second, locally-computed one.
+
+### The number this whole project has been building toward
+
+[`bench/bench_pipeline_e2e.cpp`](bench/bench_pipeline_e2e.cpp) times the
+complete internal decision path — WS text frame → `parse_feed_message` →
+`Ingress::handle_message` → ring A → **T2 Brain** (ShadowBook update,
+`extract_features`, `Strategy::on_event`, `RiskEngine::check`) → ring B →
+`OrderIntent` observed — through two real, pinned threads and two real
+cross-core ring hops, using the same ping-pong-one-event-at-a-time discipline
+`bench_ring.cpp` already established (see PERFORMANCE.md for why that
+discipline matters — it's the same methodology bug, avoided this time):
+
+```
+e2e: WS frame -> ... -> OrderIntent   p50= 3129ns   p99= 4178ns
+```
+
+That's the honest, measured answer to "how much latency does the internal
+decision path actually add": roughly 3.1µs at p50 to turn a raw exchange
+message into a routed trading decision — crossing two rings, parsing real
+JSON, mutating a book, assembling features, and running a strategy — five
+orders of magnitude under RSA-PSS signing's ~1.4ms p50 (`bench_sign`), which
+is exactly the argument this project has made from the start for why the
+decision path, not the wire, is where the real edge lives (see "On what
+'sub-microsecond' actually buys here," above).
+
+```bash
+mingw32-make test-live   # now also builds/runs test_pipeline_e2e, test_hostile_events
+mingw32-make bench-live  # now also builds/runs bench_pipeline_e2e
+```
+
 ## Trying it yourself
 
 ```bash

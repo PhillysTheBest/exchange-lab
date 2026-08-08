@@ -218,13 +218,26 @@ void test_seq_tracker_detects_gap() {
     PX_CHECK(!t.observe(false, true, 13)); // gap: expected 12, got 13
 }
 
-void test_seq_tracker_resets_after_gap_until_next_snapshot() {
+void test_seq_tracker_drops_every_delta_after_a_gap_until_next_snapshot() {
+    // The class's own doc comment promises "won't trust the stream again
+    // until the next Snapshot" — this is that promise checked literally,
+    // across several deltas, not just the one that revealed the gap.
+    // tests/test_hostile_events.cpp exercises the same property through the
+    // real Ingress path (does the book actually stay frozen, not just this
+    // tracker in isolation).
     SeqTracker t;
     PX_CHECK(t.observe(true, true, 10));
-    PX_CHECK(!t.observe(false, true, 13)); // gap detected, tracker resets
-    // Next delta arrives with no established baseline — nothing to compare
-    // against yet, so it's not flagged as a second gap.
-    PX_CHECK(t.observe(false, true, 14));
+    PX_CHECK(!t.observe(false, true, 13)); // gap: expected 11, got 13 -- now desynced
+
+    // Every delta while desynced is dropped, including ones that would
+    // otherwise look like a perfectly reasonable continuation (14, 15, ...) —
+    // there's no way to tell a coincidentally-plausible seq apart from a
+    // genuinely resumed stream without a fresh snapshot's authoritative
+    // baseline, so none of them are trusted.
+    PX_CHECK(!t.observe(false, true, 14));
+    PX_CHECK(!t.observe(false, true, 15));
+    PX_CHECK(!t.observe(false, true, 13)); // even an exact replay of the original gap seq
+
     // A fresh snapshot re-establishes the baseline regardless of its own seq value.
     PX_CHECK(t.observe(true, true, 99));
     PX_CHECK(t.observe(false, true, 100));
@@ -256,7 +269,7 @@ int main() {
     test_price_high_precision_rounds_exactly();
     test_seq_tracker_normal_sequence();
     test_seq_tracker_detects_gap();
-    test_seq_tracker_resets_after_gap_until_next_snapshot();
+    test_seq_tracker_drops_every_delta_after_a_gap_until_next_snapshot();
     test_seq_tracker_ignores_messages_without_seq();
     PX_TEST_REPORT_AND_RETURN();
 }

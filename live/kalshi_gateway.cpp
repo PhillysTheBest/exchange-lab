@@ -79,7 +79,22 @@ void Gateway::handle_new_order(const pipeline::OrderIntent& intent, pipeline::Ri
     OrderResponse oresp;
     if (!parse_order_response(response, oresp)) return;
 
-    kalshi_uuid_of_[intent.id] = oresp.order_id;
+    // Only tracked if there's anything left that could ever be cancelled.
+    // remaining_count == 0 (fully filled at entry, or an IOC order whose
+    // remainder Kalshi auto-cancelled) means no CancelOrder intent will ever
+    // legitimately target this id again — strategy/order_tracker.hpp reaches
+    // the identical conclusion for the same reason and doesn't keep the
+    // order visible either (see its own on_acked comment). Skipping the
+    // insert here isn't just tidiness: kalshi_uuid_of_ is never otherwise
+    // erased except by a successful cancel (handle_cancel, below), so every
+    // fully-resolved order that's never cancelled — which, for the IOC
+    // crosses OrderBookImbalance/TradeFlow submit, is every single one of
+    // their orders — would otherwise sit in this map for the lifetime of the
+    // process. Found alongside the same-shaped OrderTracker zombie-entry bug
+    // in tests/test_pipeline_e2e.cpp; not itself a correctness bug (a stale
+    // entry just sits unused), but real unbounded growth over a long-running
+    // session, worth closing the same way.
+    if (oresp.remaining_count > 0) kalshi_uuid_of_[intent.id] = oresp.order_id;
 
     pipeline::ExecReport acked;
     acked.kind = pipeline::ExecKind::Acked;

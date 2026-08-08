@@ -1,6 +1,39 @@
 // tests/test_strategies.cpp — each concrete Strategy's on_event() against
 // hand-built MarketState, mirroring test_risk.cpp's injected-state style. No
-// pipeline, no threads, no network.
+// pipeline, no threads, no network — the decision function tested in
+// isolation; see tests/test_pipeline_e2e.cpp for the complementary "wired
+// into a real Brain/Gateway" proof, and bench/bench_strategy.cpp for how fast
+// this same function runs, not just whether it's right.
+//
+// Coverage against the six decision categories a Strategy can produce
+// (strategy/strategy.hpp's ExecutionAction) — stated explicitly so an absence
+// reads as "checked and doesn't apply" rather than "forgotten":
+//   Join     — OrderBookImbalance (moderate skew), TradeFlow (buy/sell-heavy
+//              tape + confirming book), PassiveMarketMaker (quoting either
+//              side while flat).
+//   Improve  — NOT produced by any strategy in this codebase today. The
+//              ExecutionAction exists (Brain::handle_decision already treats
+//              Join/Improve/Cross identically — see pipeline/brain.cpp) but
+//              no shipped Strategy currently decides to price inside the
+//              current best rather than join it at the top. A real gap in
+//              the strategy layer's behavioral range, not a testing gap —
+//              flagged here rather than faked with a strategy that doesn't
+//              exist.
+//   Cross    — OrderBookImbalance (heavy skew), PassiveMarketMaker (reducing
+//              an open position). TradeFlow deliberately never crosses — see
+//              its own file header ("Join the bid to accumulate... rather
+//              than Cross and pay the spread on every single tick") — a
+//              documented design choice, checked below as a stable property,
+//              not treated as a missing case.
+//   Exit     — PassiveMarketMaker's Position/Exiting state, on both
+//              BookUpdate and (the whole reason OwnOrderUpdate exists)
+//              immediately on its own fill.
+//   Cancel   — PassiveMarketMaker, the only strategy that rests orders GTC
+//              and can therefore have one drift off the current best.
+//   Wait     — every strategy, once conditions are evaluated and genuinely
+//              don't warrant action (as distinct from None, produced when a
+//              trigger/input doesn't even apply — see the missing-one-side
+//              tests below, which check for None specifically).
 #include "px/shadow_book.hpp"
 #include "strategy/order_book_imbalance.hpp"
 #include "strategy/oracle_threshold_strategy.hpp"
@@ -95,6 +128,104 @@ void test_imbalance_does_not_pile_on_existing_order() {
     PX_CHECK(d.action == ExecutionAction::None); // already resting — leaves it alone
 }
 
+void test_imbalance_exact_thresholds_are_inclusive() {
+    // The decision tree uses >= / <= throughout (see order_book_imbalance.hpp)
+    // — a value sitting EXACTLY on a boundary must land on the "acts" side of
+    // it, not silently fall through to Wait via an off-by-one. Four
+    // boundaries, one per branch.
+    OrderBookImbalance strat(0, 0, /*aggressive=*/0.75, /*passive=*/0.60);
+    OrderTracker tracker;
+    TradeWindow trades;
+
+    { // imbalance == aggressive_threshold_ exactly -> Cross Buy, not Join
+        ShadowBook book;
+        book.set_level(Side::Buy, 40, 75);
+        book.set_level(Side::Sell, 60, 25); // 75/(75+25) = 0.75
+        const auto d = strat.on_event(make_state(book, 0, tracker, trades), TriggerKind::BookUpdate, nullptr);
+        PX_CHECK(d.action == ExecutionAction::Cross && d.intent.side == Side::Buy);
+    }
+    { // imbalance == 1 - aggressive_threshold_ exactly -> Cross Sell
+        ShadowBook book;
+        book.set_level(Side::Buy, 40, 25);
+        book.set_level(Side::Sell, 60, 75); // 25/100 = 0.25
+        const auto d = strat.on_event(make_state(book, 0, tracker, trades), TriggerKind::BookUpdate, nullptr);
+        PX_CHECK(d.action == ExecutionAction::Cross && d.intent.side == Side::Sell);
+    }
+    { // imbalance == passive_threshold_ exactly -> Join Buy, not Wait
+        ShadowBook book;
+        book.set_level(Side::Buy, 40, 60);
+        book.set_level(Side::Sell, 60, 40); // 60/100 = 0.60
+        const auto d = strat.on_event(make_state(book, 0, tracker, trades), TriggerKind::BookUpdate, nullptr);
+        PX_CHECK(d.action == ExecutionAction::Join && d.intent.side == Side::Buy);
+    }
+    { // imbalance == 1 - passive_threshold_ exactly -> Join Sell
+        ShadowBook book;
+        book.set_level(Side::Buy, 40, 40);
+        book.set_level(Side::Sell, 60, 60); // 40/100 = 0.40
+        const auto d = strat.on_event(make_state(book, 0, tracker, trades), TriggerKind::BookUpdate, nullptr);
+        PX_CHECK(d.action == ExecutionAction::Join && d.intent.side == Side::Sell);
+    }
+}
+
+void test_imbalance_one_sided_book_returns_none_not_wait() {
+    // A one-sided (or empty) book is a genuinely unsafe condition to read
+    // best_bid/best_ask from at all — have_bid/have_ask gate this before
+    // imbalance is even computed. Asserts None specifically, not Wait: this
+    // strategy never got far enough to "decide" anything.
+    OrderBookImbalance strat(0, 0);
+    OrderTracker tracker;
+    TradeWindow trades;
+
+    ShadowBook bid_only;
+    bid_only.set_level(Side::Buy, 40, 900);
+    PX_CHECK(strat.on_event(make_state(bid_only, 0, tracker, trades), TriggerKind::BookUpdate, nullptr).action ==
+             ExecutionAction::None);
+
+    ShadowBook ask_only;
+    ask_only.set_level(Side::Sell, 60, 900);
+    PX_CHECK(strat.on_event(make_state(ask_only, 0, tracker, trades), TriggerKind::BookUpdate, nullptr).action ==
+             ExecutionAction::None);
+
+    ShadowBook empty;
+    PX_CHECK(strat.on_event(make_state(empty, 0, tracker, trades), TriggerKind::BookUpdate, nullptr).action ==
+             ExecutionAction::None);
+}
+
+void test_imbalance_narrative_balanced_to_skewed_to_extreme() {
+    // One strategy instance, one tracker, a single market's depth evolving
+    // one BookUpdate at a time — mirrors test_pmm_full_state_machine_sequence
+    // below, for the strategy whose whole decision surface is a continuous
+    // threshold rather than a state machine: proves the three decision zones
+    // (Wait / Join / Cross) are reached in the right order as the same input
+    // dimension moves smoothly across all of them, not just checked as three
+    // disconnected snapshots.
+    OrderBookImbalance strat(0, 0, /*aggressive=*/0.75, /*passive=*/0.60);
+    OrderTracker tracker;
+    TradeWindow trades;
+
+    ShadowBook book;
+    book.set_level(Side::Buy, 40, 500);
+    book.set_level(Side::Sell, 60, 500); // imbalance 0.50 -- balanced
+    PX_CHECK(strat.on_event(make_state(book, 0, tracker, trades), TriggerKind::BookUpdate, nullptr).action ==
+             ExecutionAction::Wait);
+
+    book.set_level(Side::Buy, 40, 650); // imbalance 650/1150 ~= 0.565 -- still balanced (below passive)
+    PX_CHECK(strat.on_event(make_state(book, 0, tracker, trades), TriggerKind::BookUpdate, nullptr).action ==
+             ExecutionAction::Wait);
+
+    book.set_level(Side::Buy, 40, 900); // imbalance 900/1400 ~= 0.643 -- moderately skewed -> Join
+    {
+        const auto d = strat.on_event(make_state(book, 0, tracker, trades), TriggerKind::BookUpdate, nullptr);
+        PX_CHECK(d.action == ExecutionAction::Join && d.intent.side == Side::Buy);
+    }
+
+    book.set_level(Side::Sell, 60, 100); // imbalance 900/1000 = 0.90 -- heavily skewed -> Cross
+    {
+        const auto d = strat.on_event(make_state(book, 0, tracker, trades), TriggerKind::BookUpdate, nullptr);
+        PX_CHECK(d.action == ExecutionAction::Cross && d.intent.side == Side::Buy);
+    }
+}
+
 // ---- TradeFlow ----------------------------------------------------------------
 
 void test_trade_flow_needs_minimum_sample() {
@@ -141,6 +272,61 @@ void test_trade_flow_distrusts_tape_against_opposing_book() {
     trades.record(Side::Buy, 45, 1, 300);
     const auto d = strat.on_event(make_state(book, 0, tracker, trades, 300), TriggerKind::BookUpdate, nullptr);
     PX_CHECK(d.action == ExecutionAction::Wait);
+}
+
+void test_trade_flow_exact_threshold_is_inclusive() {
+    // buy_fraction == flow_threshold_ exactly (>=), imbalance == 0.5 exactly
+    // (>=) -- both boundary conditions at once, both must count as "met."
+    TradeFlow strat(0, 0, /*min_trade_count=*/3, /*flow_threshold=*/0.7);
+    ShadowBook book;
+    book.set_level(Side::Buy, 40, 500);
+    book.set_level(Side::Sell, 60, 500); // imbalance exactly 0.5
+    OrderTracker tracker;
+    TradeWindow trades;
+    for (int i = 0; i < 7; ++i) trades.record(Side::Buy, 45, 1, 100 + i);
+    for (int i = 0; i < 3; ++i) trades.record(Side::Sell, 45, 1, 200 + i); // 7/10 = 0.7 buy_fraction exactly
+    const auto d = strat.on_event(make_state(book, 0, tracker, trades, 300), TriggerKind::BookUpdate, nullptr);
+    PX_CHECK(d.action == ExecutionAction::Join && d.intent.side == Side::Buy);
+}
+
+void test_trade_flow_one_sided_book_returns_none_not_wait() {
+    TradeFlow strat(0, 0);
+    OrderTracker tracker;
+    TradeWindow trades;
+    trades.record(Side::Buy, 45, 1, 100);
+    trades.record(Side::Buy, 45, 1, 200);
+    trades.record(Side::Buy, 45, 1, 300);
+
+    ShadowBook bid_only;
+    bid_only.set_level(Side::Buy, 40, 900);
+    PX_CHECK(strat.on_event(make_state(bid_only, 0, tracker, trades, 300), TriggerKind::BookUpdate, nullptr).action ==
+             ExecutionAction::None);
+}
+
+void test_trade_flow_narrative_accumulating_trades_flips_wait_to_join() {
+    // Same strategy instance, same book, trades arriving one at a time --
+    // proves min_trade_count's Wait->Join transition happens at exactly the
+    // right trade, not one early or one late.
+    TradeFlow strat(0, 0, /*min_trade_count=*/3, /*flow_threshold=*/0.7);
+    ShadowBook book;
+    book.set_level(Side::Buy, 40, 600);
+    book.set_level(Side::Sell, 60, 400); // imbalance 0.6 -- confirms a Buy-side Join throughout
+    OrderTracker tracker;
+    TradeWindow trades;
+
+    trades.record(Side::Buy, 45, 1, 100);
+    PX_CHECK(strat.on_event(make_state(book, 0, tracker, trades, 100), TriggerKind::BookUpdate, nullptr).action ==
+             ExecutionAction::Wait); // 1 trade, below min_trade_count
+
+    trades.record(Side::Buy, 45, 1, 200);
+    PX_CHECK(strat.on_event(make_state(book, 0, tracker, trades, 200), TriggerKind::BookUpdate, nullptr).action ==
+             ExecutionAction::Wait); // 2 trades, still below
+
+    trades.record(Side::Buy, 45, 1, 300);
+    {
+        const auto d = strat.on_event(make_state(book, 0, tracker, trades, 300), TriggerKind::BookUpdate, nullptr);
+        PX_CHECK(d.action == ExecutionAction::Join && d.intent.side == Side::Buy); // 3 trades, all buys -> Join
+    }
 }
 
 // ---- PassiveMarketMaker: quoting, cancel-on-drift, exit-on-position ------------
@@ -275,6 +461,20 @@ void test_pmm_tight_exposure_cap_blocks_both_sides_when_flat() {
     PX_CHECK(d.action == ExecutionAction::Wait);
 }
 
+void test_pmm_one_sided_book_returns_none_when_flat() {
+    // Same "can't even evaluate" guard as OrderBookImbalance/TradeFlow, on
+    // the quoting branch specifically (position==0, no outstanding orders --
+    // there's genuinely nothing else that could produce an action here).
+    PassiveMarketMaker strat(0, 0, 4, 5, 20);
+    OrderTracker tracker;
+    TradeWindow trades;
+
+    ShadowBook bid_only;
+    bid_only.set_level(Side::Buy, 40, 100);
+    PX_CHECK(strat.on_event(make_state(bid_only, 0, tracker, trades), TriggerKind::BookUpdate, nullptr).action ==
+             ExecutionAction::None);
+}
+
 void test_pmm_full_state_machine_sequence() {
     PassiveMarketMaker strat(0, 0, 4, 5, 20);
     ShadowBook book;
@@ -383,10 +583,16 @@ int main() {
     test_imbalance_balanced_waits();
     test_imbalance_ignores_oracle_and_own_order_triggers();
     test_imbalance_does_not_pile_on_existing_order();
+    test_imbalance_exact_thresholds_are_inclusive();
+    test_imbalance_one_sided_book_returns_none_not_wait();
+    test_imbalance_narrative_balanced_to_skewed_to_extreme();
 
     test_trade_flow_needs_minimum_sample();
     test_trade_flow_buy_dominated_and_bid_leaning_joins_buy();
     test_trade_flow_distrusts_tape_against_opposing_book();
+    test_trade_flow_exact_threshold_is_inclusive();
+    test_trade_flow_one_sided_book_returns_none_not_wait();
+    test_trade_flow_narrative_accumulating_trades_flips_wait_to_join();
 
     test_pmm_quotes_missing_bid_first_when_flat();
     test_pmm_quotes_ask_once_bid_is_resting();
@@ -397,6 +603,7 @@ int main() {
     test_pmm_exits_short_position_on_own_order_update_not_just_book_update();
     test_pmm_position_management_takes_priority_over_quoting();
     test_pmm_tight_exposure_cap_blocks_both_sides_when_flat();
+    test_pmm_one_sided_book_returns_none_when_flat();
     test_pmm_full_state_machine_sequence();
 
     test_oracle_threshold_ignores_book_and_own_order_triggers();
