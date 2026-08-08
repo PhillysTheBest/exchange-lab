@@ -4,7 +4,9 @@ Event-driven C++20 trading engine for prediction markets, and a vehicle for
 measuring — not assuming — HFT-style latency techniques. Six classes
 (`Order`, `OrderBook`, `Trade`, `Market`, `Trader`, `MatchingEngine`), five
 operations (BUY, SELL, LIMIT, MARKET, CANCEL — matching itself, MATCH, is what
-`OrderBook::submit` does), and a Kalshi connectivity layer built on top of it.
+`OrderBook::submit` does), a Kalshi connectivity layer built on top of it, and
+a deterministic execution-decision layer (`Strategy` — see Stage 3, below) on
+top of that.
 
 ## Why this reads differently from a typical toy exchange
 
@@ -283,6 +285,14 @@ with real settlement, verified arithmetically (10 sells × 5 @ 8¢ + 1 buy × 5 
 Wiring a real feed is implementing `OracleFeed::run` against that source's
 actual API and pushing into the same ring — everything downstream is unchanged.
 
+**Correction, made in Stage 3 (below):** `Signal`/`ThresholdSignal`, as this
+section originally described them, are superseded — `strategy/signal.hpp` is
+deleted. `OracleThresholdStrategy` (`strategy/oracle_threshold_strategy.hpp`)
+is the direct port of `ThresholdSignal` onto the `Strategy` interface Stage 3
+introduces, kept deliberately reference/demo-only rather than promoted to a
+peer of the three strategies that stage is actually about — see the Stage 3
+section for why, and for what a `Strategy` can do that a `Signal` couldn't.
+
 ## Stage 2 — the live pipeline (`pipeline/`, `risk/`, `live/kalshi_gateway.*`)
 
 Stage 1 built the *pieces* of a live connection (TLS, WebSocket, signing, a
@@ -457,6 +467,152 @@ PATH="/c/msys64/ucrt64/bin:$PATH" ./build/release/kalshi_pipeline.exe KXHIGHNY-2
 
 # Real connection AND real sends, still only to Kalshi's demo host:
 ./build/release/kalshi_pipeline.exe --demo KXHIGHNY-25AUG08-B89.5
+```
+
+## Stage 3 — the Strategy Engine (`strategy/`, `pipeline/brain.*`)
+
+Stage 1's `Signal` only ever answered one question — *should I trade, right
+now, in response to an oracle event* — and always via a marketable IOC order.
+Stage 2 wired that into the live pipeline but didn't change what it could
+decide. Stage 3 replaces it with [`Strategy`](strategy/strategy.hpp): an
+interface that decides *what kind* of execution to take —
+`Join`/`Improve`/`Cross`/`Cancel`/`Wait` — in response to any of three
+triggers (`BookUpdate`, `OracleEvent`, `OwnOrderUpdate`), not only an oracle
+tick.
+
+### What a Strategy sees
+
+[`market_state.hpp`](strategy/market_state.hpp)'s `extract_features()`
+assembles a `MarketState` (spread, BBO depth, imbalance, this account's own
+position, recent trade flow, this account's own acked resting orders) fresh
+on every dispatch — a pure function over already-owned state (`ShadowBook` +
+`OrderTracker` + `TradeWindow`), independently unit-tested with no
+pipeline/thread/network involved
+([tests/test_market_state.cpp](tests/test_market_state.cpp)).
+
+[`order_tracker.hpp`](strategy/order_tracker.hpp)'s `orders_for()` exposes
+**acked orders only**. This is the structural fix for a real race: without
+it, a strategy could decide to cancel an order Gateway hasn't confirmed yet —
+racing its own not-yet-arrived ack. With it, that order simply doesn't exist
+from a `Strategy`'s point of view until Gateway says so, so the invalid
+decision can't be constructed in the first place, not just detected and
+rejected after the fact.
+
+### Four strategies, one demo-only
+
+- [`PassiveMarketMaker`](strategy/passive_market_maker.hpp) — the one with an
+  explicit Flat → Quoting → Position → Exiting state machine. Quotes both
+  sides passively when flat and the spread is wide enough; crosses
+  aggressively the moment a position exists, on *whichever* trigger notices
+  it first (`BookUpdate` or `OwnOrderUpdate`) rather than waiting for the next
+  incidental book tick — the entire reason `OwnOrderUpdate` exists as its own
+  trigger kind.
+- [`OrderBookImbalance`](strategy/order_book_imbalance.hpp) — reads
+  `MarketState::imbalance` alone; heavily skewed crosses now, moderately
+  skewed joins the stronger side, balanced waits.
+- [`TradeFlow`](strategy/trade_flow.hpp) — reads the recent trade tape
+  (`MarketState::recent_trades`), not static depth. Genuinely different
+  information from `OrderBookImbalance`: two books with identical current
+  depth can have arrived there via very different recent flow.
+- [`OracleThresholdStrategy`](strategy/oracle_threshold_strategy.hpp) — the
+  straight port of Stage 1's `ThresholdSignal` onto this interface. Kept
+  explicitly reference/demo-only (see the correction note in the Phase 4
+  section above) so `strategy/oracle_feed.hpp` and `tools/strategy_demo.cpp`
+  stay exercised and `TriggerKind::OracleEvent` has a real consumer — not a
+  fourth peer of the execution-intelligence strategies above.
+
+`tools/kalshi_pipeline.cpp` registers the first three against the live
+pipeline; `tools/strategy_demo.cpp` (Phase 4's demo, ported onto the new
+interface) still runs `OracleThresholdStrategy` locally against a synthetic
+NOAA feed with no network involved — same verified arithmetic as before (10
+sells × 5 @ 8¢ + 1 buy × 5 @ 92¢ nets exactly −60¢ cash / −45 position).
+
+### Brain: dispatch, not just decode
+
+[`pipeline/brain.hpp`](pipeline/brain.hpp)'s `dispatch_market_triggered` now
+fires on any book/trade mutation on a market (not only oracle events, as
+Stage 1 built it) against every strategy registered on that market, and
+`apply_exec_report` fires `OwnOrderUpdate` immediately when one of this
+account's own orders is acked/filled/cancelled. `OrderIntent` gained an
+`IntentKind` (`NewOrder`/`CancelOrder`) so a `Cancel` decision can travel ring
+B alongside new orders — Kalshi's own UUID `order_id` still never appears on
+any ring (same "Gateway keeps that mapping privately" reasoning Stage 2
+already established); a `Cancel` targets Brain's own integer `OrderId`, the
+same one `OrderTracker` already keys on. `RiskEngine` gained a matching
+`check_cancel` so a cancel-and-replace loop still pays the rate limiter, not
+just new orders (see [risk/risk_engine.hpp](risk/risk_engine.hpp) for the
+honestly-flagged assumption behind `tokens_per_cancel`'s default, and for the
+"resting exposure from GTC orders isn't tracked between fills" gap
+`PassiveMarketMaker` specifically can trigger by quoting both sides at once).
+
+Kalshi's `trade` channel is now decoded too
+([`live/kalshi_feed.cpp`](live/kalshi_feed.cpp)) and collapsed into the same
+`BookEvent` type as book mutations (`BookEventKind::Trade`) rather than given
+its own ring — every strategy re-reads the full `MarketState` regardless of
+which specific thing changed, so a separate identity would buy nothing;
+[`trade_window.hpp`](strategy/trade_window.hpp) is the fixed-capacity,
+exchange-time-bounded ring `TradeFlow` reads it from.
+
+### A bug the fuzz test found, not assumed absent
+
+[`ShadowBook::set_level`](include/px/shadow_book.hpp) shares one `qty_` slot
+across both sides of a price level (a normalized book is never simultaneously
+a bid and an ask at the same price). An earlier version of this file's own
+side-flip fix handled a level flipping sides *to a nonzero quantity*
+correctly, but missed the mirror case: side A holds real resting quantity,
+then side B "sets" the same price to **zero** — the shared `qty_` slot gets
+overwritten to 0 (correct), but side A's occupancy mask bit was never touched
+(not correct) — `qty_` says empty, the mask says occupied.
+[`tests/test_replay_fuzz.cpp`](tests/test_replay_fuzz.cpp) found this by
+construction, not inspection: it pushes an adversarial, randomized stream of
+`BookEvent`s directly onto ring A (biased toward reusing recently-touched
+prices, to maximize how often exactly this side-flip pattern occurs) through
+a real `Brain` thread, differentially checks the resulting `ShadowBook`
+against an independently-written reference model of the same documented
+spec, and calls `ShadowBook::check_invariants()` after every single event —
+the same "after every single command" discipline
+[`fuzz_vs_reference.cpp`](tests/fuzz_vs_reference.cpp) already holds the
+offline `OrderBook` to. The fix: unconditionally clear the *other* side's
+mask bit before deciding this side's own, not only on the positive-quantity
+branch. 828,000 checks now pass across 4,000 adversarial events split across
+two markets.
+
+### Measured, not assumed: strategy dispatch stays inline on T2
+
+The same reasoning that put RSA-PSS signing on its own thread (T3) — measure
+the cost, don't guess — applies to what Brain now also runs inline on T2:
+[`bench/bench_strategy.cpp`](bench/bench_strategy.cpp) times
+`extract_features` and each strategy's `on_event`, called through the same
+`Strategy&` interface Brain calls them through:
+
+```
+extract_features (MarketState assembly)   p50=  32.5ns   p99=  36.1ns
+PassiveMarketMaker (quoting)              p50=  18.4ns   p99=  34.5ns
+PassiveMarketMaker (managing position)    p50=  18.4ns   p99=  19.6ns
+OrderBookImbalance (book-driven)          p50=  18.8ns   p99=  19.6ns
+TradeFlow (trade-flow-driven)             p50=  23.6ns   p99=  28.4ns
+OracleThresholdStrategy (oracle-driven)   p50=  25.2ns   p99=  29.3ns
+```
+
+Every number here sits at or below a `ShadowBook` level update's own
+~50-100ns (`bench_engine`), and well over three orders of magnitude under
+RSA-PSS signing's measured hundreds-of-microseconds p50 (`bench_sign`) —
+comfortably inside the same "cheap enough to run inline" territory a book
+update already occupies, unlike signing. (Exact numbers will vary run to
+run — re-run `mingw32-make bench` on your own machine rather than trusting
+numbers pasted into a README, same caveat the engine benchmarks above carry.)
+
+`Brain::dispatch_market_triggered` calls `extract_features` once per
+registered strategy on a market rather than computing it once and sharing it
+across all of them — a deliberate simplification (fewer moving parts than
+threading a shared `MarketState` through the loop), not an oversight; this
+benchmark is what makes "cheap enough that the redundancy doesn't matter" a
+measured claim instead of an assumed one.
+
+```bash
+mingw32-make test    # now also builds/runs test_market_state, test_strategies,
+                      # and test_replay_fuzz alongside the Stage 1 core tests
+mingw32-make bench    # now also builds/runs bench_strategy
 ```
 
 ## Trying it yourself

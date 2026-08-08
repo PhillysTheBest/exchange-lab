@@ -15,7 +15,7 @@ void Ingress::run(RingA& out, std::atomic<bool>& stop_flag) {
     }
 
     const std::vector<std::string>& tickers = registry_.all_tickers();
-    if (!feed_.subscribe({"ticker", "orderbook_delta"}, tickers, error)) {
+    if (!feed_.subscribe({"ticker", "orderbook_delta", "trade"}, tickers, error)) {
         if (on_error) on_error("subscribe failed: " + error);
         return;
     }
@@ -42,6 +42,18 @@ void Ingress::handle_message(const live::FeedMsg& fm, RingA& out) {
         e.market = market;
         e.price = fm.ticker_yes_bid;
         e.ask_price = fm.ticker_yes_ask;
+        while (!out.try_push(e)) cpu_relax();
+        return;
+    }
+
+    if (fm.kind == live::FeedMsgKind::Trade) {
+        BookEvent e;
+        e.kind = BookEventKind::Trade;
+        e.market = market;
+        e.side = fm.trade_side;
+        e.price = fm.trade_price;
+        e.qty = fm.trade_qty;
+        e.ts_ms = fm.trade_ts_ms;
         while (!out.try_push(e)) cpu_relax();
         return;
     }

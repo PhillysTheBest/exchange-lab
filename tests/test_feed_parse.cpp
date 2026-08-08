@@ -115,11 +115,60 @@ void test_ticker() {
 }
 
 void test_unknown_type_not_an_error() {
-    const auto raw = std::string_view(R"({"type":"trade","sid":4,"msg":{"market_ticker":"X"}})");
+    // "trade" used to be this test's example of a genuinely-unhandled type —
+    // Stage 3 decodes it now (see test_trade_* below), so this uses "fill"
+    // instead, which remains unhandled (private channel, out of scope — see
+    // kalshi_feed.cpp).
+    const auto raw = std::string_view(R"({"type":"fill","sid":4,"msg":{"market_ticker":"X"}})");
     FeedMsg fm;
     std::string err;
     PX_CHECK(parse_feed_message(raw, fm, err)); // must still return true
     PX_CHECK(fm.kind == FeedMsgKind::Unknown);
+}
+
+void test_trade_ask_side_is_buy() {
+    const auto raw = std::string_view(
+        R"({"type":"trade","sid":5,)"
+        R"("msg":{"trade_id":"550e8400-e29b-41d4-a716-446655440000","market_ticker":"X",)"
+        R"("yes_price_dollars":"0.6200","no_price_dollars":"0.3800","count_fp":"5.00",)"
+        R"("taker_side":"yes","taker_outcome_side":"yes","taker_book_side":"ask",)"
+        R"("is_block_trade":false,"ts":1712345678,"ts_ms":1712345678901}})");
+    FeedMsg fm;
+    std::string err;
+    PX_CHECK(parse_feed_message(raw, fm, err));
+    PX_CHECK(fm.kind == FeedMsgKind::Trade);
+    PX_CHECK(fm.market_ticker == "X");
+    PX_CHECK(fm.trade_side == Side::Buy); // crossed the ask -> taker bought
+    PX_CHECK(fm.trade_price == 62);
+    PX_CHECK(fm.trade_qty == 5);
+    PX_CHECK(fm.trade_ts_ms == 1712345678901);
+}
+
+void test_trade_bid_side_is_sell() {
+    const auto raw = std::string_view(
+        R"({"type":"trade","sid":5,)"
+        R"("msg":{"trade_id":"uuid-2","market_ticker":"X",)"
+        R"("yes_price_dollars":"0.4500","no_price_dollars":"0.5500","count_fp":"12.00",)"
+        R"("taker_side":"yes","taker_outcome_side":"yes","taker_book_side":"bid",)"
+        R"("is_block_trade":false,"ts":1712345679,"ts_ms":1712345679001}})");
+    FeedMsg fm;
+    std::string err;
+    PX_CHECK(parse_feed_message(raw, fm, err));
+    PX_CHECK(fm.trade_side == Side::Sell); // crossed the bid -> taker sold
+    PX_CHECK(fm.trade_price == 45);
+    PX_CHECK(fm.trade_qty == 12);
+}
+
+void test_trade_missing_field_is_an_error() {
+    // taker_book_side missing.
+    const auto raw = std::string_view(
+        R"({"type":"trade","sid":5,)"
+        R"("msg":{"trade_id":"uuid-3","market_ticker":"X","yes_price_dollars":"0.5000",)"
+        R"("count_fp":"1.00","ts_ms":1}})");
+    FeedMsg fm;
+    std::string err;
+    PX_CHECK(!parse_feed_message(raw, fm, err));
+    PX_CHECK(!err.empty());
 }
 
 void test_missing_type_is_an_error() {
@@ -199,6 +248,9 @@ int main() {
     test_delta_no_side_normalizes();
     test_ticker();
     test_unknown_type_not_an_error();
+    test_trade_ask_side_is_buy();
+    test_trade_bid_side_is_sell();
+    test_trade_missing_field_is_an_error();
     test_missing_type_is_an_error();
     test_delta_missing_field_is_an_error();
     test_price_high_precision_rounds_exactly();

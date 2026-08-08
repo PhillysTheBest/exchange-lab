@@ -27,6 +27,9 @@
 #include "pipeline/brain.hpp"
 #include "pipeline/ingress.hpp"
 #include "px/platform.hpp"
+#include "strategy/order_book_imbalance.hpp"
+#include "strategy/passive_market_maker.hpp"
+#include "strategy/trade_flow.hpp"
 #include "ticker_registry.hpp"
 
 #include <atomic>
@@ -118,17 +121,22 @@ int main(int argc, char** argv) {
     RingC ring_c;
     OracleRing oracle_ring;
 
-    // ---- T2 Brain: risk config + a demonstration strategy -----------------
-    // Real deployment: register whatever Signal your model actually is. This
-    // one is the same template strategy_demo.cpp uses — a placeholder showing
-    // the wiring works, not a claim that step-function weather modeling is a
-    // good trading strategy (see strategy/signal.hpp's own disclaimer).
+    // ---- T2 Brain: risk config + the live book/trade-driven strategies ----
+    // Real deployment: register whatever Strategy your model actually is.
+    // These three are the genuinely-different, book/trade-driven decision
+    // engines Stage 3 is actually about (see strategy/*.hpp) — not
+    // OracleThresholdStrategy, which is explicitly reference/demo-only (see
+    // tools/strategy_demo.cpp) and deliberately not wired into the live path.
+    // All three registered against the first ticker given on the command
+    // line, so a real run shows their decisions side by side.
     risk::RiskConfig risk_cfg; // defaults to Kalshi's Basic tier — see risk_engine.hpp
-    Brain brain(risk_cfg);
-    brain.add_signal(0 /* first registered ticker */,
-                      std::make_unique<ThresholdSignal>(OracleSource::NOAA, "KNYC", /*threshold=*/90.0,
-                                                          /*market=*/0, /*trader=*/0, /*edge_cents=*/3, /*qty=*/1));
-    brain.on_reject = [](const OrderIntent& intent, risk::Verdict v) {
+    // Heap-allocated, not a stack local — see pipeline/brain.hpp's SIZE
+    // WARNING (~780 KB; found the hard way during development).
+    auto brain = std::make_unique<Brain>(risk_cfg);
+    brain->add_strategy(0, std::make_unique<PassiveMarketMaker>(0, 0));
+    brain->add_strategy(0, std::make_unique<OrderBookImbalance>(0, 0));
+    brain->add_strategy(0, std::make_unique<TradeFlow>(0, 0));
+    brain->on_reject = [](const OrderIntent& intent, risk::Verdict v) {
         std::fprintf(stderr, "[risk] rejected market=%u side=%d price=%d qty=%u: %s\n", intent.market,
                      static_cast<int>(intent.side), intent.price, intent.qty, risk::to_string(v));
     };
@@ -158,7 +166,7 @@ int main(int argc, char** argv) {
     // ---- T2 thread ---------------------------------------------------------
     std::thread brain_thread([&] {
         if (cores.size() >= 1) pin_current_thread_to(cores[0]);
-        brain.run(ring_a, oracle_ring, ring_c, ring_b, stop_flag);
+        brain->run(ring_a, oracle_ring, ring_c, ring_b, stop_flag);
     });
 
     // ---- T3 thread ---------------------------------------------------------
@@ -218,9 +226,9 @@ int main(int argc, char** argv) {
     while (!g_stop) {
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         std::fprintf(stderr, "[stats] book_events=%llu intents_accepted=%llu intents_rejected=%llu\n",
-                     static_cast<unsigned long long>(brain.book_events_applied()),
-                     static_cast<unsigned long long>(brain.intents_accepted()),
-                     static_cast<unsigned long long>(brain.intents_rejected()));
+                     static_cast<unsigned long long>(brain->book_events_applied()),
+                     static_cast<unsigned long long>(brain->intents_accepted()),
+                     static_cast<unsigned long long>(brain->intents_rejected()));
         if (!replay_path.empty()) break; // replay is a one-shot batch, not a long-running session
     }
 
@@ -231,8 +239,8 @@ int main(int argc, char** argv) {
     gateway_thread.join();
 
     std::fprintf(stderr, "stopped. final: book_events=%llu intents_accepted=%llu intents_rejected=%llu\n",
-                 static_cast<unsigned long long>(brain.book_events_applied()),
-                 static_cast<unsigned long long>(brain.intents_accepted()),
-                 static_cast<unsigned long long>(brain.intents_rejected()));
+                 static_cast<unsigned long long>(brain->book_events_applied()),
+                 static_cast<unsigned long long>(brain->intents_accepted()),
+                 static_cast<unsigned long long>(brain->intents_rejected()));
     return 0;
 }

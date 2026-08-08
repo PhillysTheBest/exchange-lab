@@ -248,4 +248,39 @@ inline std::size_t find_value_start(std::string_view json, std::string_view key,
     return true;
 }
 
+// ---- the reverse direction: formatting for outgoing REST bodies -----------
+//
+// Everything above reads Kalshi's WS feed, which is one-directional (we never
+// send WS frames carrying prices/counts). Kalshi's REST order-write endpoints
+// (live/kalshi_rest.cpp) need the opposite: our internal integer cents/qty
+// formatted back into the same quoted fixed-point-decimal-string convention.
+// Kept `long long`-typed rather than px::Price/px::Qty, same as every
+// extraction function above, so this file stays free of a px/types.hpp
+// dependency and either project-side integer type converts into it trivially.
+
+// Formats an integer cent amount as a 2-decimal dollar string: 62 -> "0.62",
+// -5 -> "-0.05". Symmetric to json_extract_dollars_as_cents / parse_decimal_scaled.
+[[nodiscard]] inline std::string format_cents_as_dollars(long long cents) {
+    const bool neg = cents < 0;
+    const long long mag = neg ? -cents : cents;
+    const long long whole = mag / 100;
+    const long long frac = mag % 100;
+    std::string out = neg ? "-" : "";
+    out += std::to_string(whole);
+    out += '.';
+    if (frac < 10) out += '0';
+    out += std::to_string(frac);
+    return out;
+}
+
+// Formats a whole contract count as a 2-decimal fixed-point string: 10 ->
+// "10.00" — the format Kalshi's `count` request field expects (see the
+// verified V2 create-order schema in live/kalshi_rest.cpp). Kalshi contracts
+// are always whole units today (same assumption json_extract_fixed_point_qty
+// already documents for the read direction), so there is never a fractional
+// part to encode here.
+[[nodiscard]] inline std::string format_qty_fixed_point(unsigned long long qty) {
+    return std::to_string(qty) + ".00";
+}
+
 } // namespace px::live

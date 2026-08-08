@@ -3,14 +3,19 @@
 #
 # Targets:
 #   make test         debug build (PX_DEBUG invariants + _GLIBCXX_ASSERTIONS), builds &
-#                      runs the dependency-free unit/fuzz tests (Stage 1 core engine)
+#                      runs the dependency-free unit/fuzz tests: core engine (Stage 1),
+#                      MarketState/Strategy unit tests, and the Brain/ShadowBook
+#                      adversarial-input fuzz test (Stage 3)
 #   make bench        release build (-O3 -march=native -flto), builds & runs the
-#                      dependency-free benchmarks (Stage 1 core engine)
+#                      dependency-free benchmarks: core engine (Stage 1) and
+#                      Strategy::on_event/extract_features latency (Stage 3)
 #   make repl         release build of the interactive REPL
-#   make strategy_demo  release build of the local oracle->signal->engine demo (Phase 4)
+#   make strategy_demo  release build of the local oracle->strategy->engine demo (Phase 4,
+#                      ported onto the Strategy interface in Stage 3)
 #   make live         release build of every Kalshi connectivity tool (needs OpenSSL):
 #                      kalshi_shadow (single-market shadow book) and kalshi_pipeline
-#                      (the full Stage 2 3-thread/3-ring live pipeline)
+#                      (the full Stage 2 3-thread/3-ring live pipeline, now dispatching
+#                      to registered Strategy objects — see pipeline/brain.hpp)
 #   make test-live    builds & runs the OpenSSL-dependent tests: feed schema parsing,
 #                      the gateway's dry-run structural guarantee, and the replay
 #                      pipeline's determinism property
@@ -69,7 +74,7 @@ $(OBJDIR_RELEASE)/%.o: %.cpp
 	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) -c $< -o $@
 
 # ---- tests ------------------------------------------------------------------
-TEST_BINS := $(OBJDIR_DEBUG)/test_book$(EXE) $(OBJDIR_DEBUG)/test_engine$(EXE) $(OBJDIR_DEBUG)/fuzz_vs_reference$(EXE) $(OBJDIR_DEBUG)/test_risk$(EXE)
+TEST_BINS := $(OBJDIR_DEBUG)/test_book$(EXE) $(OBJDIR_DEBUG)/test_engine$(EXE) $(OBJDIR_DEBUG)/fuzz_vs_reference$(EXE) $(OBJDIR_DEBUG)/test_risk$(EXE) $(OBJDIR_DEBUG)/test_market_state$(EXE) $(OBJDIR_DEBUG)/test_strategies$(EXE) $(OBJDIR_DEBUG)/test_replay_fuzz$(EXE)
 
 $(OBJDIR_DEBUG)/test_book$(EXE): tests/test_book.cpp $(DEBUG_OBJS)
 	@mkdir -p $(dir $@)
@@ -89,17 +94,55 @@ $(OBJDIR_DEBUG)/test_risk$(EXE): tests/test_risk.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(DEBUG_FLAGS) $< -o $@
 
+# test_market_state.cpp / test_strategies.cpp (Stage 3): ShadowBook +
+# strategy/*.hpp are all header-only (no strategy/*.cpp exists) — no object
+# link needed, same as test_risk above.
+$(OBJDIR_DEBUG)/test_market_state$(EXE): tests/test_market_state.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(DEBUG_FLAGS) $< -o $@
+
+$(OBJDIR_DEBUG)/test_strategies$(EXE): tests/test_strategies.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(DEBUG_FLAGS) $< -o $@
+
+# test_replay_fuzz.cpp (Stage 3) needs a real Brain — pipeline/brain.cpp, debug-
+# flavored so PX_DEBUG=1 makes ShadowBook::check_invariants() exist/assert (the
+# release-flavored $(OBJDIR_RELEASE)/pipeline/%.o rule below, used by
+# test-live, builds with -DNDEBUG instead, which would compile it out). Brain
+# itself needs no OpenSSL/CORE_SRC — pipeline/ingress.hpp is pulled in only for
+# the RingA type alias, never instantiated — so this stays in the
+# dependency-free `test` target, not test-live.
+$(OBJDIR_DEBUG)/pipeline/%.o: pipeline/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(DEBUG_FLAGS) -c $< -o $@
+
+$(OBJDIR_DEBUG)/test_replay_fuzz$(EXE): tests/test_replay_fuzz.cpp $(OBJDIR_DEBUG)/pipeline/brain.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(DEBUG_FLAGS) $< $(OBJDIR_DEBUG)/pipeline/brain.o -o $@
+
 .PHONY: test
 test: $(TEST_BINS)
 	@echo "== test_book ==" && $(OBJDIR_DEBUG)/test_book$(EXE)
 	@echo "== test_engine ==" && $(OBJDIR_DEBUG)/test_engine$(EXE)
 	@echo "== fuzz_vs_reference ==" && $(OBJDIR_DEBUG)/fuzz_vs_reference$(EXE)
 	@echo "== test_risk ==" && $(OBJDIR_DEBUG)/test_risk$(EXE)
+	@echo "== test_market_state ==" && $(OBJDIR_DEBUG)/test_market_state$(EXE)
+	@echo "== test_strategies ==" && $(OBJDIR_DEBUG)/test_strategies$(EXE)
+	@echo "== test_replay_fuzz ==" && $(OBJDIR_DEBUG)/test_replay_fuzz$(EXE)
 
 # ---- benchmarks (release, no sanitizers, pinned) ----------------------------
-BENCH_BINS := $(OBJDIR_RELEASE)/bench_engine$(EXE) $(OBJDIR_RELEASE)/bench_ring$(EXE)
+BENCH_BINS := $(OBJDIR_RELEASE)/bench_engine$(EXE) $(OBJDIR_RELEASE)/bench_ring$(EXE) $(OBJDIR_RELEASE)/bench_strategy$(EXE)
 
 $(OBJDIR_RELEASE)/bench_engine$(EXE): bench/bench_engine.cpp $(RELEASE_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) $< $(RELEASE_OBJS) -o $@ $(LIBS_PLATFORM)
+
+# bench_strategy.cpp (Stage 3) only needs px/platform.hpp's pin_current_thread_to
+# (implemented in $(PLATFORM_SRC)) — strategy/*.hpp is all header-only, no
+# OrderBook/MatchingEngine involved, so this links against $(RELEASE_OBJS)
+# only for that one platform object (the rest of $(RELEASE_OBJS) goes unused
+# but costs nothing to link in, same as repl/strategy_demo already do).
+$(OBJDIR_RELEASE)/bench_strategy$(EXE): bench/bench_strategy.cpp $(RELEASE_OBJS)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) $< $(RELEASE_OBJS) -o $@ $(LIBS_PLATFORM)
 
@@ -111,6 +154,7 @@ $(OBJDIR_RELEASE)/bench_ring$(EXE): bench/bench_ring.cpp $(RELEASE_OBJS)
 bench: $(BENCH_BINS)
 	@echo "== bench_engine ==" && $(OBJDIR_RELEASE)/bench_engine$(EXE)
 	@echo "== bench_ring ==" && $(OBJDIR_RELEASE)/bench_ring$(EXE)
+	@echo "== bench_strategy ==" && $(OBJDIR_RELEASE)/bench_strategy$(EXE)
 
 # bench_sign needs OpenSSL (kalshi_auth.cpp) — kept out of the dependency-free
 # `bench` target above, alongside `live`/`test-live`.
@@ -130,7 +174,7 @@ $(OBJDIR_RELEASE)/repl$(EXE): tools/repl.cpp $(RELEASE_OBJS)
 .PHONY: repl
 repl: $(OBJDIR_RELEASE)/repl$(EXE)
 
-# ---- strategy demo (Phase 4 — oracle feed -> signal -> engine, all local) --
+# ---- strategy demo (Phase 4 — oracle feed -> strategy -> engine, all local) --
 $(OBJDIR_RELEASE)/strategy_demo$(EXE): tools/strategy_demo.cpp $(RELEASE_OBJS)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) $< $(RELEASE_OBJS) -o $@ $(LIBS_PLATFORM)
