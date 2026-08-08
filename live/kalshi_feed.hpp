@@ -114,17 +114,41 @@ public:
     // Snapshot) and should be applied; false if a gap was detected, in which
     // case the tracker resets (won't trust the stream again until the next
     // Snapshot) and the caller should request a resync and drop this message.
+    //
+    // Found by tests/test_hostile_events.cpp, not before it: this comment's
+    // own promise — "won't trust the stream again until the next Snapshot" —
+    // didn't match the code. Once a gap set has_last_ = false, the VERY NEXT
+    // delta hit the `!has_last_` branch and was accepted unconditionally
+    // (its own seq becoming the new trusted baseline!), for every delta after
+    // that until a snapshot happened to arrive — a window where a duplicate,
+    // reordered, or otherwise adversarial delta would be applied to the book
+    // with no verification at all, silently compounding whatever the
+    // original gap already lost. `desynced_` closes that window explicitly:
+    // once true, every delta is dropped (not just the one that revealed the
+    // gap) until a Snapshot — the only thing that actually re-establishes a
+    // trustworthy baseline — arrives.
     [[nodiscard]] bool observe(bool is_snapshot, bool has_seq, SeqNum seq) noexcept {
         if (!has_seq) return true; // nothing to check this message against
-        if (is_snapshot) { has_last_ = true; last_ = seq; return true; }
+        if (is_snapshot) {
+            has_last_ = true;
+            desynced_ = false;
+            last_ = seq;
+            return true;
+        }
+        if (desynced_) return false; // still waiting for the resync snapshot — drop everything until it arrives
         if (!has_last_) return true; // no baseline yet — nothing to compare against
-        if (seq != last_ + 1) { has_last_ = false; return false; }
+        if (seq != last_ + 1) {
+            has_last_ = false;
+            desynced_ = true;
+            return false;
+        }
         last_ = seq;
         return true;
     }
 
 private:
     bool has_last_ = false;
+    bool desynced_ = false;
     SeqNum last_ = 0;
 };
 

@@ -76,10 +76,29 @@ public:
     // now-accepted order). See RestingOrder::depth_ahead_estimate's own
     // comment for what this figure actually means (an upper bound, not a
     // live number). No-op if `id` isn't a pending (not-yet-acked) entry.
+    //
+    // remaining_qty == 0 (a marketable order that fully filled at entry, or
+    // an IOC order whose unfilled remainder Kalshi auto-cancels — either way
+    // Kalshi's own create-order response reports it with remaining_count 0):
+    // dropped outright rather than promoted. Found by
+    // tests/test_pipeline_e2e.cpp: promoting it anyway left a permanent
+    // zombie entry — nothing ever removes an acked entry on a fill (see
+    // on_fill below, before its own fix) — so orders_for() stayed non-empty
+    // forever after a strategy's very first IOC trade. OrderBookImbalance and
+    // TradeFlow (strategy/order_book_imbalance.hpp, strategy/trade_flow.hpp)
+    // both gate on `outstanding_orders.empty()` as their "am I already
+    // exposed" check, so this silently disabled either strategy for the rest
+    // of that market's lifetime after one trade — a real bug, not a
+    // hypothetical one.
     void on_acked(MarketId market, OrderId id, Qty remaining_qty, const ShadowBook& book) noexcept {
         MarketOrders& mo = by_market_[market];
         const std::size_t idx = find_index(mo, id);
         if (idx == kNotFound || idx < mo.acked_count) return; // unknown, or already acked
+
+        if (remaining_qty == 0) {
+            remove_at(mo, idx); // idx is in the pending zone here (checked above) — see remove_at's own comment
+            return;
+        }
 
         const Price price = mo.orders[idx].price;
         const Qty level_qty = book.level_qty(price);
@@ -96,13 +115,36 @@ public:
     // order can fill synchronously in the same create-order response that
     // acks it, per Kalshi's V2 schema: fill_count > 0 on a 201). No-op if
     // `id` isn't tracked for this market.
+    //
+    // Accumulates filled_qty only — does NOT independently derive
+    // remaining_qty by subtracting from it. Found by
+    // tests/test_hostile_events.cpp's partial-fill-at-entry case: Gateway's
+    // only current producer of ExecKind::Fill (live/kalshi_gateway.cpp's
+    // handle_new_order) ALWAYS pushes an Acked report for the same id
+    // immediately first, carrying Kalshi's own authoritative post-fill
+    // remaining_count — on_acked (above) already sets remaining_qty
+    // correctly from that. A version of this function that ALSO subtracted
+    // filled_qty from remaining_qty was double-counting the exact same fill
+    // Acked had already reflected (e.g. remaining_count=6, fill_count=4 on a
+    // 10-lot order — genuinely 6 left, but the old code computed 6-4=2).
+    // Every remaining_qty update in this codebase comes from an authoritative
+    // Kalshi-reported number (on_acked's remaining_count, on_cancelled's
+    // reduced_by) — never a locally-derived delta — and this keeps that
+    // property, rather than having two different code paths disagree about
+    // who owns it.
+    //
+    // NOTE for whoever builds the still-scoped-out async `fill`-channel
+    // listener (see kalshi_gateway.hpp's FILL TRACKING comment): a fill
+    // arriving there, for an order that's been resting a while with no
+    // adjacent Acked/remaining_count update, will need this function to
+    // derive remaining_qty itself (there's no other authoritative source for
+    // it at that point) — this simple accumulate-only version is correct for
+    // every path reachable today, not for that one.
     void on_fill(MarketId market, OrderId id, Qty filled_qty) noexcept {
         MarketOrders& mo = by_market_[market];
         const std::size_t idx = find_index(mo, id);
         if (idx == kNotFound) return;
-        RestingOrder& r = mo.orders[idx];
-        r.filled_qty += filled_qty;
-        r.remaining_qty = (filled_qty >= r.remaining_qty) ? 0 : r.remaining_qty - filled_qty;
+        mo.orders[idx].filled_qty += filled_qty;
     }
 
     // Reduces remaining_qty by `reduced_by`; removes the entry entirely once

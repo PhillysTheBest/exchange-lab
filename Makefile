@@ -20,7 +20,9 @@
 #                      the gateway's dry-run structural guarantee, and the replay
 #                      pipeline's determinism property
 #   make bench-live   builds & runs bench_sign (RSA-PSS signing latency — the measured
-#                      justification for keeping crypto off T2's thread)
+#                      justification for keeping crypto off T2's thread) and
+#                      bench_pipeline_e2e (Stage 4: the full WS-frame -> ... ->
+#                      OrderIntent decision path's real, measured latency)
 #   make all          test + bench + repl + strategy_demo (the dependency-free set)
 #   make clean
 
@@ -156,16 +158,6 @@ bench: $(BENCH_BINS)
 	@echo "== bench_ring ==" && $(OBJDIR_RELEASE)/bench_ring$(EXE)
 	@echo "== bench_strategy ==" && $(OBJDIR_RELEASE)/bench_strategy$(EXE)
 
-# bench_sign needs OpenSSL (kalshi_auth.cpp) — kept out of the dependency-free
-# `bench` target above, alongside `live`/`test-live`.
-$(OBJDIR_RELEASE)/bench_sign$(EXE): bench/bench_sign.cpp $(OBJDIR_RELEASE)/live/kalshi_auth.o
-	@mkdir -p $(dir $@)
-	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) $< $(OBJDIR_RELEASE)/live/kalshi_auth.o -o $@ $(LIVE_LIBS)
-
-.PHONY: bench-live
-bench-live: $(OBJDIR_RELEASE)/bench_sign$(EXE)
-	@echo "== bench_sign ==" && $(OBJDIR_RELEASE)/bench_sign$(EXE)
-
 # ---- repl --------------------------------------------------------------------
 $(OBJDIR_RELEASE)/repl$(EXE): tools/repl.cpp $(RELEASE_OBJS)
 	@mkdir -p $(dir $@)
@@ -221,11 +213,50 @@ $(OBJDIR_RELEASE)/test_replay_determinism$(EXE): tests/test_replay_determinism.c
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) $< $(RELEASE_OBJS) $(LIVE_OBJS) $(PIPELINE_OBJS) -o $@ $(LIVE_LIBS)
 
+# test_pipeline_e2e.cpp (Stage 4): the full Ingress->Brain->Strategy->Risk->
+# OrderIntent->Gateway->(simulated)REST->ExecReport->Brain loop, through real
+# threads/rings — needs the same OpenSSL-linked objects test_replay_determinism
+# does (Gateway/kalshi_rest), so it lives here rather than in the
+# dependency-free `test` target.
+$(OBJDIR_RELEASE)/test_pipeline_e2e$(EXE): tests/test_pipeline_e2e.cpp $(RELEASE_OBJS) $(LIVE_OBJS) $(PIPELINE_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) $< $(RELEASE_OBJS) $(LIVE_OBJS) $(PIPELINE_OBJS) -o $@ $(LIVE_LIBS)
+
+# test_hostile_events.cpp (Stage 4): duplicate/reordered feed messages,
+# partial fills, cancel/fill races, connection failure, risk rejection, an
+# unrecognized message type — the same real-threads/real-rings methodology as
+# test_pipeline_e2e.cpp, aimed at adversarial input instead of the happy path.
+$(OBJDIR_RELEASE)/test_hostile_events$(EXE): tests/test_hostile_events.cpp $(RELEASE_OBJS) $(LIVE_OBJS) $(PIPELINE_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) $< $(RELEASE_OBJS) $(LIVE_OBJS) $(PIPELINE_OBJS) -o $@ $(LIVE_LIBS)
+
 .PHONY: test-live
-test-live: $(OBJDIR_RELEASE)/test_feed_parse$(EXE) $(OBJDIR_RELEASE)/test_gateway_dry_run$(EXE) $(OBJDIR_RELEASE)/test_replay_determinism$(EXE)
+test-live: $(OBJDIR_RELEASE)/test_feed_parse$(EXE) $(OBJDIR_RELEASE)/test_gateway_dry_run$(EXE) $(OBJDIR_RELEASE)/test_replay_determinism$(EXE) $(OBJDIR_RELEASE)/test_pipeline_e2e$(EXE) $(OBJDIR_RELEASE)/test_hostile_events$(EXE)
 	@echo "== test_feed_parse ==" && $(OBJDIR_RELEASE)/test_feed_parse$(EXE)
 	@echo "== test_gateway_dry_run ==" && $(OBJDIR_RELEASE)/test_gateway_dry_run$(EXE)
 	@echo "== test_replay_determinism ==" && $(OBJDIR_RELEASE)/test_replay_determinism$(EXE)
+	@echo "== test_pipeline_e2e ==" && $(OBJDIR_RELEASE)/test_pipeline_e2e$(EXE)
+	@echo "== test_hostile_events ==" && $(OBJDIR_RELEASE)/test_hostile_events$(EXE)
+
+# ---- bench-live (OpenSSL-dependent benchmarks) ------------------------------
+# bench_sign only needs kalshi_auth.o directly (no Ingress/Brain involved).
+$(OBJDIR_RELEASE)/bench_sign$(EXE): bench/bench_sign.cpp $(OBJDIR_RELEASE)/live/kalshi_auth.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) $< $(OBJDIR_RELEASE)/live/kalshi_auth.o -o $@ $(LIVE_LIBS)
+
+# bench_pipeline_e2e.cpp (Stage 4): the full WS-frame -> parse -> shadow-book
+# -> features -> strategy -> risk -> OrderIntent path, through a real
+# Ingress/Brain pair — needs $(LIVE_OBJS)/$(PIPELINE_OBJS) (defined above, in
+# the ---- live ---- section), which is why this whole block sits after
+# test-live rather than immediately after the dependency-free `bench` target.
+$(OBJDIR_RELEASE)/bench_pipeline_e2e$(EXE): bench/bench_pipeline_e2e.cpp $(RELEASE_OBJS) $(LIVE_OBJS) $(PIPELINE_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) $< $(RELEASE_OBJS) $(LIVE_OBJS) $(PIPELINE_OBJS) -o $@ $(LIVE_LIBS)
+
+.PHONY: bench-live
+bench-live: $(OBJDIR_RELEASE)/bench_sign$(EXE) $(OBJDIR_RELEASE)/bench_pipeline_e2e$(EXE)
+	@echo "== bench_sign ==" && $(OBJDIR_RELEASE)/bench_sign$(EXE)
+	@echo "== bench_pipeline_e2e ==" && $(OBJDIR_RELEASE)/bench_pipeline_e2e$(EXE)
 
 .PHONY: all
 all: test bench repl strategy_demo

@@ -15,12 +15,18 @@
 //
 // ORDER-ID MAPPING (Stage 3): Gateway privately maps Brain's own OrderId to
 // Kalshi's returned UUID order_id the instant a create-order response
-// confirms one, so a later CancelOrder intent (which carries the same
-// OrderId, never Kalshi's UUID — see the plan doc's "Order-ID ring safety"
-// section) can be resolved to the right DELETE path. This map is exactly the
-// kind of thing that must never cross a ring (every ring payload in this
-// codebase is a fixed-size POD — see pipeline/events.hpp's static_asserts);
-// it lives here, privately, the same tier as TickerRegistry's strings.
+// confirms one WITH SOMETHING LEFT RESTING (remaining_count > 0) — so a
+// later CancelOrder intent (which carries the same OrderId, never Kalshi's
+// UUID — see the plan doc's "Order-ID ring safety" section) can be resolved
+// to the right DELETE path. A fully-resolved order (filled or IOC-killed at
+// entry, remaining_count == 0) is never inserted at all: there's nothing left
+// to ever legitimately cancel, and this map is only ever erased by a
+// successful cancel (handle_cancel) — inserting anyway would leave a
+// permanent, unbounded-over-a-session entry for every such order (found via
+// tests/test_pipeline_e2e.cpp). This map is exactly the kind of thing that
+// must never cross a ring (every ring payload in this codebase is a
+// fixed-size POD — see pipeline/events.hpp's static_asserts); it lives here,
+// privately, the same tier as TickerRegistry's strings.
 //
 // FILL TRACKING, narrowed in Stage 3, not closed: Kalshi's create-order
 // response DOES carry `fill_count`/`average_fill_price` when a marketable
