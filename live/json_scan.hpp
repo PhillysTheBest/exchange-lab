@@ -78,12 +78,10 @@ inline std::size_t find_value_start(std::string_view json, std::string_view key,
 }
 
 // Extracts an array of [price, qty] integer pairs from a field shaped like
-// "yes": [[50,10],[51,5]] — the documented shape of Kalshi's REST orderbook
-// response. The WS orderbook_snapshot message is ASSUMED to mirror this (this
-// project's source material confirmed the outer envelope's `type`/`market_ticker`
-// fields but not the complete inner delta/snapshot field names — see
-// kalshi_feed.hpp) — verify against a live capture before depending on this
-// shape for real trading. Bounded, depth-tracked bracket matching; not a
+// "yes": [[50,10],[51,5]] — bare (unquoted) numeric pairs. NOT the shape
+// Kalshi's WS feed actually uses (see json_extract_dollar_pair_array below) —
+// kept only as a general-purpose helper for a hypothetical future feed that
+// does use bare numbers. Bounded, depth-tracked bracket matching; not a
 // general JSON array parser.
 [[nodiscard]] inline bool json_extract_pair_array(std::string_view json, std::string_view key,
                                                    std::vector<std::pair<long long, long long>>& out) {
@@ -116,6 +114,134 @@ inline std::size_t find_value_start(std::string_view json, std::string_view key,
             std::from_chars(pair.data(), pair.data() + comma, a);
             std::from_chars(pair.data() + comma + 1, pair.data() + pair.size(), b);
             out.emplace_back(a, b);
+        }
+        pos = close + 1;
+    }
+    return true;
+}
+
+// ---- fixed-point decimal support -------------------------------------------
+//
+// Kalshi's WS feed (confirmed against the published AsyncAPI spec — see
+// kalshi_feed.hpp) represents every price and contract-count field as a
+// *quoted decimal string*, not a bare JSON number: `"price_dollars": "0.0800"`,
+// `"delta_fp": "-5.00"`. The functions above (json_extract_number/_int) cannot
+// read these — they stop at the opening `"`. Everything below exists to close
+// that gap, which is the bug that made the original feed handler parse nothing.
+
+// Parses an already-unquoted decimal string ("0.0800", "125.00", "-5.5", "5")
+// into an integer scaled by 10^scale — e.g. scale=2 turns "0.62" into 62.
+// Fractional digits beyond `scale` are rounded (half-up on the first dropped
+// digit) rather than truncated, so a field with more precision than the target
+// unit — Kalshi's own examples show price_dollars as 4 decimal digits, e.g.
+// "0.0800", for a value that is always a whole number of cents — is handled
+// exactly instead of silently losing a low-order digit. Returns false on any
+// non-numeric content.
+[[nodiscard]] inline bool parse_decimal_scaled(std::string_view s, int scale, long long& out) noexcept {
+    if (s.empty()) return false;
+    std::size_t i = 0;
+    bool neg = false;
+    if (s[i] == '+' || s[i] == '-') { neg = (s[i] == '-'); ++i; }
+    if (i >= s.size() || !std::isdigit(static_cast<unsigned char>(s[i]))) return false;
+
+    long long int_part = 0;
+    while (i < s.size() && std::isdigit(static_cast<unsigned char>(s[i]))) {
+        int_part = int_part * 10 + (s[i] - '0');
+        ++i;
+    }
+
+    long long frac_kept = 0; // first `scale` fractional digits, left-aligned
+    int kept_digits = 0;
+    bool round_up = false;
+    if (i < s.size() && s[i] == '.') {
+        ++i;
+        int digit_pos = 0;
+        while (i < s.size() && std::isdigit(static_cast<unsigned char>(s[i]))) {
+            const int d = s[i] - '0';
+            if (digit_pos < scale) { frac_kept = frac_kept * 10 + d; ++kept_digits; }
+            else if (digit_pos == scale) { round_up = d >= 5; } // first dropped digit only
+            ++digit_pos;
+            ++i;
+        }
+    }
+    if (i != s.size()) return false; // trailing garbage — malformed
+
+    while (kept_digits < scale) { frac_kept *= 10; ++kept_digits; } // pad implied trailing zeros
+
+    long long scale_pow = 1;
+    for (int k = 0; k < scale; ++k) scale_pow *= 10;
+
+    const long long magnitude = int_part * scale_pow + frac_kept + (round_up ? 1 : 0);
+    out = neg ? -magnitude : magnitude;
+    return true;
+}
+
+// Extracts a quoted dollar-string field (e.g. "price_dollars": "0.0800") as
+// integer cents (80 in that example — see parse_decimal_scaled for rounding).
+[[nodiscard]] inline bool json_extract_dollars_as_cents(std::string_view json, std::string_view key,
+                                                          long long& cents_out) {
+    std::string_view s;
+    if (!json_extract_string(json, key, s)) return false;
+    return parse_decimal_scaled(s, 2, cents_out);
+}
+
+// Extracts a quoted fixed-point contract-count field (e.g. "delta_fp": "-5.00",
+// 2 decimal places per the Kalshi spec) as a whole contract count, signed.
+// Kalshi contracts are always whole units today; a genuinely fractional value
+// (which the spec's 2-decimal-place format could in principle carry) truncates
+// toward zero here rather than erroring, since the order book has no way to
+// represent a fractional contract regardless.
+[[nodiscard]] inline bool json_extract_fixed_point_qty(std::string_view json, std::string_view key,
+                                                         long long& qty_out) {
+    std::string_view s;
+    if (!json_extract_string(json, key, s)) return false;
+    long long hundredths = 0;
+    if (!parse_decimal_scaled(s, 2, hundredths)) return false;
+    qty_out = hundredths / 100; // truncates toward zero — see comment above
+    return true;
+}
+
+// Extracts an array of [price_dollars, count_fp] *quoted string* pairs — the
+// actual shape of Kalshi's yes_dollars_fp/no_dollars_fp snapshot fields, e.g.
+// [["0.0800","300.00"],["0.2200","333.00"]] — into (cents, whole-contract-qty)
+// pairs. Same bounded bracket-matching approach as json_extract_pair_array,
+// but reads two quoted decimal strings per element instead of two bare numbers.
+[[nodiscard]] inline bool json_extract_dollar_pair_array(std::string_view json, std::string_view key,
+                                                           std::vector<std::pair<long long, long long>>& out) {
+    out.clear();
+    const std::size_t start = detail::find_value_start(json, key);
+    if (start == std::string_view::npos || start >= json.size() || json[start] != '[') return false;
+
+    int depth = 0;
+    std::size_t array_end = std::string_view::npos;
+    for (std::size_t i = start; i < json.size(); ++i) {
+        if (json[i] == '[') ++depth;
+        else if (json[i] == ']') {
+            --depth;
+            if (depth == 0) { array_end = i; break; }
+        }
+    }
+    if (array_end == std::string_view::npos) return false;
+
+    const std::string_view body = json.substr(start + 1, array_end - start - 1);
+    std::size_t pos = 0;
+    for (;;) {
+        const std::size_t open = body.find('[', pos);
+        if (open == std::string_view::npos) break;
+        const std::size_t close = body.find(']', open);
+        if (close == std::string_view::npos) break;
+        const std::string_view pair = body.substr(open + 1, close - open - 1);
+
+        const std::size_t q1 = pair.find('"');
+        const std::size_t q2 = (q1 == std::string_view::npos) ? std::string_view::npos : pair.find('"', q1 + 1);
+        const std::size_t q3 = (q2 == std::string_view::npos) ? std::string_view::npos : pair.find('"', q2 + 1);
+        const std::size_t q4 = (q3 == std::string_view::npos) ? std::string_view::npos : pair.find('"', q3 + 1);
+        if (q4 != std::string_view::npos) {
+            long long cents = 0, hundredths = 0;
+            if (parse_decimal_scaled(pair.substr(q1 + 1, q2 - q1 - 1), 2, cents) &&
+                parse_decimal_scaled(pair.substr(q3 + 1, q4 - q3 - 1), 2, hundredths)) {
+                out.emplace_back(cents, hundredths / 100);
+            }
         }
         pos = close + 1;
     }

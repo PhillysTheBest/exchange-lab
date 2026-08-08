@@ -2,15 +2,25 @@
 # No CMake/Ninja in this environment by design — see the plan doc for why.
 #
 # Targets:
-#   make test      debug build (asan/ubsan + PX_DEBUG invariants), builds & runs all tests
-#   make bench     release build (-O3 -march=native -flto), builds & runs all benchmarks
-#   make repl      release build of the interactive REPL
-#   make live      release build of the Kalshi connectivity tools (needs OpenSSL)
-#   make all       test + bench + repl
+#   make test         debug build (PX_DEBUG invariants + _GLIBCXX_ASSERTIONS), builds &
+#                      runs the dependency-free unit/fuzz tests (Stage 1 core engine)
+#   make bench        release build (-O3 -march=native -flto), builds & runs the
+#                      dependency-free benchmarks (Stage 1 core engine)
+#   make repl         release build of the interactive REPL
+#   make strategy_demo  release build of the local oracle->signal->engine demo (Phase 4)
+#   make live         release build of every Kalshi connectivity tool (needs OpenSSL):
+#                      kalshi_shadow (single-market shadow book) and kalshi_pipeline
+#                      (the full Stage 2 3-thread/3-ring live pipeline)
+#   make test-live    builds & runs the OpenSSL-dependent tests: feed schema parsing,
+#                      the gateway's dry-run structural guarantee, and the replay
+#                      pipeline's determinism property
+#   make bench-live   builds & runs bench_sign (RSA-PSS signing latency — the measured
+#                      justification for keeping crypto off T2's thread)
+#   make all          test + bench + repl + strategy_demo (the dependency-free set)
 #   make clean
 
 CXX      ?= g++
-INCLUDES  = -Iinclude -Ilive -I.
+INCLUDES  = -Iinclude -Ilive -Irisk -Ipipeline -I.
 CXXSTD    = -std=c++20
 WARN      = -Wall -Wextra -Wpedantic
 
@@ -33,7 +43,8 @@ else
 endif
 
 CORE_SRC := src/order_book.cpp src/matching_engine.cpp $(PLATFORM_SRC)
-LIVE_SRC := live/tls_socket.cpp live/win_root_certs.cpp live/ws_client.cpp live/kalshi_auth.cpp live/kalshi_feed.cpp live/kalshi_rest.cpp
+LIVE_SRC := live/tls_socket.cpp live/win_root_certs.cpp live/ws_client.cpp live/kalshi_auth.cpp live/kalshi_feed.cpp live/kalshi_rest.cpp live/kalshi_gateway.cpp
+PIPELINE_SRC := pipeline/ingress.cpp pipeline/brain.cpp
 ifeq ($(OS),Windows_NT)
   LIVE_LIBS := -lssl -lcrypto -lcrypt32 $(LIBS_PLATFORM)
 else
@@ -58,7 +69,7 @@ $(OBJDIR_RELEASE)/%.o: %.cpp
 	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) -c $< -o $@
 
 # ---- tests ------------------------------------------------------------------
-TEST_BINS := $(OBJDIR_DEBUG)/test_book$(EXE) $(OBJDIR_DEBUG)/test_engine$(EXE) $(OBJDIR_DEBUG)/fuzz_vs_reference$(EXE)
+TEST_BINS := $(OBJDIR_DEBUG)/test_book$(EXE) $(OBJDIR_DEBUG)/test_engine$(EXE) $(OBJDIR_DEBUG)/fuzz_vs_reference$(EXE) $(OBJDIR_DEBUG)/test_risk$(EXE)
 
 $(OBJDIR_DEBUG)/test_book$(EXE): tests/test_book.cpp $(DEBUG_OBJS)
 	@mkdir -p $(dir $@)
@@ -72,11 +83,18 @@ $(OBJDIR_DEBUG)/fuzz_vs_reference$(EXE): tests/fuzz_vs_reference.cpp $(DEBUG_OBJ
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(DEBUG_FLAGS) $< $(DEBUG_OBJS) -o $@
 
+# test_risk.cpp only needs risk/risk_engine.hpp (header-only, no engine
+# dependency) — no $(DEBUG_OBJS) link needed.
+$(OBJDIR_DEBUG)/test_risk$(EXE): tests/test_risk.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(DEBUG_FLAGS) $< -o $@
+
 .PHONY: test
 test: $(TEST_BINS)
 	@echo "== test_book ==" && $(OBJDIR_DEBUG)/test_book$(EXE)
 	@echo "== test_engine ==" && $(OBJDIR_DEBUG)/test_engine$(EXE)
 	@echo "== fuzz_vs_reference ==" && $(OBJDIR_DEBUG)/fuzz_vs_reference$(EXE)
+	@echo "== test_risk ==" && $(OBJDIR_DEBUG)/test_risk$(EXE)
 
 # ---- benchmarks (release, no sanitizers, pinned) ----------------------------
 BENCH_BINS := $(OBJDIR_RELEASE)/bench_engine$(EXE) $(OBJDIR_RELEASE)/bench_ring$(EXE)
@@ -93,6 +111,16 @@ $(OBJDIR_RELEASE)/bench_ring$(EXE): bench/bench_ring.cpp $(RELEASE_OBJS)
 bench: $(BENCH_BINS)
 	@echo "== bench_engine ==" && $(OBJDIR_RELEASE)/bench_engine$(EXE)
 	@echo "== bench_ring ==" && $(OBJDIR_RELEASE)/bench_ring$(EXE)
+
+# bench_sign needs OpenSSL (kalshi_auth.cpp) — kept out of the dependency-free
+# `bench` target above, alongside `live`/`test-live`.
+$(OBJDIR_RELEASE)/bench_sign$(EXE): bench/bench_sign.cpp $(OBJDIR_RELEASE)/live/kalshi_auth.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) $< $(OBJDIR_RELEASE)/live/kalshi_auth.o -o $@ $(LIVE_LIBS)
+
+.PHONY: bench-live
+bench-live: $(OBJDIR_RELEASE)/bench_sign$(EXE)
+	@echo "== bench_sign ==" && $(OBJDIR_RELEASE)/bench_sign$(EXE)
 
 # ---- repl --------------------------------------------------------------------
 $(OBJDIR_RELEASE)/repl$(EXE): tools/repl.cpp $(RELEASE_OBJS)
@@ -117,12 +145,43 @@ $(OBJDIR_RELEASE)/live/%.o: live/%.cpp
 
 LIVE_OBJS := $(patsubst %.cpp,$(OBJDIR_RELEASE)/%.o,$(LIVE_SRC))
 
+$(OBJDIR_RELEASE)/pipeline/%.o: pipeline/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) -c $< -o $@
+
+PIPELINE_OBJS := $(patsubst %.cpp,$(OBJDIR_RELEASE)/%.o,$(PIPELINE_SRC))
+
 $(OBJDIR_RELEASE)/kalshi_shadow$(EXE): tools/kalshi_shadow.cpp $(RELEASE_OBJS) $(LIVE_OBJS)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) $< $(RELEASE_OBJS) $(LIVE_OBJS) -o $@ $(LIVE_LIBS)
 
+$(OBJDIR_RELEASE)/kalshi_pipeline$(EXE): tools/kalshi_pipeline.cpp $(RELEASE_OBJS) $(LIVE_OBJS) $(PIPELINE_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) $< $(RELEASE_OBJS) $(LIVE_OBJS) $(PIPELINE_OBJS) -o $@ $(LIVE_LIBS)
+
 .PHONY: live
-live: $(OBJDIR_RELEASE)/kalshi_shadow$(EXE)
+live: $(OBJDIR_RELEASE)/kalshi_shadow$(EXE) $(OBJDIR_RELEASE)/kalshi_pipeline$(EXE)
+
+# ---- live tests (need OpenSSL/Winsock, so separate from the dependency-free
+# `test` target above; parse_feed_message/SeqTracker themselves touch neither
+# a socket nor OpenSSL, but they share a translation unit with code that does) -
+$(OBJDIR_RELEASE)/test_feed_parse$(EXE): tests/test_feed_parse.cpp $(RELEASE_OBJS) $(LIVE_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) $< $(RELEASE_OBJS) $(LIVE_OBJS) -o $@ $(LIVE_LIBS)
+
+$(OBJDIR_RELEASE)/test_gateway_dry_run$(EXE): tests/test_gateway_dry_run.cpp $(RELEASE_OBJS) $(LIVE_OBJS) $(PIPELINE_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) $< $(RELEASE_OBJS) $(LIVE_OBJS) $(PIPELINE_OBJS) -o $@ $(LIVE_LIBS)
+
+$(OBJDIR_RELEASE)/test_replay_determinism$(EXE): tests/test_replay_determinism.cpp $(RELEASE_OBJS) $(LIVE_OBJS) $(PIPELINE_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) $< $(RELEASE_OBJS) $(LIVE_OBJS) $(PIPELINE_OBJS) -o $@ $(LIVE_LIBS)
+
+.PHONY: test-live
+test-live: $(OBJDIR_RELEASE)/test_feed_parse$(EXE) $(OBJDIR_RELEASE)/test_gateway_dry_run$(EXE) $(OBJDIR_RELEASE)/test_replay_determinism$(EXE)
+	@echo "== test_feed_parse ==" && $(OBJDIR_RELEASE)/test_feed_parse$(EXE)
+	@echo "== test_gateway_dry_run ==" && $(OBJDIR_RELEASE)/test_gateway_dry_run$(EXE)
+	@echo "== test_replay_determinism ==" && $(OBJDIR_RELEASE)/test_replay_determinism$(EXE)
 
 .PHONY: all
 all: test bench repl strategy_demo

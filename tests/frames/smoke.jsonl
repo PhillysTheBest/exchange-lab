@@ -1,0 +1,3 @@
+{"type":"orderbook_snapshot","sid":2,"seq":1,"msg":{"market_ticker":"KNYC-DEMO","market_id":"m","yes_dollars_fp":[["0.4000","100.00"],["0.6000","50.00"]],"no_dollars_fp":[["0.3000","20.00"]]}}
+{"type":"orderbook_delta","sid":2,"seq":2,"msg":{"market_ticker":"KNYC-DEMO","market_id":"m","price_dollars":"0.4000","delta_fp":"-10.00","side":"yes"}}
+{"type":"ticker","sid":3,"msg":{"market_ticker":"KNYC-DEMO","market_id":"m","price_dollars":"0.5000","yes_bid_dollars":"0.4000","yes_ask_dollars":"0.6000","yes_bid_size_fp":"90.00","yes_ask_size_fp":"50.00","last_trade_size_fp":"1.00","volume_fp":"1.00","open_interest_fp":"1.00","dollar_volume":1,"dollar_open_interest":1,"ts_ms":1,"time":"2024-01-01T00:00:00Z"}}
