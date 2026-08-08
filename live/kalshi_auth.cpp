@@ -1,13 +1,13 @@
 #include "kalshi_auth.hpp"
 #include "base64.hpp"
 
+#include <openssl/bio.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/rsa.h>
 
 #include <chrono>
-#include <cstdio>
 #include <vector>
 
 namespace px::live {
@@ -27,15 +27,22 @@ PrivateKey::~PrivateKey() {
 }
 
 std::unique_ptr<PrivateKey> load_private_key_pem(const std::string& path, std::string& error) {
-    FILE* fp = std::fopen(path.c_str(), "rb");
-    if (!fp) {
+    // BIO_new_file, not fopen()+PEM_read_PrivateKey(FILE*,...): the latter
+    // fails on this toolchain (OpenSSL 3.2 via MSYS2 UCRT64) with "DECODER
+    // routines::unsupported" — a FILE* handed across into OpenSSL's DLL,
+    // built against a different CRT than the one that opened it, doesn't
+    // behave the way its layout suggests. Confirmed by direct repro before
+    // this fix; letting OpenSSL open the file itself sidesteps the mismatch
+    // entirely, and is also simply the more portable way to drive PEM I/O.
+    BIO* bio = BIO_new_file(path.c_str(), "rb");
+    if (!bio) {
         error = "cannot open key file: " + path;
         return nullptr;
     }
-    EVP_PKEY* pkey = PEM_read_PrivateKey(fp, nullptr, nullptr, nullptr);
-    std::fclose(fp);
+    EVP_PKEY* pkey = PEM_read_bio_PrivateKey(bio, nullptr, nullptr, nullptr);
+    BIO_free(bio);
     if (!pkey) {
-        error = "PEM_read_PrivateKey failed: " + openssl_error_string();
+        error = "PEM_read_bio_PrivateKey failed: " + openssl_error_string();
         return nullptr;
     }
     if (EVP_PKEY_id(pkey) != EVP_PKEY_RSA) {

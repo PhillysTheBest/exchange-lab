@@ -18,6 +18,9 @@
 // tools/strategy_demo.cpp) is unchanged either way.
 #pragma once
 
+#include "px/platform.hpp" // cpu_relax() — was previously reaching this file only by
+                            // include-order luck from whichever TU happened to pull
+                            // platform.hpp in first; made explicit since this file uses it directly
 #include "px/spsc_ring.hpp"
 #include "px/tsc_clock.hpp"
 #include "px/types.hpp"

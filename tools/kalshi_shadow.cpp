@@ -66,9 +66,13 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    feed.on_ticker = [](std::string_view t, long long bid, long long ask) {
-        std::printf("[ticker] %.*s yes_bid=%lld yes_ask=%lld\n", static_cast<int>(t.size()), t.data(), bid, ask);
+    feed.on_ticker = [](std::string_view t, Price bid, Price ask) {
+        std::printf("[ticker] %.*s yes_bid=%d yes_ask=%d\n", static_cast<int>(t.size()), t.data(), bid, ask);
         std::fflush(stdout);
+    };
+    feed.on_warning = [](std::string_view w) {
+        std::fprintf(stderr, "[warn] %.*s\n", static_cast<int>(w.size()), w.data());
+        std::fflush(stderr);
     };
 
     // Heap-allocated: OrderBook is ~5.7 MB by design — see order_book.hpp SIZE WARNING.

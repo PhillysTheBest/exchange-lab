@@ -3,6 +3,111 @@
 
 namespace px::live {
 
+bool parse_feed_message(std::string_view raw, FeedMsg& out, std::string& error) {
+    out = FeedMsg{};
+
+    std::string_view type;
+    if (!json_extract_string(raw, "type", type)) {
+        error = "message has no \"type\" field";
+        return false;
+    }
+
+    long long seq_ll = 0;
+    out.has_seq = json_extract_int(raw, "seq", seq_ll);
+    if (out.has_seq) out.seq = static_cast<SeqNum>(seq_ll);
+
+    if (type == "subscribed") {
+        out.kind = FeedMsgKind::Subscribed;
+        std::string_view channel;
+        long long sid = -1;
+        if (!json_extract_string(raw, "channel", channel) || !json_extract_int(raw, "sid", sid)) {
+            error = "subscribed message missing channel/sid";
+            return false;
+        }
+        out.subscribed_channel = std::string(channel);
+        out.subscribed_sid = sid;
+        return true;
+    }
+
+    if (type == "orderbook_snapshot") {
+        out.kind = FeedMsgKind::Snapshot;
+        std::string_view ticker;
+        if (!json_extract_string(raw, "market_ticker", ticker)) {
+            error = "orderbook_snapshot missing market_ticker";
+            return false;
+        }
+        out.market_ticker = std::string(ticker);
+
+        // Both arrays are documented optional (a side with no resting interest
+        // is simply absent) — a missing array is not a parse failure.
+        std::vector<std::pair<long long, long long>> yes_pairs, no_pairs;
+        (void)json_extract_dollar_pair_array(raw, "yes_dollars_fp", yes_pairs);
+        (void)json_extract_dollar_pair_array(raw, "no_dollars_fp", no_pairs);
+
+        out.snapshot_levels.reserve(yes_pairs.size() + no_pairs.size());
+        for (const auto& [cents, qty] : yes_pairs) {
+            if (cents < kMinPrice || cents > kMaxPrice || qty < 0) continue;
+            out.snapshot_levels.push_back({Side::Buy, static_cast<Price>(cents), static_cast<Qty>(qty)});
+        }
+        for (const auto& [cents, qty] : no_pairs) {
+            if (cents < kMinPrice || cents > kMaxPrice || qty < 0) continue;
+            // A resting NO bid at price p is a Contract::No, Side::Buy order —
+            // normalize() gives its YES-equivalent, same transform as live order
+            // entry (see normalize.hpp).
+            const auto [nside, nprice] = normalize(Contract::No, Side::Buy, static_cast<Price>(cents));
+            out.snapshot_levels.push_back({nside, nprice, static_cast<Qty>(qty)});
+        }
+        return true;
+    }
+
+    if (type == "orderbook_delta") {
+        out.kind = FeedMsgKind::Delta;
+        std::string_view ticker, side_str;
+        long long price_cents = 0, delta_qty = 0;
+        if (!json_extract_string(raw, "market_ticker", ticker) ||
+            !json_extract_dollars_as_cents(raw, "price_dollars", price_cents) ||
+            !json_extract_fixed_point_qty(raw, "delta_fp", delta_qty) ||
+            !json_extract_string(raw, "side", side_str)) {
+            error = "orderbook_delta missing a required field";
+            return false;
+        }
+        if (price_cents < kMinPrice || price_cents > kMaxPrice) {
+            error = "orderbook_delta price_dollars out of [1,99] cent range";
+            return false;
+        }
+        out.market_ticker = std::string(ticker);
+        const Contract c = (side_str == "no") ? Contract::No : Contract::Yes;
+        const auto [nside, nprice] = normalize(c, Side::Buy, static_cast<Price>(price_cents));
+        out.delta_side = nside;
+        out.delta_price = nprice;
+        out.delta_qty = delta_qty;
+        return true;
+    }
+
+    if (type == "ticker") {
+        out.kind = FeedMsgKind::Ticker;
+        std::string_view ticker;
+        long long bid_cents = 0, ask_cents = 0;
+        if (!json_extract_string(raw, "market_ticker", ticker) ||
+            !json_extract_dollars_as_cents(raw, "yes_bid_dollars", bid_cents) ||
+            !json_extract_dollars_as_cents(raw, "yes_ask_dollars", ask_cents)) {
+            error = "ticker message missing a required field";
+            return false;
+        }
+        out.market_ticker = std::string(ticker);
+        out.ticker_yes_bid = static_cast<Price>(bid_cents);
+        out.ticker_yes_ask = static_cast<Price>(ask_cents);
+        return true;
+    }
+
+    // Recognized-but-unhandled or genuinely unknown type (trade, fill,
+    // market_lifecycle_v2, error, ...) — not this project's concern yet, and
+    // deliberately not treated as an error: a type we don't act on arriving on
+    // the wire is routine, not exceptional.
+    out.kind = FeedMsgKind::Unknown;
+    return true;
+}
+
 bool KalshiFeed::connect(const KalshiConfig& cfg, std::string& error) {
     key_ = load_private_key_pem(cfg.private_key_path, error);
     if (!key_) return false;
@@ -42,69 +147,132 @@ bool KalshiFeed::subscribe(const std::vector<std::string>& channels,
         error = "failed to send subscribe command";
         return false;
     }
+
+    // Block for a "subscribed" confirmation per requested channel. Anything
+    // else received meanwhile (plausibly an orderbook_snapshot arriving before
+    // its own channel's confirmation does) is queued in pending_raw_ for
+    // receive_next rather than dropped — the first update after subscribing
+    // matters. Capped generously: a healthy server confirms promptly, and a
+    // cap that's never hit costs nothing.
+    std::size_t confirmed = 0;
+    const std::size_t max_attempts = channels.size() * 8 + 8;
+    for (std::size_t attempt = 0; attempt < max_attempts && confirmed < channels.size(); ++attempt) {
+        std::string raw;
+        if (!ws_.receive_message(raw, error)) return false;
+
+        FeedMsg fm;
+        std::string parse_err;
+        if (!parse_feed_message(raw, fm, parse_err)) {
+            pending_raw_.push_back(std::move(raw)); // undecodable here — let the caller see it
+            continue;
+        }
+        if (fm.kind == FeedMsgKind::Subscribed) {
+            ++confirmed;
+            if (fm.subscribed_channel == "orderbook_delta") orderbook_delta_sid_ = fm.subscribed_sid;
+        } else {
+            pending_raw_.push_back(std::move(raw));
+        }
+    }
+
+    if (confirmed < channels.size()) {
+        error = "did not receive \"subscribed\" confirmation for all " + std::to_string(channels.size()) +
+                " channel(s) (" + std::to_string(confirmed) + " confirmed) — the server may have rejected " +
+                "one of the requested channels or tickers";
+        return false;
+    }
+    return true;
+}
+
+bool KalshiFeed::raw_receive(std::string& msg, std::string& error) {
+    if (!pending_raw_.empty()) {
+        msg = std::move(pending_raw_.front());
+        pending_raw_.erase(pending_raw_.begin()); // small, rare queue — O(n) here is fine
+        return true;
+    }
+    return ws_.receive_message(msg, error);
+}
+
+bool KalshiFeed::receive_next(FeedMsg& out, std::string& error) {
+    std::string raw;
+    if (!raw_receive(raw, error)) return false;
+
+    std::string parse_err;
+    if (!parse_feed_message(raw, out, parse_err)) {
+        if (on_warning) on_warning("decode: " + parse_err);
+        out = FeedMsg{}; // Unknown/empty — transport is fine, this one message just didn't decode
+    }
+    return true;
+}
+
+bool KalshiFeed::request_resync(std::string_view market_ticker, std::string& error) {
+    if (orderbook_delta_sid_ < 0) {
+        error = "no orderbook_delta subscription id yet — call subscribe() first";
+        return false;
+    }
+    const std::string j = "{\"id\":" + std::to_string(next_cmd_id_++) +
+                           ",\"cmd\":\"update_subscription\",\"params\":{\"sids\":[" +
+                           std::to_string(orderbook_delta_sid_) +
+                           "],\"action\":\"get_snapshot\",\"market_tickers\":[\"" + std::string(market_ticker) +
+                           "\"]}}";
+    if (!ws_.send_text(j)) {
+        error = "failed to send update_subscription/get_snapshot command";
+        return false;
+    }
     return true;
 }
 
 bool KalshiFeed::pump_once(std::string_view watch_ticker, OrderBook& book, std::string& error) {
-    std::string msg;
-    if (!ws_.receive_message(msg, error)) return false;
+    FeedMsg fm;
+    if (!receive_next(fm, error)) return false;
 
-    std::string_view type;
-    if (!json_extract_string(msg, "type", type)) return true; // unrecognized envelope; drained, not fatal
+    if (fm.kind == FeedMsgKind::Ticker) {
+        if (fm.market_ticker == watch_ticker && on_ticker) on_ticker(watch_ticker, fm.ticker_yes_bid, fm.ticker_yes_ask);
+        return true;
+    }
+    if (fm.kind != FeedMsgKind::Snapshot && fm.kind != FeedMsgKind::Delta) return true; // not ours to apply
+    if (fm.market_ticker != watch_ticker) return true;
 
-    std::string_view ticker;
-    // json_extract_string is a flat substring search, not a structural parse, so
-    // it finds "market_ticker" regardless of how deeply the docs' {"type":...,
-    // "msg": {...}} envelope nests it.
-    if (!json_extract_string(msg, "market_ticker", ticker) || ticker != watch_ticker) {
-        return true; // not our market (or no ticker on this message type) — drained
+    // SEQ SCOPING (genuinely unconfirmed — flagged rather than guessed silently):
+    // the spec documents `seq` as "used for snapshot/delta consistency" but does
+    // not state whether it's a single counter per subscription (shared across
+    // every market_ticker on that sid) or scoped per market within a shared
+    // subscription. This project subscribes one ticker at a time (see
+    // tools/kalshi_shadow.cpp), so it can't observe the difference directly.
+    // Tracked here (SeqTracker, per KalshiFeed instance = per watched ticker)
+    // rather than per sid: if the true scope turns out to be per-sid and this
+    // connection ever subscribes to more than one ticker, the failure mode of
+    // this choice is an occasional *unnecessary* resync (harmless — get_snapshot
+    // is idempotent) rather than a *missed* gap (which would silently corrupt
+    // the book). Fails safe either way.
+    const bool is_snapshot = (fm.kind == FeedMsgKind::Snapshot);
+    if (!seq_tracker_.observe(is_snapshot, fm.has_seq, fm.seq)) {
+        if (on_warning) {
+            on_warning("seq gap on " + std::string(watch_ticker) + " (got " + std::to_string(fm.seq) +
+                       ") — requesting resync");
+        }
+        std::string resync_err;
+        if (!request_resync(watch_ticker, resync_err) && on_warning) {
+            on_warning("resync request failed: " + resync_err);
+        }
+        return true; // this delta is against a book we now know is stale — drop it
     }
 
-    if (type == "orderbook_snapshot") {
-        // Documented REST orderbook shape, assumed mirrored by the WS snapshot —
-        // see the SCHEMA CAVEAT in kalshi_feed.hpp.
-        std::vector<std::pair<long long, long long>> yes_side, no_side;
-        (void)json_extract_pair_array(msg, "yes", yes_side);
-        (void)json_extract_pair_array(msg, "no", no_side);
-
-        for (const auto& [p, q] : yes_side) {
-            if (p < kMinPrice || p > kMaxPrice) continue;
-            book.shadow_set_level(Side::Buy, static_cast<Price>(p), static_cast<Qty>(q));
+    if (fm.kind == FeedMsgKind::Snapshot) {
+        // A snapshot (initial or resync-triggered) replaces state rather than
+        // merging with it — otherwise stale levels from before a gap would
+        // linger forever. Cheap and rare (once at connect, occasionally on
+        // resync), not a hot-path cost.
+        for (Price p = kMinPrice; p <= kMaxPrice; ++p) {
+            book.shadow_set_level(Side::Buy, p, 0);
+            book.shadow_set_level(Side::Sell, p, 0);
         }
-        for (const auto& [p, q] : no_side) {
-            if (p < kMinPrice || p > kMaxPrice) continue;
-            // A resting NO bid at price p is a Contract::No, Side::Buy order —
-            // normalize() gives its YES-equivalent (side, price), exactly the
-            // same transform used for live order entry, kept consistent here.
-            const auto [nside, nprice] = normalize(Contract::No, Side::Buy, static_cast<Price>(p));
-            book.shadow_set_level(nside, nprice, static_cast<Qty>(q));
+        for (const auto& lvl : fm.snapshot_levels) {
+            book.shadow_set_level(lvl.side, lvl.price, lvl.qty);
         }
-    } else if (type == "orderbook_delta") {
-        // ASSUMED field names (price/delta/side), NOT independently confirmed —
-        // see the SCHEMA CAVEAT in kalshi_feed.hpp. `delta` is a signed change;
-        // applied against the level's current total_qty (readable directly off
-        // the shadow book) rather than requiring a separately-tracked ledger.
-        long long price = 0, delta = 0;
-        std::string_view side_str;
-        if (json_extract_int(msg, "price", price) && json_extract_int(msg, "delta", delta) &&
-            json_extract_string(msg, "side", side_str) && price >= kMinPrice && price <= kMaxPrice) {
-            const Contract c = (side_str == "no") ? Contract::No : Contract::Yes;
-            const auto [nside, nprice] = normalize(c, Side::Buy, static_cast<Price>(price));
-            const long long updated = static_cast<long long>(book.level(nprice).total_qty) + delta;
-            book.shadow_set_level(nside, nprice, static_cast<Qty>(updated < 0 ? 0 : updated));
-        }
-    } else if (type == "ticker" && on_ticker) {
-        long long yes_bid_i = 0, yes_ask_i = 0;
-        if (json_extract_int(msg, "yes_bid", yes_bid_i) && json_extract_int(msg, "yes_ask", yes_ask_i)) {
-            on_ticker(ticker, yes_bid_i, yes_ask_i);
-        } else {
-            double yes_bid = 0, yes_ask = 0;
-            if (json_extract_number(msg, "yes_bid_dollars", yes_bid) &&
-                json_extract_number(msg, "yes_ask_dollars", yes_ask)) {
-                on_ticker(ticker, static_cast<long long>(yes_bid * 100 + 0.5),
-                          static_cast<long long>(yes_ask * 100 + 0.5));
-            }
-        }
+    } else { // Delta — apply the signed change against the book's own current total
+        const long long current = static_cast<long long>(book.level(fm.delta_price).total_qty);
+        const long long updated = current + fm.delta_qty;
+        book.shadow_set_level(fm.delta_side, fm.delta_price, static_cast<Qty>(updated < 0 ? 0 : updated));
     }
     return true;
 }

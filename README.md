@@ -29,12 +29,14 @@ No CMake/Ninja in this environment by design — the toolchain here is
 Makefile targets both that and a native Linux g++/make with no changes.
 
 ```bash
-mingw32-make test      # debug build (PX_DEBUG invariants + _GLIBCXX_ASSERTIONS), runs all tests
-mingw32-make bench      # release build (-O3 -march=native -flto), runs all benchmarks
-mingw32-make repl       # interactive exchange REPL
+mingw32-make test         # debug build (PX_DEBUG invariants + _GLIBCXX_ASSERTIONS), core tests
+mingw32-make bench        # release build (-O3 -march=native -flto), core benchmarks
+mingw32-make repl         # interactive exchange REPL
 mingw32-make strategy_demo   # Phase 4 pipeline demo (see below) — fully local, no network
-mingw32-make live        # Kalshi connectivity tools (needs OpenSSL; see Phase 3)
-mingw32-make all         # test + bench + repl + strategy_demo
+mingw32-make live         # Kalshi connectivity: kalshi_shadow + kalshi_pipeline (needs OpenSSL)
+mingw32-make test-live    # feed schema, gateway dry-run, and replay-determinism tests (needs OpenSSL)
+mingw32-make bench-live   # RSA-PSS signing latency benchmark (needs OpenSSL)
+mingw32-make all          # test + bench + repl + strategy_demo
 ```
 
 > **Windows-specific gotcha, found the hard way:** if you have more than one
@@ -236,13 +238,12 @@ verified to actually work, not just compile, during this project:
   payloads. No JSON library is installed in this toolchain, and a general
   parser would be more machinery than the actual message shapes need.
 
-**What's honestly unverified**: the exact wire schema of `orderbook_delta`
-(the source material for this project confirmed the outer envelope and the
-documented REST orderbook shape, but not a complete field-by-field spec of the
-delta message) is implemented on a best-effort, clearly-commented assumption
-in [kalshi_feed.cpp](live/kalshi_feed.cpp) — verify against a live capture
-before depending on it. **Not run against Kalshi itself** in this project — no
-API credentials were available or sought.
+**Correction, made in Stage 2 (below):** this section originally flagged the
+`orderbook_delta` wire schema as a best-effort, unverified guess. It was
+guessed wrong — see "the schema was wrong" in the Stage 2 section for what
+broke and how it was fixed and verified against Kalshi's published AsyncAPI
+spec. **Still not run against Kalshi itself** — no API credentials were
+available or sought at any point in this project.
 
 **Safety posture, structural, not just documented:**
 `place_order(..., dry_run=true, ...)` — the default everywhere it's called —
@@ -281,6 +282,182 @@ with real settlement, verified arithmetically (10 sells × 5 @ 8¢ + 1 buy × 5 
 92¢ nets exactly the −60¢ cash change and −45 position the engine reports).
 Wiring a real feed is implementing `OracleFeed::run` against that source's
 actual API and pushing into the same ring — everything downstream is unchanged.
+
+## Stage 2 — the live pipeline (`pipeline/`, `risk/`, `live/kalshi_gateway.*`)
+
+Stage 1 built the *pieces* of a live connection (TLS, WebSocket, signing, a
+shadow-mode `OrderBook`) but never assembled them into a running pipeline, and
+one of those pieces was wrong. Stage 2 is both a correctness fix and an
+architectural assembly:
+
+```
+KALSHI --TLS/WS--> [T1 Ingress]  --ring A-->  [T2 Brain]  --ring B-->  [T3 Egress]
+                    blocking recv              ShadowBook               RSA-PSS sign
+                    byte-scan -> BookEvent      + Signal                + REST send
+                    ticker -> MarketId          + RiskEngine.check            |
+                                                     ^                        |
+                                                     +--------ring C----------+
+                                                         ExecReport (reject/429)
+```
+
+All three rings are the same [`SpscRing`](include/px/spsc_ring.hpp) Stage 1
+already built and measured, reused unchanged. [`Ingress`](pipeline/ingress.hpp)
+is T1, [`Brain`](pipeline/brain.hpp) is T2 — the only thread that touches
+`ShadowBook`/`RiskEngine` state, mirroring `MatchingEngine`'s single-writer
+discipline from Stage 1 — and [`Gateway`](live/kalshi_gateway.hpp) is T3.
+`ShadowBook` itself ([shadow_book.hpp](include/px/shadow_book.hpp)) is a
+purpose-built ~440-byte type, not the ~5.7 MB `OrderBook` reused from Stage 1:
+tracking even 20 markets in the full offline book (which carries an unused
+`Order` slab + id-map in shadow mode) would be 114 MB, well past L3; the slim
+ladder-plus-two-bitmasks version puts 20 markets under 9 KB.
+
+### The schema was wrong
+
+[`kalshi_feed.cpp`](live/kalshi_feed.cpp) was originally written against a
+guessed schema, flagged as unverified at the time (see the correction note in
+Phase 3, above). Checked against Kalshi's published AsyncAPI spec, it was
+wrong in a way that would have made it parse **nothing while reporting
+success**: every price/quantity field Kalshi actually sends is a *quoted
+decimal string* (`"price_dollars": "0.0800"`), not the bare integers the code
+assumed, and the existing `json_extract_int`/`json_extract_number` scanners
+stop at the opening `"`. Fixed with new scanner primitives
+([`json_scan.hpp`](live/json_scan.hpp): `parse_decimal_scaled`,
+`json_extract_dollars_as_cents`, `json_extract_dollar_pair_array`) and a full
+rewrite of the message decoder, now covered by 51
+[golden-frame tests](tests/test_feed_parse.cpp) built from the real schema —
+including the AsyncAPI spec's own example (`"0.0800"` → 8 cents, checked to
+round rather than truncate any real sub-cent digit) and a deliberate `seq` gap
+that must trigger a resync request.
+
+One thing is flagged rather than guessed a second time: whether `seq` is
+scoped per subscription or per market within a shared subscription isn't
+documented anywhere found. [`SeqTracker`](live/kalshi_feed.hpp) tracks it per
+watched ticker specifically because that fails toward an occasional
+*unnecessary* resync (cheap, idempotent) rather than a *missed* gap (silent
+book corruption) if the assumption turns out backwards.
+
+### RiskEngine — three checks, integer-only, inline
+
+Not a thread: a `RiskEngine::check(...)` call in T2, immediately before an
+accepted `OrderIntent` reaches ring B ([`risk_engine.hpp`](risk/risk_engine.hpp)).
+Because a contract always settles at 0 or 100 cents, max loss is bounded and
+known at order-entry time — there's no margin model beyond that bound, so this
+does exactly three things:
+
+1. **Token bucket** (survival). Kalshi's Basic tier is ~10 order placements/sec
+   ([rate limits](https://docs.kalshi.com/getting_started/rate_limits)); a 429
+   arriving on ring C drains the local bucket to resync with reality rather
+   than continuing to optimistically spend against a budget that's already
+   gone.
+2. **Max exposure**: `|position| × 100¢` per market, checked against the
+   *projected* position an order would create.
+3. **Fat-finger bounds**: reject outside `[5, 95]¢` regardless of what the
+   strategy signals — checked first, before the other two, so a broken
+   strategy is caught even with an exhausted rate-limit bucket.
+
+58 unit tests ([test_risk.cpp](tests/test_risk.cpp)), including one that
+specifically exercises the integer token bucket's carry-remainder logic: ten
+3 ms refill steps (not a divisor of the 10 ms/token rate) must still total
+exactly 3 tokens, which only happens if fractional remainders survive across
+separate `check()` calls instead of being truncated away each time.
+
+### Gateway (T3) — sink-parameterized, dry-run by default
+
+[`live/kalshi_gateway.hpp`](live/kalshi_gateway.hpp): a `Sink` chosen **once,
+at construction** — `DryRunSink` (default: builds and signs the full request,
+never opens a socket) or `LiveSink` (real send, still only ever to whatever
+host the config names — demo by default). Gateway never branches on this
+per-order; "can this send real orders" is a structural property, not a
+runtime decision inside the dumb pipe the design calls for.
+
+**Measured, not assumed, why signing lives on its own thread**
+([bench_sign.cpp](bench/bench_sign.cpp), calling the real production
+`sign_request`, not a reimplementation):
+
+```
+RSA-2048 PSS sign_request()   p50=  818µs   p99= 2123µs   max= 3537µs
+ShadowBook level update       ~50-100ns (bench_engine's order-submit numbers)
+```
+
+Signing costs roughly **11,000×–28,000×** a book update, with a multi-millisecond
+tail. Inline in T2 that would freeze book updates for over a millisecond while
+the market moved. At ~1,200 signs/sec headroom against Kalshi's ~10/sec write
+limit, this was never a throughput problem — it's purely jitter, which is the
+entire justification for a separate thread, now with a number behind it.
+
+**Fill tracking gap, flagged rather than faked:** Kalshi's create-order REST
+response does not carry fill information — confirmed against the AsyncAPI
+spec, which documents fills as arriving asynchronously over a *separate*,
+privately-authenticated `fill` WebSocket channel. Building that listener
+(straightforward reuse of `KalshiFeed`'s connect/subscribe machinery against
+channel `"fill"` instead of `"orderbook_delta"`) is real, scoped-out work, not
+attempted here. What Gateway *does* parse from the REST response — the HTTP
+status line — needs no schema guessing: `429` → `RateLimited`, other non-2xx →
+`Reject`, `2xx` → nothing pushed to ring C (accepted is not filled).
+`RiskEngine::record_fill` is consequently never invoked by this stage's live
+path — a real, documented limitation, not a bug in `record_fill` itself (its
+own unit tests exercise it directly).
+
+### A second real bug, found writing the tests for the first fix
+
+Loading a Kalshi private key ([`kalshi_auth.cpp`](live/kalshi_auth.cpp)) used
+`fopen()` + OpenSSL's `PEM_read_PrivateKey(FILE*, ...)`. On this toolchain
+(OpenSSL 3.2 via MSYS2 UCRT64) that fails outright —
+`error:1E08010C:DECODER routines::unsupported` — because a `FILE*` opened by
+one CRT and handed across a DLL boundary into OpenSSL, built against a
+different CRT, doesn't behave the way its layout suggests. This would have
+silently broken *every* real Kalshi connection attempt; caught here only
+because [test_gateway_dry_run.cpp](tests/test_gateway_dry_run.cpp) needed to
+generate and load a throwaway test key and the load failed outright. Fixed by
+switching to `BIO_new_file` + `PEM_read_bio_PrivateKey`, which lets OpenSSL
+open the file with its own linked CRT instead of crossing the boundary with a
+raw handle — verified with a minimal standalone repro before touching the real
+code, then confirmed fixed by the same test going green.
+
+### Verification
+
+- **Golden-frame tests** (51 checks) — schema correctness, described above.
+- **Risk engine unit tests** (58 checks) — bucket exhaustion/refill/carry
+  logic, exposure boundary (long and short), fat-finger bounds, check
+  ordering, the 429-drain hook.
+- **Gateway dry-run structural test** (27 checks) — `DryRunSink` proven to
+  never send by pointing it at `invalid.invalid` (an RFC 6761
+  guaranteed-non-resolving domain) and confirming success anyway; `LiveSink`
+  against the identical host proven to genuinely fail, so the first result
+  isn't vacuous. Plus HTTP status-line parsing and `Gateway::run`'s dispatch
+  (429→ring C, 2xx→nothing) exercised end-to-end through real threads and
+  real rings.
+- **Replay determinism** (108 checks,
+  [test_replay_determinism.cpp](tests/test_replay_determinism.cpp)) — a fixed
+  frame sequence, pushed through the real `Ingress::handle_message` into a
+  real `Brain` running on its own thread, converges to an exact, hand-verified
+  final `ShadowBook` state every time, and two fully independent runs produce
+  bit-identical results. Scoped deliberately to the book-update path only —
+  the oracle/signal/risk path genuinely depends on wall-clock time
+  (`RiskEngine`'s token bucket), so claiming byte-identical determinism there
+  would itself be the kind of unverified claim this project avoids.
+
+```bash
+mingw32-make test-live
+mingw32-make bench-live
+```
+
+### Running the pipeline
+
+```bash
+# Zero network, deterministic — drives T1 from a file of raw WS-message JSON
+# lines (see tests/frames/smoke.jsonl for the shape) through the real decode
+# path, T2 and T3 running as real threads throughout:
+./build/release/kalshi_pipeline.exe --replay tests/frames/smoke.jsonl KNYC-DEMO
+
+# Real connection, still dry-run (every order built, signed, logged, never sent):
+export KALSHI_API_KEY_ID=your_key_id
+export KALSHI_PRIVATE_KEY_PATH=/path/to/your_key.pem
+PATH="/c/msys64/ucrt64/bin:$PATH" ./build/release/kalshi_pipeline.exe KXHIGHNY-25AUG08-B89.5
+
+# Real connection AND real sends, still only to Kalshi's demo host:
+./build/release/kalshi_pipeline.exe --demo KXHIGHNY-25AUG08-B89.5
+```
 
 ## Trying it yourself
 
