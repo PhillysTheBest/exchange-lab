@@ -17,6 +17,7 @@
 #include "px/types.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 
 namespace px::eval {
@@ -48,6 +49,24 @@ struct EvalMetrics {
     Cash peak_equity_cents = 0;
     Cash max_drawdown_cents = 0;
     bool equity_seeded = false;
+    Cash last_equity_cents = 0;
+
+    // ---- risk-adjusted-return proxy (Stage 6, Part H — EXTERNAL_REVIEW.md item 7's
+    // "Sharpe ratio... scorecard" BUILD decision) -------------------------------
+    // Deliberately NOT called a Sharpe ratio, and not annualized: a textbook Sharpe
+    // needs a return distribution over independent trials/periods (e.g. daily
+    // returns across many days); this framework produces exactly ONE equity path
+    // per (strategy, seed) — see docs/BACKTEST_ASSESSMENT.md's own limitations
+    // section on single-path backtests. What's computed instead is honestly
+    // narrower: mean(per-tick equity delta) / stdev(per-tick equity delta) — a
+    // dimensionless "was the equity curve's drift large relative to its own
+    // noise, over THIS one path" figure. Same "stated as a proxy, not a claimed
+    // standard metric" treatment turnover() below already gets, for the same
+    // reason (this project's own norm of not silently overclaiming a number's
+    // meaning — see README's "Measuring latency" methodology-bug story).
+    double equity_delta_sum_cents = 0.0;
+    double equity_delta_sq_sum_cents2 = 0.0;
+    std::uint64_t equity_delta_samples = 0;
 
     // ---- inventory -------------------------------------------------------------
     Cash max_abs_exposure_cents = 0; // peak |position| * 100c seen (matches
@@ -109,11 +128,18 @@ struct EvalMetrics {
         if (!equity_seeded) {
             peak_equity_cents = equity_cents;
             equity_seeded = true;
+            last_equity_cents = equity_cents;
             return;
         }
         peak_equity_cents = std::max(peak_equity_cents, equity_cents);
         const Cash drawdown = peak_equity_cents - equity_cents;
         max_drawdown_cents = std::max(max_drawdown_cents, drawdown);
+
+        const double delta = static_cast<double>(equity_cents - last_equity_cents);
+        equity_delta_sum_cents += delta;
+        equity_delta_sq_sum_cents2 += delta * delta;
+        ++equity_delta_samples;
+        last_equity_cents = equity_cents;
     }
 
     void sample_exposure(Position position) noexcept {
@@ -165,6 +191,19 @@ struct EvalMetrics {
     // accumulates a large, static position scores low — the intuition "turnover"
     // is meant to capture, without claiming to match any specific external
     // convention.
+    // See equity_delta_sum_cents's own comment above for what this is/isn't.
+    // Population stdev (divide by N, not N-1) -- this is a description of the one
+    // path actually observed, not an estimate of a wider population, so the small
+    // Bessel's-correction distinction doesn't apply. Returns 0.0 for a
+    // (near-)constant equity curve rather than dividing by ~0.
+    [[nodiscard]] double risk_adjusted_return_proxy() const noexcept {
+        if (equity_delta_samples < 2) return 0.0;
+        const double n = static_cast<double>(equity_delta_samples);
+        const double mean = equity_delta_sum_cents / n;
+        const double variance = std::max(0.0, equity_delta_sq_sum_cents2 / n - mean * mean);
+        const double stdev = std::sqrt(variance);
+        return stdev < 1e-9 ? 0.0 : mean / stdev;
+    }
     [[nodiscard]] double turnover() const noexcept {
         if (abs_position_samples == 0) return 0.0;
         const double avg_abs_position = abs_position_sum / static_cast<double>(abs_position_samples);
