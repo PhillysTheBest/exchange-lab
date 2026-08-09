@@ -71,17 +71,31 @@ void Brain::apply_book_event(const BookEvent& e, RingB& intent_out) noexcept {
             // OwnOrderUpdate already exists for. The actual "stop new
             // execution"/"stop trading permanently" enforcement is
             // handle_decision's job (see market_status_'s own comment in
-            // brain.hpp), not this switch.
+            // brain.hpp), not this switch. Telemetry republish happens in the
+            // shared tail below, unconditionally, not here specifically -- see
+            // that comment for why this event kind doesn't need special-casing.
             market_status_[e.market] = e.lifecycle_status;
-            if (telemetry_) telemetry_->on_lifecycle(e.market, static_cast<std::uint8_t>(e.lifecycle_status));
             break;
     }
     ++book_events_applied_;
-    if (telemetry_ && (e.kind == BookEventKind::LevelSet || e.kind == BookEventKind::LevelDelta)) {
-        Price bid = 0, ask = 0;
-        const bool have_bid = books_[e.market].best_bid(bid);
-        const bool have_ask = books_[e.market].best_ask(ask);
-        telemetry_->on_book_update(e.market, have_bid, bid, have_ask, ask);
+    if (telemetry_) {
+        if (e.kind == BookEventKind::LevelSet || e.kind == BookEventKind::LevelDelta) {
+            Price bid = 0, ask = 0;
+            const bool have_bid = books_[e.market].best_bid(bid);
+            const bool have_ask = books_[e.market].best_ask(ask);
+            telemetry_->on_book_update(e.market, have_bid, bid, have_ask, ask);
+        }
+        // Republished on every telemetry-relevant book event, not just
+        // BookEventKind::LifecycleStatus above -- otherwise a market's telemetry
+        // status field would sit at whatever MarketSnapshot::status defaults to
+        // (see that field's own comment in telemetry.hpp) until this market
+        // happens to receive an explicit lifecycle event, which — per Brain's own
+        // market_status_ comment just above — may be never, for a market that was
+        // already open before this connection subscribed. Cheap (one relaxed
+        // atomic store) and idempotent, so doing it unconditionally here rather
+        // than only on actual transitions is simpler than tracking "did this
+        // change" for no real benefit.
+        telemetry_->on_lifecycle(e.market, static_cast<std::uint8_t>(market_status_[e.market]));
     }
     dispatch_market_triggered(e.market, strategy::TriggerKind::BookUpdate, intent_out);
 }

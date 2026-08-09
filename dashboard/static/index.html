@@ -1,0 +1,354 @@
+<!doctype html>
+<!--
+  dashboard/static/index.html — Stage 6, Part E/F frontend.
+
+  Self-contained on purpose: no CDN scripts, no web fonts, no external images.
+  This is embedded into the px-dashboard binary at compile time
+  (dashboard/src/main.rs's `include_str!`), so "no external dependency to go
+  missing at runtime" is a real property, not just tidiness -- the whole point
+  of this dashboard is to stay honestly informative even when everything else
+  (network, the exchange, the trading process itself) is having a bad day.
+
+  Polls GET /api/snapshot (px-dashboard's own passthrough of
+  telemetry/telemetry_publisher.hpp's JSON file) once a second. Never assumes
+  the fetch succeeds or that the data is fresh -- see updateFreshness() below:
+  staleness is SHOWN, never hidden, matching the project's own "the dashboard
+  should be allowed to become stale" design note.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trading Engine Telemetry</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --panel: #121820;
+    --panel-border: #232b36;
+    --text: #e6edf3;
+    --text-dim: #8b98a5;
+    --accent: #4fa3ff;
+    --green: #3fbf63;
+    --red: #e5534b;
+    --amber: #d29922;
+    --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f5f7fa;
+      --panel: #ffffff;
+      --panel-border: #dde3ea;
+      --text: #16202a;
+      --text-dim: #5b6b7a;
+      --accent: #1968c9;
+      --green: #1a8f45;
+      --red: #c8332b;
+      --amber: #9a6a00;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; background: var(--bg); color: var(--text);
+    font-family: var(--sans); overflow-x: hidden;
+  }
+  body { padding: 16px 20px 40px; }
+  h1 { font-size: 1.15rem; font-weight: 600; margin: 0; }
+  h2 { font-size: 0.85rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+       color: var(--text-dim); margin: 0 0 10px; }
+  code { font-family: var(--mono); background: var(--panel-border); padding: 1px 5px; border-radius: 4px; font-size: 0.85em; }
+
+  header {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px;
+    padding-bottom: 14px; margin-bottom: 16px; border-bottom: 1px solid var(--panel-border);
+  }
+  .spacer { flex: 1 1 auto; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px;
+    border-radius: 999px; font-size: 0.78rem; font-weight: 600; border: 1px solid var(--panel-border);
+    white-space: nowrap;
+  }
+  .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-dim); }
+  .pill.ok .dot { background: var(--green); }
+  .pill.warn .dot { background: var(--amber); }
+  .pill.bad .dot { background: var(--red); }
+  #freshness { font-family: var(--mono); font-size: 0.78rem; color: var(--text-dim); }
+  #freshness.stale { color: var(--amber); }
+  #freshness.dead { color: var(--red); font-weight: 600; }
+
+  #error-banner {
+    display: none; background: color-mix(in srgb, var(--red) 15%, var(--panel));
+    border: 1px solid var(--red); color: var(--text); padding: 10px 14px; border-radius: 8px;
+    margin-bottom: 16px; font-size: 0.85rem;
+  }
+  #error-banner.show { display: block; }
+
+  .grid { display: grid; gap: 12px; margin-bottom: 20px; }
+  .grid.stats { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
+  .grid.pnl { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px;
+    padding: 12px 14px;
+  }
+  .card .label { font-size: 0.72rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.03em; }
+  .card .value { font-family: var(--mono); font-size: 1.35rem; font-weight: 600; margin-top: 4px; }
+  .card .value.small { font-size: 1.05rem; }
+  .pos { color: var(--green); }
+  .neg { color: var(--red); }
+
+  section.panel {
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px;
+    padding: 14px 16px; margin-bottom: 20px;
+  }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 860px) { .two-col { grid-template-columns: 1fr; } }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+  th, td { text-align: right; padding: 5px 8px; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--text-dim); font-weight: 600; font-size: 0.72rem; text-transform: uppercase;
+       letter-spacing: 0.02em; border-bottom: 1px solid var(--panel-border); }
+  td { font-family: var(--mono); border-bottom: 1px solid color-mix(in srgb, var(--panel-border) 60%, transparent); }
+  tbody tr:last-child td { border-bottom: none; }
+  .table-wrap { overflow-x: auto; }
+  .empty-row td { text-align: center; color: var(--text-dim); font-family: var(--sans); padding: 14px; }
+
+  .badge { display: inline-block; padding: 1px 7px; border-radius: 5px; font-size: 0.72rem; font-weight: 600; }
+  .badge.open { background: color-mix(in srgb, var(--green) 20%, transparent); color: var(--green); }
+  .badge.preopen { background: color-mix(in srgb, var(--text-dim) 25%, transparent); color: var(--text-dim); }
+  .badge.halted { background: color-mix(in srgb, var(--amber) 22%, transparent); color: var(--amber); }
+  .badge.resolved { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); }
+  .badge.buy { background: color-mix(in srgb, var(--green) 20%, transparent); color: var(--green); }
+  .badge.sell { background: color-mix(in srgb, var(--red) 20%, transparent); color: var(--red); }
+  .badge.kind { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+
+  footer { color: var(--text-dim); font-size: 0.76rem; margin-top: 24px; line-height: 1.5; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Trading Engine Telemetry</h1>
+  <span id="mode-pill" class="pill"><span class="dot"></span><span>—</span></span>
+  <span id="conn-pill" class="pill"><span class="dot"></span><span>—</span></span>
+  <span id="reconnects" class="pill"><span class="dot"></span><span>—</span></span>
+  <div class="spacer"></div>
+  <span id="freshness">waiting for first snapshot…</span>
+</header>
+
+<div id="error-banner"></div>
+
+<div class="grid stats" id="stats-grid"></div>
+<div class="grid pnl" id="pnl-grid"></div>
+
+<section class="panel">
+  <h2>Positions</h2>
+  <div class="table-wrap">
+    <table id="positions-table">
+      <thead><tr>
+        <th>Market</th><th>Status</th><th>Position</th><th>Avg Entry</th><th>Yes Bid</th><th>Yes Ask</th>
+        <th>Realized</th><th>Unrealized</th><th>Exposure</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<div class="two-col">
+  <section class="panel">
+    <h2>Recent Orders</h2>
+    <div class="table-wrap">
+      <table id="orders-table">
+        <thead><tr><th>Time</th><th>Market</th><th>Event</th><th>Side</th><th>Price</th><th>Qty</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+  <section class="panel">
+    <h2>Recent Strategy Decisions</h2>
+    <div class="table-wrap">
+      <table id="decisions-table">
+        <thead><tr><th>Time</th><th>Market</th><th>Strategy</th><th>Price</th><th>Qty</th><th>Reason</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+</div>
+
+<footer>
+  Reads a JSON file <code>tools/kalshi_pipeline.cpp</code> publishes roughly every
+  500ms (<code>telemetry/telemetry_publisher.hpp</code>) via this server's own
+  <code>/api/snapshot</code> passthrough — polled here every 1s. This page never
+  talks to the trading engine directly, and the trading engine never waits on this
+  page: if this tab or the whole <code>px-dashboard</code> process disappears, T2
+  (<code>Brain</code>) never notices. Stage 6, Part E/F/G.
+</footer>
+
+<script>
+const STATUS_NAMES = ["PreOpen", "Open", "Halted", "Resolved"];
+const STATUS_CLASS = ["preopen", "open", "halted", "resolved"];
+
+function centsToDollars(c) {
+  const sign = c < 0 ? "-" : "";
+  const abs = Math.abs(c);
+  return sign + "$" + (abs / 100).toFixed(2);
+}
+function priceCents(c) {
+  return c === null || c === undefined ? "—" : c + "¢";
+}
+function pnlSpan(cents) {
+  const cls = cents > 0 ? "pos" : (cents < 0 ? "neg" : "");
+  return `<span class="${cls}">${centsToDollars(cents)}</span>`;
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function fmtTime(ts_ms) {
+  if (!ts_ms) return "—";
+  const d = new Date(ts_ms);
+  return d.toLocaleTimeString(undefined, { hour12: false }) + "." + String(d.getMilliseconds()).padStart(3, "0");
+}
+
+let lastGoodAt = null; // Date.now() of the last successful, valid snapshot
+
+function setPill(el, level, text) {
+  el.className = "pill " + level;
+  el.querySelector("span:last-child").textContent = text;
+}
+
+function showError(msg) {
+  const banner = document.getElementById("error-banner");
+  banner.textContent = "⚠ " + msg + (lastGoodAt ? " — showing last known data below." : " — no data received yet.");
+  banner.classList.add("show");
+}
+function hideError() {
+  document.getElementById("error-banner").classList.remove("show");
+}
+
+function statCard(label, value) {
+  return `<div class="card"><div class="label">${label}</div><div class="value">${value}</div></div>`;
+}
+function pnlCard(label, valueHtml, small) {
+  return `<div class="card"><div class="label">${label}</div><div class="value${small ? " small" : ""}">${valueHtml}</div></div>`;
+}
+
+function render(data) {
+  setPill(
+    document.getElementById("mode-pill"),
+    data.mode === "live" ? "warn" : "ok",
+    data.mode === "live" ? "LIVE" : "DRY RUN"
+  );
+  const connLevel = data.conn_status === "connected" ? "ok" : (data.conn_status === "connecting" ? "warn" : "bad");
+  setPill(document.getElementById("conn-pill"), connLevel, (data.conn_status || "unknown").toUpperCase());
+  setPill(
+    document.getElementById("reconnects"),
+    data.reconnect_count > 0 ? "warn" : "ok",
+    data.reconnect_count + " reconnect" + (data.reconnect_count === 1 ? "" : "s")
+  );
+
+  document.getElementById("stats-grid").innerHTML = [
+    statCard("Active Markets", data.active_markets ?? 0),
+    statCard("Events Recv/Proc", `${data.events_received ?? 0} / ${data.events_processed ?? 0}`),
+    statCard("Strategy Decisions", data.strategy_decisions ?? 0),
+    statCard("Orders Submitted", data.orders_submitted ?? 0),
+    statCard("Acked", data.orders_acked ?? 0),
+    statCard("Filled", data.orders_filled ?? 0),
+    statCard("Cancelled", data.orders_cancelled ?? 0),
+    statCard("Rejected", data.orders_rejected ?? 0),
+  ].join("");
+
+  document.getElementById("pnl-grid").innerHTML = [
+    pnlCard("Realized P&amp;L", pnlSpan(data.pnl_realized_cents ?? 0)),
+    pnlCard("Unrealized P&amp;L", pnlSpan(data.pnl_unrealized_cents ?? 0)),
+    pnlCard("Net P&amp;L (after fees)", pnlSpan(data.pnl_net_cents ?? 0)),
+    pnlCard("Fees Paid", centsToDollars(data.fees_cents ?? 0), true),
+    pnlCard("Total Exposure", centsToDollars(data.exposure_cents ?? 0), true),
+  ].join("");
+
+  const posBody = document.querySelector("#positions-table tbody");
+  const markets = data.markets || [];
+  if (markets.length === 0) {
+    posBody.innerHTML = `<tr class="empty-row"><td colspan="9">no markets observed yet</td></tr>`;
+  } else {
+    posBody.innerHTML = markets.map((m) => {
+      const st = m.status ?? 0;
+      return `<tr>
+        <td>${m.market}</td>
+        <td><span class="badge ${STATUS_CLASS[st] || "preopen"}">${STATUS_NAMES[st] || "?"}</span></td>
+        <td class="${m.position > 0 ? "pos" : (m.position < 0 ? "neg" : "")}">${m.position}</td>
+        <td>${priceCents(m.avg_entry_cents)}</td>
+        <td>${priceCents(m.yes_bid_cents)}</td>
+        <td>${priceCents(m.yes_ask_cents)}</td>
+        <td>${pnlSpan(m.realized_pnl_cents)}</td>
+        <td>${pnlSpan(m.unrealized_pnl_cents)}</td>
+        <td>${centsToDollars(m.exposure_cents)}</td>
+      </tr>`;
+    }).join("");
+  }
+
+  const ordersBody = document.querySelector("#orders-table tbody");
+  const orders = (data.recent_orders || []).slice().reverse(); // newest first
+  if (orders.length === 0) {
+    ordersBody.innerHTML = `<tr class="empty-row"><td colspan="6">no orders yet</td></tr>`;
+  } else {
+    ordersBody.innerHTML = orders.map((o) => `<tr>
+      <td>${fmtTime(o.ts_ms)}</td>
+      <td>${o.market}</td>
+      <td><span class="badge kind">${escapeHtml(o.kind)}</span></td>
+      <td><span class="badge ${o.side === "buy" ? "buy" : "sell"}">${escapeHtml(o.side)}</span></td>
+      <td>${priceCents(o.price)}</td>
+      <td>${o.qty}</td>
+    </tr>`).join("");
+  }
+
+  const decBody = document.querySelector("#decisions-table tbody");
+  const decisions = (data.recent_decisions || []).slice().reverse();
+  if (decisions.length === 0) {
+    decBody.innerHTML = `<tr class="empty-row"><td colspan="6">no strategy decisions yet</td></tr>`;
+  } else {
+    decBody.innerHTML = decisions.map((d) => `<tr>
+      <td>${fmtTime(d.ts_ms)}</td>
+      <td>${d.market}</td>
+      <td>${escapeHtml(d.strategy)}</td>
+      <td>${priceCents(d.price)}</td>
+      <td>${d.qty}</td>
+      <td>${escapeHtml(d.reason || "—")}</td>
+    </tr>`).join("");
+  }
+}
+
+async function poll() {
+  try {
+    const res = await fetch("/api/snapshot", { cache: "no-store" });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      showError(data.error || `HTTP ${res.status}`);
+      return;
+    }
+    hideError();
+    lastGoodAt = Date.now();
+    render(data);
+  } catch (e) {
+    showError("cannot reach px-dashboard's own /api/snapshot: " + e);
+  }
+}
+
+function updateFreshness() {
+  const el = document.getElementById("freshness");
+  if (lastGoodAt === null) {
+    el.textContent = "waiting for first snapshot…";
+    el.className = "";
+    return;
+  }
+  const ageSec = (Date.now() - lastGoodAt) / 1000;
+  el.textContent = `updated ${ageSec.toFixed(1)}s ago`;
+  el.className = ageSec > 10 ? "dead" : (ageSec > 3 ? "stale" : "");
+}
+
+poll();
+setInterval(poll, 1000);
+setInterval(updateFreshness, 250);
+</script>
+</body>
+</html>

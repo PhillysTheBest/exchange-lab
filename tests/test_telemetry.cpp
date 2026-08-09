@@ -94,6 +94,23 @@ void test_telemetry_state_counters_and_rings() {
     PX_CHECK(std::string(decisions[0].reason) == "imbalance=0.71");
 }
 
+// Regression test for a real dashboard-facing bug found while building Stage 6
+// Part E/F: MarketSnapshot::status used to default to 0 (PreOpen), independent
+// of pipeline::Brain's own market_status_ default of Open (see
+// pipeline/brain.hpp's constructor) -- a market Brain considered tradeable from
+// the start would show "PreOpen" on the dashboard until (if ever) an explicit
+// LifecycleStatus event arrived for it. Caught by actually looking at the
+// rendered dashboard against a real replay, not by inspection -- see
+// telemetry.hpp's MarketSnapshot::status field comment for the fix.
+void test_market_status_defaults_to_open_not_preopen() {
+    TelemetryState t(0);
+    // No on_lifecycle call anywhere in this test -- on_book_update alone must
+    // still leave status reading Open(1), not PreOpen(0).
+    t.on_book_update(/*market=*/5, /*have_bid=*/true, 40, /*have_ask=*/true, 60);
+    PX_CHECK(t.markets()[5].in_use.load());
+    PX_CHECK(t.markets()[5].status.load() == 1); // px::MarketStatus::Open
+}
+
 void test_recent_ring_wraps_correctly() {
     RecentRing<int, 4> ring;
     for (int i = 0; i < 10; ++i) ring.push(i);
@@ -135,6 +152,7 @@ int main() {
     test_position_account_open_extend_close_flip();
     test_position_account_flat_has_no_pnl();
     test_telemetry_state_counters_and_rings();
+    test_market_status_defaults_to_open_not_preopen();
     test_recent_ring_wraps_correctly();
     test_publish_snapshot_writes_readable_json();
     PX_TEST_REPORT_AND_RETURN();
