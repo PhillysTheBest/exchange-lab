@@ -12,57 +12,6 @@ and fixed, and what's honestly out of scope — and PERFORMANCE.md for every ben
 number in one place, with methodology. This file is about how to build/test it and
 how the pieces fit together, not a restatement of either.
 
-## Stage 6 status (in progress — read this before continuing it)
-
-Stage 6 (external review, strategy evaluation, observability dashboard — see
-`docs/*.md`) is partway done. **Committed, working, tested:**
-
-- `docs/EXTERNAL_REVIEW.md`, `docs/CROSS_MARKET_RESEARCH.md` (+
-  `research/cross_market/kalshi_polymarket_snapshot.py`), `docs/EXTERNAL_INFORMATION.md`
-  — Parts A/C/D, external/cross-market/external-info research.
-- `docs/BACKTEST_ASSESSMENT.md` + `eval/` (`fees.hpp`, `fill_simulator.hpp`,
-  `backtest_runner.hpp`, `eval_metrics.hpp`, `synthetic_market.hpp`) +
-  `tests/test_eval_framework.cpp` + `tools/run_backtest.cpp` — Parts B.2/B.3, the
-  strategy evaluation framework. Drives a real `Brain`/`Strategy`/`RiskEngine`
-  synchronously (single-threaded, deterministic — see `BacktestRunner`'s own header
-  comment for why, not `Brain::run()`'s threaded loop). Found and fixed two real
-  bugs in `pipeline/brain.cpp` along the way (a clock-unit bug that silently
-  disabled `TradeFlow` everywhere, live pipeline included, and a same-tick
-  Acked-before-Fill race) — both documented in `docs/BACKTEST_ASSESSMENT.md`, both
-  verified against the full existing test suite with zero regressions.
-  `pipeline/brain.hpp`'s `apply_book_event`/`apply_exec_report` are now public
-  (promoted from private) specifically so this evaluator can call them without
-  going through a ring/thread.
-
-- `telemetry/position_account.hpp`, `telemetry/telemetry.hpp`,
-  `telemetry/telemetry_publisher.hpp`, `tests/test_telemetry.cpp` (Part G — the
-  metrics model) — now building and passing (`Makefile`'s `test_telemetry` rule
-  added, header-only, no object link needed, same as `test_market_state.cpp`/
-  `test_alloc_audit.cpp`). `Brain` now holds an optional `TelemetryState*`
-  (`pipeline/brain.hpp`'s `attach_telemetry`, nullptr by default, same pattern as
-  `Brain::on_reject`) written from `apply_book_event`/`apply_exec_report`/
-  `handle_decision`/`run()` — book updates, lifecycle changes, every actionable
-  strategy decision, and the full order lifecycle (submit/ack/fill/cancel/reject).
-  `strategy/order_tracker.hpp` gained a small read-only `find(market, id)` lookup
-  (additive, not on any decision path) so the Acked/Cancelled/Reject hooks can
-  recover a tracked order's side/price, which `ExecReport` itself doesn't carry
-  for those kinds. Wired into `tools/kalshi_pipeline.cpp`'s existing 500ms polling
-  loop via a new `--telemetry-out FILE` flag (default `telemetry_snapshot.json`);
-  no new thread. Fee tracking is a known gap: `ExecReport` carries no fee field
-  today, so `on_order_filled` always publishes `fee_cents=0` — revisit once/if T3
-  starts reporting a real one. Verified against the full test suite (`test` +
-  `test-live`) with zero regressions, plus an end-to-end manual run through
-  `--replay tests/frames/smoke.jsonl` confirming real book events produce a
-  populated, valid telemetry JSON file.
-
-**Not started:** Part E/F (the Rust/Axum dashboard reading the published JSON —
-user has specified Rust for this; `--telemetry-out`'s default path is provisional
-until that dashboard settles on its own convention — see `docs/DASHBOARD.md`,
-referenced by `docs/EXTERNAL_REVIEW.md` but not yet written), the polished Part H
-comparison writeup (raw numbers already obtainable via `tools/run_backtest.cpp`,
-not yet written up), Part I's decision-gate doc and the README/CLAUDE.md Stage 6
-narrative section.
-
 ## Build
 
 No CMake/Ninja — a hand-written `Makefile`, built via `mingw32-make` (Windows/MSYS2
@@ -92,8 +41,18 @@ mingw32-make bench-perf   # Stage 5: builds the throughput/saturation/backpressu
 mingw32-make perf-regression  # Stage 5: re-runs bench_engine/bench_ring/bench_strategy with
                            # --csv=, diffs against perf/baseline/'s frozen snapshot
                            # (perf/compare_baseline.py, tolerance-banded, not a hard CI gate)
+mingw32-make run_backtest # Stage 6: builds tools/run_backtest.cpp -- runs PassiveMarketMaker/
+                           # OrderBookImbalance/TradeFlow against eval/'s seeded synthetic
+                           # market and prints the Part H comparison table (no OpenSSL)
 mingw32-make all          # test + bench + repl + strategy_demo (the dependency-free set)
 mingw32-make clean
+```
+
+`dashboard/` (Stage 6, Part E/F — the observability dashboard) is a separate Rust/Cargo
+crate, not part of this `Makefile`:
+
+```bash
+cd dashboard && cargo build --release   # builds target/release/px-dashboard(.exe)
 ```
 
 No separate lint target — `-Wall -Wextra -Wpedantic` (Makefile's `WARN` var) apply to every
@@ -287,6 +246,60 @@ Two changes from that pass affect the code directly:
   `evaluate_oracle_event`'s own all-strategies scan is unchanged — that one
   is intentional (a single oracle event can matter to several differently-
   registered strategies at once), not the bug this fixed.
+
+### Evaluation, telemetry, and the dashboard (Stage 6)
+
+`eval/` (Part B.3) drives a real `pipeline::Brain`/`Strategy`/`RiskEngine` — not a
+parallel implementation — synchronously against a seeded synthetic market
+(`eval/synthetic_market.hpp`), for reproducible strategy comparisons.
+`eval/backtest_runner.hpp`'s `BacktestRunner` is the harness: one strategy per
+runner (never several sharing a market — see that class's own header comment for
+why), a one-tick delay between an intent's own cause and its resulting exec
+report (found necessary, not designed in from the start — same file), and an
+explicit DIVERGENCE GUARD that stops advancing a strategy once `|position|`
+blows through a generous threshold rather than let a runaway scenario silently
+corrupt its metrics. `tools/run_backtest.cpp` is the CLI front end; see
+`docs/BACKTEST_ASSESSMENT.md` for full methodology/limitations and
+`docs/STRATEGY_COMPARISON.md` for actual results (headline finding:
+`PassiveMarketMaker` diverges in every seed tried — a real strategy/RiskEngine
+interaction bug, not a framework artifact — see `docs/DECISION_GATE.md` for what
+that blocks). `eval/eval_metrics.hpp`'s `risk_adjusted_return_proxy()` is
+deliberately not called a Sharpe ratio — a single backtest path has no
+independent trials to compute one honestly — see that function's own comment.
+
+`telemetry/` (Part G) is the metrics model: `TelemetryState` holds atomics +
+fixed-capacity `RecentRing` buffers, written ONLY from `Brain`'s own thread (T2)
+via `pipeline::Brain::attach_telemetry` (optional, nullptr by default, same
+pattern as `Brain::on_reject` — zero behavior change when not attached), safe for
+any other thread to read at any time without coordinating with T2. Two tiers,
+deliberately separate (see `telemetry/telemetry.hpp`'s own header comment):
+`telemetry::PositionAccount` (`position_account.hpp`) is T2-private VWAP cost-basis/
+realized-P&L bookkeeping, never read cross-thread directly; `TelemetryState`'s
+atomic fields are the published, cross-thread-safe derived view. **A market's
+telemetry `status` field must stay in sync with `Brain`'s own `market_status_`
+default (`Open`, not `PreOpen`)** — republished on every book event in
+`Brain::apply_book_event`, not only on explicit `LifecycleStatus` ones; a prior
+version of this only defaulted correctly on paper and drifted from `Brain`'s real
+default until the dashboard's own rendering caught it (see
+`telemetry/telemetry.hpp`'s `MarketSnapshot::status` comment and the regression
+test in `tests/test_telemetry.cpp`). `telemetry/telemetry_publisher.hpp`'s
+`publish_snapshot` writes JSON via temp-file-then-rename for atomicity; its own
+comment documents a real, empirically-found Windows-specific caveat (the rename
+can transiently fail if a reader's file handle is open at that instant) that
+self-heals one publish cycle later and is deliberately not "fixed" with
+Windows-specific code.
+
+`dashboard/` (Part E/F) is a separate Rust/Axum crate (`cargo build --release`,
+not part of this `Makefile`) that polls the JSON file `tools/kalshi_pipeline.cpp`'s
+existing 500ms loop publishes and serves a page over it — **no channel back into
+the C++ process at all**, a hard architectural line, not a simplification (see
+`docs/DASHBOARD.md`). `/api/snapshot` passes through whatever valid JSON is
+currently in the file rather than deserializing into a hand-written Rust struct,
+specifically so a schema drift between the two languages fails loudly (a table
+cell renders `undefined`) instead of silently. Both binaries default their
+respective `--telemetry-out`/`--telemetry-path` flags to the same relative path,
+`telemetry/snapshot.json` (matching `.gitignore`'s pre-existing entry) — run both
+from the repo root, or pass matching explicit paths.
 
 ### Domain rules that shape everything
 
