@@ -125,6 +125,7 @@ void print_report(const StrategyReport& r) {
     print_row("fees (c)", static_cast<double>(r.metrics.fees_cents));
     print_row("net P&L (c)", static_cast<double>(r.net_pnl_cents));
     print_row("max drawdown (c)", static_cast<double>(r.metrics.max_drawdown_cents));
+    print_row("risk-adj return proxy", r.metrics.risk_adjusted_return_proxy());
     print_row_i("final position", static_cast<long long>(r.final_position));
     print_row("max |exposure| (c)", static_cast<double>(r.metrics.max_abs_exposure_cents));
     print_row("turnover", r.metrics.turnover());

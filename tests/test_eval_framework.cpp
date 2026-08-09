@@ -236,6 +236,41 @@ void test_max_drawdown() {
     PX_CHECK(m.max_drawdown_cents == 500); // 1200 -> 700
 }
 
+void test_risk_adjusted_return_proxy() {
+    // Steady +100c/tick drift, zero noise -- deltas are all identical, so stdev is
+    // 0 and the proxy falls back to 0.0 (the "don't divide by ~0" guard), not a
+    // spuriously infinite value.
+    {
+        EvalMetrics m;
+        m.sample_equity(1000);
+        m.sample_equity(1100);
+        m.sample_equity(1200);
+        m.sample_equity(1300);
+        PX_CHECK(m.risk_adjusted_return_proxy() == 0.0);
+    }
+    // Two samples aren't enough for a delta-of-deltas stdev at all (only one delta
+    // exists) -- guarded the same way, not a crash/NaN.
+    {
+        EvalMetrics m;
+        m.sample_equity(1000);
+        m.sample_equity(1100);
+        PX_CHECK(m.risk_adjusted_return_proxy() == 0.0);
+    }
+    // Positive drift with real noise around it -- mean/stdev should come out
+    // positive (upward drift dominates the noise), hand-computed: deltas are
+    // +200, -50, +150 -- mean=100, population variance = ((100)^2+(150)^2+(50)^2)/3
+    // = (10000+22500+2500)/3 = 11666.67, stdev ~= 108.01 -- proxy ~= 100/108.01 ~= 0.926.
+    {
+        EvalMetrics m;
+        m.sample_equity(1000);
+        m.sample_equity(1200); // delta +200
+        m.sample_equity(1150); // delta -50
+        m.sample_equity(1300); // delta +150
+        const double proxy = m.risk_adjusted_return_proxy();
+        PX_CHECK(proxy > 0.9 && proxy < 0.95);
+    }
+}
+
 void test_settlement_marks_open_position() {
     auto strat = std::make_unique<ScriptedStrategy>(std::vector<ScriptStep>{
         [](const strategy::MarketState&, strategy::TriggerKind) { return cross(Side::Buy, 50, 10); },
@@ -264,6 +299,7 @@ int main() {
     test_taker_sweep_across_levels();
     test_cancel_prevents_later_fill();
     test_max_drawdown();
+    test_risk_adjusted_return_proxy();
     test_settlement_marks_open_position();
     PX_TEST_REPORT_AND_RETURN();
 }
