@@ -301,6 +301,25 @@ respective `--telemetry-out`/`--telemetry-path` flags to the same relative path,
 `telemetry/snapshot.json` (matching `.gitignore`'s pre-existing entry) — run both
 from the repo root, or pass matching explicit paths.
 
+**Stage 6A** replaced the original stat-card-grid frontend with a hierarchical
+trading-workstation layout (system status → performance+P&L chart → market/order-
+book → positions/orders → strategy activity → risk → system events), which needed
+real backend additions, not just CSS: per-market order-book depth
+(`TelemetryState::on_depth_update`, a bounded top-N scan of `ShadowBook::level_qty`
+from `Brain::apply_book_event`, gated on `telemetry_ != nullptr` same as everything
+else), a public trade tape (`on_public_trade`, from `BookEventKind::Trade`), a
+session P&L history ring (`on_order_filled` samples unthrottled, `on_book_update`
+throttled to 1/`kPnlSampleMinIntervalMs`), live risk-limit figures
+(`set_risk_limits` once at startup from `RiskConfig`, `set_rate_limit_tokens`
+sampled in `Brain::handle_decision` alongside its own existing `risk_.check()`
+call), a distinct `risk_rejections_` counter for Brain's own pre-send rejections
+(vs. `orders_rejected_`, Kalshi's post-send ones — see `OrderEventKind::RiskBlocked`),
+and an `OrderId` threaded into every `OrderEventRecord` so the frontend can group
+one order's own lifecycle client-side. Full field-by-field inventory — including
+what was deliberately NOT added rather than fabricated — is
+`docs/DASHBOARD_DATA_CONTRACT.md`, written per that redesign's own "document what's
+real before touching the UI" requirement.
+
 ### Domain rules that shape everything
 
 - **Integer cents only**, ticks 1–99 (0/100 are settlement values, never live order
