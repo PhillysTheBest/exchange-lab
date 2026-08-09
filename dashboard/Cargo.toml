@@ -1,0 +1,17 @@
+[package]
+name = "px-dashboard"
+version = "0.1.0"
+edition = "2021"
+description = "Stage 6, Part E/F: reads the JSON telemetry snapshot px::telemetry::publish_snapshot (telemetry/telemetry_publisher.hpp) writes and serves a polling dashboard over it."
+
+[[bin]]
+name = "px-dashboard"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.7", features = ["json"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 2

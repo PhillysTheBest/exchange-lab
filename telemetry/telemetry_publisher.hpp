@@ -54,7 +54,24 @@ namespace detail {
 // partially-written file — `rename()` (Windows: `MoveFileExW` with
 // `MOVEFILE_REPLACE_EXISTING`, which std::rename uses on this toolchain) is atomic
 // at the filesystem level on both POSIX and Windows for a same-volume same-directory
-// rename, the only kind this ever does.
+// rename, the only kind this ever does: a reader that DOES manage to open `path`
+// either gets the complete old file or the complete new one, never a half-written one.
+//
+// WINDOWS CAVEAT, found empirically (not theorized) while building the dashboard
+// (Stage 6, Part E/F): the rename call ITSELF can transiently fail (return false, no
+// file written this tick) if the dashboard reader's own file handle is open at that
+// exact instant — Windows, unlike POSIX, can refuse to replace a file over an open
+// read handle depending on the sharing mode the reader used (`dashboard/src/main.rs`
+// reads via `tokio::fs::read_to_string`, i.e. `std::fs::File::open`'s default sharing,
+// which does not request `FILE_SHARE_DELETE`). Deliberately NOT worked around by
+// adding Windows-specific sharing flags to the Rust reader: this function already
+// returns `false` on failure, `tools/kalshi_pipeline.cpp`'s caller already logs it and
+// tries again next 500ms tick, and the dashboard's own read failure (`px-dashboard`'s
+// `/api/snapshot` returning 503) is itself non-fatal and self-heals the same way, one
+// poll interval later — see `static/index.html`'s explicit "show last-known-good data,
+// mark it stale" handling. A guaranteed-first-try rename isn't worth Windows-only
+// conditional code in a cross-platform-intended reader for a race window this narrow
+// and this self-correcting.
 [[nodiscard]] inline bool publish_snapshot(const TelemetryState& t, const std::string& path) {
     const std::string tmp_path = path + ".tmp";
     FILE* f = std::fopen(tmp_path.c_str(), "wb");

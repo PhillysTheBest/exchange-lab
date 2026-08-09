@@ -132,7 +132,20 @@ struct MarketSnapshot {
     std::atomic<std::int64_t> unrealized_pnl_cents{0};
     std::atomic<std::int64_t> realized_pnl_cents{0};
     std::atomic<std::int64_t> exposure_cents{0};
-    std::atomic<std::uint8_t> status{0}; // px::MarketStatus
+    // px::MarketStatus, default 1 (Open), NOT 0 (PreOpen) -- deliberately matching
+    // pipeline::Brain's own market_status_ default (pipeline/brain.hpp's
+    // constructor: `market_status_.fill(MarketStatus::Open)`) for the identical
+    // reason that comment gives: Kalshi's lifecycle channel reports STATE CHANGES
+    // from subscription time onward, not a backfill, so a market that was already
+    // open before this connection subscribed never gets an explicit `activated`
+    // event. Defaulting this field to PreOpen would show a dashboard viewer "not
+    // tradeable yet" for a market Brain itself already considers Open -- a
+    // strictly worse, actively misleading failure mode, not a neutral one. Kept in
+    // sync with Brain's real status on every book update besides, not just at
+    // construction -- see apply_book_event's telemetry_->on_lifecycle call in
+    // pipeline/brain.cpp, which doesn't wait for an explicit LifecycleStatus event
+    // either.
+    std::atomic<std::uint8_t> status{1};
 };
 
 class TelemetryState {

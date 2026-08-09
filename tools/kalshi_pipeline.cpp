@@ -63,11 +63,11 @@ void print_usage(const char* argv0) {
         "                      (needs KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY_PATH)\n"
         "                      -- omit this and every order stays dry-run only\n"
         "  --telemetry-out FILE  where to publish the JSON telemetry snapshot every\n"
-        "                      ~500ms (default: telemetry_snapshot.json). Stage 6,\n"
-        "                      Part G -- see telemetry/telemetry_publisher.hpp. The\n"
-        "                      Part E/F dashboard that polls this doesn't exist yet\n"
-        "                      (docs/DASHBOARD.md, not started), so this path is\n"
-        "                      provisional until that settles on its own convention.\n",
+        "                      ~500ms (default: telemetry/snapshot.json, relative to\n"
+        "                      the current directory -- run this from the repo root\n"
+        "                      so it lines up with dashboard/'s own default\n"
+        "                      --telemetry-path). Stage 6, Part G/E/F -- see\n"
+        "                      telemetry/telemetry_publisher.hpp and docs/DASHBOARD.md.\n",
         argv0);
 }
 } // namespace
@@ -75,7 +75,7 @@ void print_usage(const char* argv0) {
 int main(int argc, char** argv) {
     std::string replay_path;
     bool demo_send = false;
-    std::string telemetry_path = "telemetry_snapshot.json";
+    std::string telemetry_path = "telemetry/snapshot.json";
     std::vector<std::string> tickers;
 
     for (int i = 1; i < argc; ++i) {
