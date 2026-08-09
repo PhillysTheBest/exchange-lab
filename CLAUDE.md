@@ -74,6 +74,16 @@ No sanitizer runtime is installed in this toolchain (no `-lasan`/`-lubsan`); deb
 builds rely on `_GLIBCXX_ASSERTIONS` plus hand-written `PX_DEBUG`-gated invariant
 checks (`OrderBook::check_invariants`, `ShadowBook::check_invariants`) instead.
 
+`make bench-perf` only builds the Stage 5 throughput/scaling tools — driving them across
+sweep points is a separate step, needs Python 3 (+ matplotlib for plotting), and is not
+itself a `make` target:
+
+```bash
+mingw32-make bench-perf         # builds bench_workload_throughput, bench_dispatch_scaling
+python perf/run_sweeps.py all   # runs every sweep, writes perf/results/*.csv
+python perf/plot_results.py     # turns those into perf/results/*.png
+```
+
 ## Architecture
 
 ### Two engines sharing one book type
