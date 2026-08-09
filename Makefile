@@ -98,7 +98,7 @@ $(OBJDIR_RELEASE)/%.o: %.cpp
 	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) -c $< -o $@
 
 # ---- tests ------------------------------------------------------------------
-TEST_BINS := $(OBJDIR_DEBUG)/test_book$(EXE) $(OBJDIR_DEBUG)/test_engine$(EXE) $(OBJDIR_DEBUG)/fuzz_vs_reference$(EXE) $(OBJDIR_DEBUG)/test_risk$(EXE) $(OBJDIR_DEBUG)/test_market_state$(EXE) $(OBJDIR_DEBUG)/test_strategies$(EXE) $(OBJDIR_DEBUG)/test_replay_fuzz$(EXE) $(OBJDIR_DEBUG)/test_alloc_audit$(EXE)
+TEST_BINS := $(OBJDIR_DEBUG)/test_book$(EXE) $(OBJDIR_DEBUG)/test_engine$(EXE) $(OBJDIR_DEBUG)/fuzz_vs_reference$(EXE) $(OBJDIR_DEBUG)/test_risk$(EXE) $(OBJDIR_DEBUG)/test_market_state$(EXE) $(OBJDIR_DEBUG)/test_strategies$(EXE) $(OBJDIR_DEBUG)/test_replay_fuzz$(EXE) $(OBJDIR_DEBUG)/test_alloc_audit$(EXE) $(OBJDIR_DEBUG)/test_eval_framework$(EXE)
 
 $(OBJDIR_DEBUG)/test_book$(EXE): tests/test_book.cpp $(DEBUG_OBJS)
 	@mkdir -p $(dir $@)
@@ -150,6 +150,14 @@ $(OBJDIR_DEBUG)/test_alloc_audit$(EXE): tests/test_alloc_audit.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(DEBUG_FLAGS) $< -o $@
 
+# test_eval_framework.cpp (Stage 6, Part B.3): eval/backtest_runner.hpp drives a
+# real Brain synchronously (no threads/rings) — needs the same debug-flavored
+# pipeline/brain.o test_replay_fuzz.cpp already links against, for the same reason
+# (PX_DEBUG=1 makes ShadowBook::check_invariants() exist/assert). No OpenSSL.
+$(OBJDIR_DEBUG)/test_eval_framework$(EXE): tests/test_eval_framework.cpp $(OBJDIR_DEBUG)/pipeline/brain.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(DEBUG_FLAGS) $< $(OBJDIR_DEBUG)/pipeline/brain.o -o $@
+
 .PHONY: test
 test: $(TEST_BINS)
 	@echo "== test_book ==" && $(OBJDIR_DEBUG)/test_book$(EXE)
@@ -160,6 +168,7 @@ test: $(TEST_BINS)
 	@echo "== test_strategies ==" && $(OBJDIR_DEBUG)/test_strategies$(EXE)
 	@echo "== test_replay_fuzz ==" && $(OBJDIR_DEBUG)/test_replay_fuzz$(EXE)
 	@echo "== test_alloc_audit ==" && $(OBJDIR_DEBUG)/test_alloc_audit$(EXE)
+	@echo "== test_eval_framework ==" && $(OBJDIR_DEBUG)/test_eval_framework$(EXE)
 
 # ---- benchmarks (release, no sanitizers, pinned) ----------------------------
 BENCH_BINS := $(OBJDIR_RELEASE)/bench_engine$(EXE) $(OBJDIR_RELEASE)/bench_ring$(EXE) $(OBJDIR_RELEASE)/bench_strategy$(EXE)
@@ -202,6 +211,19 @@ $(OBJDIR_RELEASE)/strategy_demo$(EXE): tools/strategy_demo.cpp $(RELEASE_OBJS)
 
 .PHONY: strategy_demo
 strategy_demo: $(OBJDIR_RELEASE)/strategy_demo$(EXE)
+
+# ---- run_backtest (Stage 6, Part B.3/H — eval/ framework CLI, no OpenSSL) ---
+# Only needs pipeline/brain.o (release-flavored, for speed across a real sweep of
+# events) — same minimal-linking precedent tests/test_replay_fuzz.cpp already
+# established for its debug-flavored equivalent: cpu_relax() is header-only
+# (px/platform.hpp), and eval/ never touches OrderBook/MatchingEngine, so neither
+# $(RELEASE_OBJS) nor a platform .o is needed.
+$(OBJDIR_RELEASE)/run_backtest$(EXE): tools/run_backtest.cpp $(OBJDIR_RELEASE)/pipeline/brain.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) $< $(OBJDIR_RELEASE)/pipeline/brain.o -o $@
+
+.PHONY: run_backtest
+run_backtest: $(OBJDIR_RELEASE)/run_backtest$(EXE)
 
 # ---- live (Kalshi connectivity — Phase 3, needs OpenSSL) --------------------
 $(OBJDIR_RELEASE)/live/%.o: live/%.cpp
