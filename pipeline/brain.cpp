@@ -62,6 +62,11 @@ void Brain::apply_book_event(const BookEvent& e, RingB& intent_out) noexcept {
             return;
         case BookEventKind::Trade:
             trade_windows_[e.market].record(e.side, e.price, e.qty, e.ts_ms);
+            // Stage 6A: the public trade tape -- a real market trade Brain observed,
+            // NOT one of this account's own fills (those go through on_order_filled
+            // in apply_exec_report below). e.ts_ms here is the trade's own exchange
+            // timestamp (see BookEvent's own comment), not Brain's processing clock.
+            if (telemetry_) telemetry_->on_public_trade(e.market, e.side, e.price, e.qty, e.ts_ms);
             break;
         case BookEventKind::LifecycleStatus:
             // Dispatched like any other BookUpdate (falls through to the
@@ -83,7 +88,47 @@ void Brain::apply_book_event(const BookEvent& e, RingB& intent_out) noexcept {
             Price bid = 0, ask = 0;
             const bool have_bid = books_[e.market].best_bid(bid);
             const bool have_ask = books_[e.market].best_ask(ask);
-            telemetry_->on_book_update(e.market, have_bid, bid, have_ask, ask);
+            telemetry_->on_book_update(e.market, have_bid, bid, have_ask, ask, now_ms_wall());
+
+            // Stage 6A: top-of-book depth for the dashboard's order-book panel --
+            // a bounded linear scan outward from best_bid/best_ask (ShadowBook has
+            // no "next occupied level" primitive beyond the O(1) best_bid/best_ask
+            // it already exposes -- see px/shadow_book.hpp -- and adding one there,
+            // to the core matching engine's own shared Mask128, is a bigger-scrutiny
+            // change than this dashboard-only need justifies). Bounded at
+            // telemetry::kDepthLevels each side (8), and stops as soon as that many
+            // non-empty levels are found, so the common case (a handful of levels
+            // clustered near the top) exits far short of the full 99-tick scan this
+            // is worst-cased against. Gated on telemetry_ != nullptr, same as every
+            // other telemetry call here -- zero cost when no dashboard is attached.
+            if (have_bid) {
+                Price prices[telemetry::kDepthLevels];
+                Qty qtys[telemetry::kDepthLevels];
+                std::size_t n = 0;
+                for (Price p = bid; p >= kMinPrice && n < telemetry::kDepthLevels; --p) {
+                    const Qty q = books_[e.market].level_qty(p);
+                    if (q > 0) { prices[n] = p; qtys[n] = q; ++n; }
+                }
+                Price ask_prices[telemetry::kDepthLevels];
+                Qty ask_qtys[telemetry::kDepthLevels];
+                std::size_t an = 0;
+                if (have_ask) {
+                    for (Price p = ask; p <= kMaxPrice && an < telemetry::kDepthLevels; ++p) {
+                        const Qty q = books_[e.market].level_qty(p);
+                        if (q > 0) { ask_prices[an] = p; ask_qtys[an] = q; ++an; }
+                    }
+                }
+                telemetry_->on_depth_update(e.market, prices, qtys, n, ask_prices, ask_qtys, an);
+            } else if (have_ask) {
+                Price ask_prices[telemetry::kDepthLevels];
+                Qty ask_qtys[telemetry::kDepthLevels];
+                std::size_t an = 0;
+                for (Price p = ask; p <= kMaxPrice && an < telemetry::kDepthLevels; ++p) {
+                    const Qty q = books_[e.market].level_qty(p);
+                    if (q > 0) { ask_prices[an] = p; ask_qtys[an] = q; ++an; }
+                }
+                telemetry_->on_depth_update(e.market, nullptr, nullptr, 0, ask_prices, ask_qtys, an);
+            }
         }
         // Republished on every telemetry-relevant book event, not just
         // BookEventKind::LifecycleStatus above -- otherwise a market's telemetry
@@ -110,7 +155,7 @@ void Brain::apply_exec_report(const ExecReport& e, RingB& intent_out) noexcept {
             // see docs/BACKTEST_ASSESSMENT.md); telemetry reports what Brain actually
             // knows rather than guessing. Revisit once/if T3 starts reporting a real
             // fee alongside a fill.
-            if (telemetry_) telemetry_->on_order_filled(e.market, e.side, e.price, e.qty, /*fee_cents=*/0, now_ms_wall());
+            if (telemetry_) telemetry_->on_order_filled(e.market, e.id, e.side, e.price, e.qty, /*fee_cents=*/0, now_ms_wall());
             break;
         case ExecKind::RateLimited:
             risk_.on_rate_limited_response(now_ns());
@@ -122,21 +167,21 @@ void Brain::apply_exec_report(const ExecReport& e, RingB& intent_out) noexcept {
             // available at all. Same reasoning for Acked/Cancelled below.
             if (telemetry_) {
                 if (const auto* r = order_tracker_.find(e.market, e.id))
-                    telemetry_->on_order_rejected(e.market, r->side, r->price, e.qty, now_ms_wall());
+                    telemetry_->on_order_rejected(e.market, e.id, r->side, r->price, e.qty, now_ms_wall());
             }
             order_tracker_.on_rejected(e.market, e.id); // drops the pending entry handle_decision added optimistically
             break;
         case ExecKind::Acked:
             if (telemetry_) {
                 if (const auto* r = order_tracker_.find(e.market, e.id))
-                    telemetry_->on_order_acked(e.market, r->side, r->price, e.qty, now_ms_wall());
+                    telemetry_->on_order_acked(e.market, e.id, r->side, r->price, e.qty, now_ms_wall());
             }
             order_tracker_.on_acked(e.market, e.id, e.qty, books_[e.market]);
             break;
         case ExecKind::Cancelled:
             if (telemetry_) {
                 if (const auto* r = order_tracker_.find(e.market, e.id))
-                    telemetry_->on_order_cancelled(e.market, r->side, r->price, e.qty, now_ms_wall());
+                    telemetry_->on_order_cancelled(e.market, e.id, r->side, r->price, e.qty, now_ms_wall());
             }
             order_tracker_.on_cancelled(e.market, e.id, e.qty);
             break;
@@ -222,6 +267,7 @@ void Brain::handle_decision(MarketId market, const strategy::ExecutionDecision& 
         (status == MarketStatus::Halted && decision.action != strategy::ExecutionAction::Cancel);
     if (blocked_by_lifecycle) {
         ++intents_rejected_;
+        if (telemetry_) telemetry_->on_risk_rejected(market, now_ms_wall());
         if (on_reject) {
             on_reject(intent, status == MarketStatus::Resolved ? risk::Verdict::RejectMarketResolved
                                                                  : risk::Verdict::RejectMarketHalted);
@@ -229,12 +275,19 @@ void Brain::handle_decision(MarketId market, const strategy::ExecutionDecision& 
         return;
     }
 
+    const auto now = now_ns();
     const risk::Verdict verdict = (decision.action == strategy::ExecutionAction::Cancel)
-                                       ? risk_.check_cancel(now_ns())
-                                       : risk_.check(market, intent.side, intent.price, intent.qty, now_ns());
+                                       ? risk_.check_cancel(now)
+                                       : risk_.check(market, intent.side, intent.price, intent.qty, now);
+    // Stage 6A: sampled here, on T2, right alongside the check that already reads
+    // RiskEngine's own token bucket -- see TelemetryState::set_rate_limit_tokens's
+    // own comment for why this is the one sanctioned read of T2-private RiskEngine
+    // state from outside handle_decision's usual position/verdict path.
+    if (telemetry_) telemetry_->set_rate_limit_tokens(risk_.tokens_available(now));
 
     if (verdict != risk::Verdict::Accept) {
         ++intents_rejected_;
+        if (telemetry_) telemetry_->on_risk_rejected(market, now_ms_wall());
         if (on_reject) on_reject(intent, verdict);
         return;
     }
@@ -254,7 +307,7 @@ void Brain::handle_decision(MarketId market, const strategy::ExecutionDecision& 
         // afterward, which at that order count already indicates a runaway
         // strategy rather than something worth adding recovery logic for.
         (void)order_tracker_.on_new(market, intent.id, intent.side, intent.price, intent.qty);
-        if (telemetry_) telemetry_->on_order_submitted(market, intent.side, intent.price, intent.qty, now_ms_wall());
+        if (telemetry_) telemetry_->on_order_submitted(market, intent.id, intent.side, intent.price, intent.qty, now_ms_wall());
     }
     // An accepted intent must not be silently dropped — same backpressure
     // reasoning as ring A in pipeline/ingress.cpp, not a discard.

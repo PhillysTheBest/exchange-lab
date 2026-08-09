@@ -168,6 +168,12 @@ int main(int argc, char** argv) {
     brain->attach_telemetry(&telemetry_state);
     telemetry_state.set_mode(demo_send ? telemetry::Mode::Live : telemetry::Mode::DryRun);
     telemetry_state.set_active_markets(static_cast<std::uint32_t>(tickers.size()));
+    // Stage 6A: risk-config figures, real numbers this process was actually started
+    // with -- called once, here, before brain_thread starts (see
+    // TelemetryState::set_risk_limits's own comment on why that ordering keeps this
+    // safe despite technically running on the main thread, not T2).
+    telemetry_state.set_risk_limits(risk_cfg.max_exposure_cents, risk_cfg.fat_finger_min, risk_cfg.fat_finger_max,
+                                     risk_cfg.bucket_capacity_tokens);
 
     // ---- T3 Gateway: sink chosen once, here, never per-order --------------
     std::unique_ptr<Sink> sink;

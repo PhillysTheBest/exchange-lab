@@ -42,6 +42,7 @@ namespace detail {
         case OrderEventKind::Fill: return "fill";
         case OrderEventKind::Cancel: return "cancel";
         case OrderEventKind::Reject: return "reject";
+        case OrderEventKind::RiskBlocked: return "risk_blocked";
     }
     return "unknown";
 }
@@ -96,7 +97,15 @@ namespace detail {
     std::fprintf(f, "  \"orders_filled\": %llu,\n", static_cast<unsigned long long>(t.orders_filled()));
     std::fprintf(f, "  \"orders_cancelled\": %llu,\n", static_cast<unsigned long long>(t.orders_cancelled()));
     std::fprintf(f, "  \"orders_rejected\": %llu,\n", static_cast<unsigned long long>(t.orders_rejected()));
+    std::fprintf(f, "  \"risk_rejections\": %llu,\n", static_cast<unsigned long long>(t.risk_rejections()));
     std::fprintf(f, "  \"fees_cents\": %lld,\n", static_cast<long long>(t.fees_cents()));
+
+    // ---- risk limits (Stage 6A): static config + the one live figure (rate-limit
+    // token headroom) Brain samples on its own thread -- see telemetry.hpp ----
+    std::fprintf(f, "  \"risk\": {\"max_exposure_cents\": %lld, \"fat_finger_min\": %d, \"fat_finger_max\": %d, "
+                     "\"rate_limit_tokens\": %lld, \"rate_limit_capacity\": %lld},\n",
+                  static_cast<long long>(t.max_exposure_cents()), t.fat_finger_min(), t.fat_finger_max(),
+                  static_cast<long long>(t.rate_limit_tokens()), static_cast<long long>(t.rate_limit_capacity()));
 
     std::int64_t realized_total = 0, unrealized_total = 0, exposure_total = 0;
     std::fprintf(f, "  \"markets\": [\n");
@@ -114,12 +123,31 @@ namespace detail {
         std::fprintf(f,
                       "    {\"market\": %u, \"position\": %lld, \"avg_entry_cents\": %d, "
                       "\"yes_bid_cents\": %d, \"yes_ask_cents\": %d, \"realized_pnl_cents\": %lld, "
-                      "\"unrealized_pnl_cents\": %lld, \"exposure_cents\": %lld, \"status\": %u}",
+                      "\"unrealized_pnl_cents\": %lld, \"exposure_cents\": %lld, \"status\": %u, ",
                       m.market, static_cast<long long>(m.position.load(std::memory_order_relaxed)),
                       m.avg_entry_cents.load(std::memory_order_relaxed), m.yes_bid_cents.load(std::memory_order_relaxed),
                       m.yes_ask_cents.load(std::memory_order_relaxed), static_cast<long long>(realized),
                       static_cast<long long>(unrealized), static_cast<long long>(exposure),
                       m.status.load(std::memory_order_relaxed));
+
+        // Depth (Stage 6A): nearest-price-first, bounded to whatever count Brain last
+        // published (0..kDepthLevels) -- an empty array is a legitimate "no resting
+        // interest observed on this side," not an error.
+        const auto bid_n = m.bid_depth_count.load(std::memory_order_relaxed);
+        std::fprintf(f, "\"bid_depth\": [");
+        for (std::uint8_t i = 0; i < bid_n; ++i) {
+            std::fprintf(f, "%s{\"price\": %d, \"qty\": %u}", i == 0 ? "" : ", ",
+                          m.bid_depth_price[i].load(std::memory_order_relaxed),
+                          m.bid_depth_qty[i].load(std::memory_order_relaxed));
+        }
+        const auto ask_n = m.ask_depth_count.load(std::memory_order_relaxed);
+        std::fprintf(f, "], \"ask_depth\": [");
+        for (std::uint8_t i = 0; i < ask_n; ++i) {
+            std::fprintf(f, "%s{\"price\": %d, \"qty\": %u}", i == 0 ? "" : ", ",
+                          m.ask_depth_price[i].load(std::memory_order_relaxed),
+                          m.ask_depth_qty[i].load(std::memory_order_relaxed));
+        }
+        std::fprintf(f, "]}");
     }
     std::fprintf(f, "\n  ],\n");
     std::fprintf(f, "  \"pnl_realized_cents\": %lld,\n", static_cast<long long>(realized_total));
@@ -132,9 +160,31 @@ namespace detail {
     const auto orders = t.recent_orders();
     for (std::size_t i = 0; i < orders.size(); ++i) {
         const auto& o = orders[i];
-        std::fprintf(f, "    {\"ts_ms\": %lld, \"market\": %u, \"kind\": \"%s\", \"side\": \"%s\", \"price\": %d, \"qty\": %u}%s\n",
-                      static_cast<long long>(o.ts_ms), o.market, detail::order_kind_str(o.kind),
-                      o.side == Side::Buy ? "buy" : "sell", o.price, o.qty, i + 1 < orders.size() ? "," : "");
+        std::fprintf(f,
+                      "    {\"ts_ms\": %lld, \"market\": %u, \"id\": %llu, \"kind\": \"%s\", \"side\": \"%s\", "
+                      "\"price\": %d, \"qty\": %u}%s\n",
+                      static_cast<long long>(o.ts_ms), o.market, static_cast<unsigned long long>(o.id),
+                      detail::order_kind_str(o.kind), o.side == Side::Buy ? "buy" : "sell", o.price, o.qty,
+                      i + 1 < orders.size() ? "," : "");
+    }
+    std::fprintf(f, "  ],\n");
+
+    std::fprintf(f, "  \"recent_trades\": [\n");
+    const auto trades = t.recent_trades();
+    for (std::size_t i = 0; i < trades.size(); ++i) {
+        const auto& tr = trades[i];
+        std::fprintf(f, "    {\"ts_ms\": %lld, \"market\": %u, \"side\": \"%s\", \"price\": %d, \"qty\": %u}%s\n",
+                      static_cast<long long>(tr.ts_ms), tr.market, tr.side == Side::Buy ? "buy" : "sell", tr.price,
+                      tr.qty, i + 1 < trades.size() ? "," : "");
+    }
+    std::fprintf(f, "  ],\n");
+
+    std::fprintf(f, "  \"pnl_history\": [\n");
+    const auto pnl_hist = t.pnl_history();
+    for (std::size_t i = 0; i < pnl_hist.size(); ++i) {
+        const auto& p = pnl_hist[i];
+        std::fprintf(f, "    {\"ts_ms\": %lld, \"net_pnl_cents\": %lld}%s\n", static_cast<long long>(p.ts_ms),
+                      static_cast<long long>(p.net_pnl_cents), i + 1 < pnl_hist.size() ? "," : "");
     }
     std::fprintf(f, "  ],\n");
 
