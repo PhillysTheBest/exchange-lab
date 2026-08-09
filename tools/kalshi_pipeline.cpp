@@ -159,7 +159,7 @@ int main(int argc, char** argv) {
     // populated from T2's very first event. Constructed here (this thread), then
     // only ever WRITTEN by T2 (via Brain's on_* calls, see telemetry/telemetry.hpp's
     // own header comment on the two-tier design) and READ by this thread's existing
-    // 500ms polling loop below -- no new thread, matching CLAUDE.md's Stage 6 status
+    // 500ms polling loop below -- no new thread, matching docs/CLAUDE.md's Stage 6 status
     // note for this part.
     const auto start_ts_ms =
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())

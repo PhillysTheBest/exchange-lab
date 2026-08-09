@@ -621,7 +621,7 @@ Stages 1–3 each proved their own layer correct in isolation. Stage 4 asks a
 different question: does the *assembled* system — Ingress through Strategy
 through Risk through Gateway, real threads, real rings — actually hold up
 under real timing and real hostile input, not just each piece's own unit
-tests? See [PERFORMANCE.md](PERFORMANCE.md) for the full report (the
+tests? See [PERFORMANCE.md](docs/PERFORMANCE.md) for the full report (the
 optimization history, every measured number in one place, and the
 methodology behind each one); this section is the summary.
 
@@ -705,7 +705,7 @@ complete internal decision path — WS text frame → `parse_feed_message` →
 `extract_features`, `Strategy::on_event`, `RiskEngine::check`) → ring B →
 `OrderIntent` observed — through two real, pinned threads and two real
 cross-core ring hops, using the same ping-pong-one-event-at-a-time discipline
-`bench_ring.cpp` already established (see PERFORMANCE.md for why that
+`bench_ring.cpp` already established (see docs/PERFORMANCE.md for why that
 discipline matters — it's the same methodology bug, avoided this time):
 
 ```
@@ -797,7 +797,7 @@ different question: not "does it work," but "how does it behave under
 realistic load, where does time actually go, and does the architecture's own
 claims about itself hold up when measured instead of argued for." Full
 numbers, methodology, and an expanded Limitations section are in
-[PERFORMANCE.md](PERFORMANCE.md); this section is the narrative.
+[PERFORMANCE.md](docs/PERFORMANCE.md); this section is the narrative.
 
 **Profiling found the hot path isn't where intuition would put it.** A new
 per-stage benchmark ([`bench/bench_pipeline_stages.cpp`](bench/bench_pipeline_stages.cpp))

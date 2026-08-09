@@ -107,7 +107,7 @@ enum class FrameKind {
 // larger than parse_feed_message's own ~950ns) turned out to dominate Stage
 // 5's first throughput-sweep results — the "saturation" it showed was mostly
 // this generator's own allocator traffic, not the pipeline's real capacity.
-// Caught before publishing (see PERFORMANCE.md's Section 4 methodology
+// Caught before publishing (see docs/PERFORMANCE.md's Section 4 methodology
 // note) and fixed by moving the JSON text into a caller-owned, reused
 // std::string& buffer instead.
 struct GeneratedFrame {

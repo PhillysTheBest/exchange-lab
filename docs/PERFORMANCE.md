@@ -3,7 +3,7 @@
 A single-document account of every latency number this project has produced,
 how each one was measured, what optimization it's attached to, and — just as
 important — which comparisons this report deliberately does **not** make,
-because they were never actually run. See [README.md](README.md) for the
+because they were never actually run. See [README.md](../README.md) for the
 system's architecture and correctness story; this document is about speed
 and the discipline behind claiming it.
 
@@ -13,8 +13,8 @@ and the discipline behind claiming it.
   hides exactly the outliers — a mispredicted branch cascading into a TLB
   miss, an OS scheduler preemption — that determine whether a trading
   decision beats the market or arrives after it's already moved. See
-  [`px/histogram.hpp`](include/px/histogram.hpp).
-- **Timed with `rdtscp`** ([`px/tsc_clock.hpp`](include/px/tsc_clock.hpp)),
+  [`px/histogram.hpp`](../include/px/histogram.hpp).
+- **Timed with `rdtscp`** ([`px/tsc_clock.hpp`](../include/px/tsc_clock.hpp)),
   calibrated once against `std::chrono::steady_clock`, with the
   invariant-TSC bit checked (CPUID leaf `0x80000007`, EDX bit 8) rather than
   assumed — every benchmark below prints `invariant TSC: yes` before its
@@ -22,7 +22,7 @@ and the discipline behind claiming it.
 - **Machine**: a mobile-TDP laptop chip (Intel i5-12450H, hybrid 4P+4E
   cores), Windows 11, no `isolcpus`, no tuned bare-metal box. Every benchmark
   that can pin does (`pin_current_thread_to` + `THREAD_PRIORITY_TIME_CRITICAL`
-  — [`src/platform_win32.cpp`](src/platform_win32.cpp)), but this is a
+  — [`src/platform_win32.cpp`](../src/platform_win32.cpp)), but this is a
   laptop, not a colo cage, and the numbers below should be read as "what a
   reasonable but unglamorous machine gets," not a performance ceiling.
 - **All numbers in this document come from one coherent build/run** (`mingw32-make
@@ -43,7 +43,7 @@ Live:     Kalshi --TLS/WS--> [T1 Ingress] --ring A--> [T2 Brain] --ring B--> [T3
 Decision: Strategy::on_event(MarketState, TriggerKind, OracleEvent*) -> Join/Improve/Cross/Cancel/Wait
 ```
 
-Full detail in [README.md](README.md)'s Architecture section and
+Full detail in [README.md](../README.md)'s Architecture section and
 [CLAUDE.md](CLAUDE.md).
 
 ## The optimization journey
@@ -59,19 +59,19 @@ this project's whole benchmarking philosophy exists to push back against.
 
 | # | Technique | Problem it solves | Evidence |
 |---|---|---|---|
-| 1 | **Array price ladder + occupancy bitmasks** ([`order_book.hpp`](include/px/order_book.hpp)) instead of a sorted tree of price levels | Best bid/ask is a `countl_zero`/`countr_zero` over two 64-bit words, not a tree descent; a price is a direct array index, not a comparison-based lookup | Architectural choice, not independently isolated — see "The comparison we didn't make," below. Reflected only in the combined `submit`/`cancel` numbers in the next section |
-| 2 | **Object pool, no hot-path `new`** ([`pool.hpp`](include/px/pool.hpp)) — one contiguous slab, allocated once, an intrusive free list handing out/reclaiming indices | Heap allocation (and its worst case — an allocator lock, a page fault) on every single order is the single most common reason a "fast" matching engine isn't | Architectural choice; not isolated against a `new`-per-order baseline. Reflected in `submit`/`cancel`'s combined numbers |
-| 3 | **Hand-rolled open-addressing flat map** ([`flat_map.hpp`](include/px/flat_map.hpp)) for order-id → slot lookup, with backward-shift deletion | `std::unordered_map` allocates a node per entry — at least one guaranteed cache miss per lookup, on a lookup that happens on every cancel and every fill | Architectural choice; not isolated against `std::unordered_map`. Reflected in `cancel`'s combined number |
-| 4 | **Lock-free SPSC ring** ([`spsc_ring.hpp`](include/px/spsc_ring.hpp)), LMAX-style monotonic cursors, cache-line-padded | Cross-thread handoff (T1→T2→T3, and back) without a mutex, without false sharing between producer/consumer cache lines | **Directly measured**, same-thread vs. cross-core, via `bench_ring` — see below. This is the one technique with its own clean, isolated before/after number |
-| 5 | **CPU pinning + `THREAD_PRIORITY_TIME_CRITICAL`** ([`platform_win32.cpp`](src/platform_win32.cpp)), P-core selection + SMT-sibling skip on this machine's hybrid 4P+4E layout | Removes scheduler migration and P/E-core placement as a source of jitter | Always-on in every pinned benchmark below; never run head-to-head against an unpinned version on this machine, so no isolated number is claimed |
+| 1 | **Array price ladder + occupancy bitmasks** ([`order_book.hpp`](../include/px/order_book.hpp)) instead of a sorted tree of price levels | Best bid/ask is a `countl_zero`/`countr_zero` over two 64-bit words, not a tree descent; a price is a direct array index, not a comparison-based lookup | Architectural choice, not independently isolated — see "The comparison we didn't make," below. Reflected only in the combined `submit`/`cancel` numbers in the next section |
+| 2 | **Object pool, no hot-path `new`** ([`pool.hpp`](../include/px/pool.hpp)) — one contiguous slab, allocated once, an intrusive free list handing out/reclaiming indices | Heap allocation (and its worst case — an allocator lock, a page fault) on every single order is the single most common reason a "fast" matching engine isn't | Architectural choice; not isolated against a `new`-per-order baseline. Reflected in `submit`/`cancel`'s combined numbers |
+| 3 | **Hand-rolled open-addressing flat map** ([`flat_map.hpp`](../include/px/flat_map.hpp)) for order-id → slot lookup, with backward-shift deletion | `std::unordered_map` allocates a node per entry — at least one guaranteed cache miss per lookup, on a lookup that happens on every cancel and every fill | Architectural choice; not isolated against `std::unordered_map`. Reflected in `cancel`'s combined number |
+| 4 | **Lock-free SPSC ring** ([`spsc_ring.hpp`](../include/px/spsc_ring.hpp)), LMAX-style monotonic cursors, cache-line-padded | Cross-thread handoff (T1→T2→T3, and back) without a mutex, without false sharing between producer/consumer cache lines | **Directly measured**, same-thread vs. cross-core, via `bench_ring` — see below. This is the one technique with its own clean, isolated before/after number |
+| 5 | **CPU pinning + `THREAD_PRIORITY_TIME_CRITICAL`** ([`platform_win32.cpp`](../src/platform_win32.cpp)), P-core selection + SMT-sibling skip on this machine's hybrid 4P+4E layout | Removes scheduler migration and P/E-core placement as a source of jitter | Always-on in every pinned benchmark below; never run head-to-head against an unpinned version on this machine, so no isolated number is claimed |
 | 6 | **RSA-PSS signing moved off T2 onto its own thread (T3 Gateway)** | Signing is ~15,000–28,000× a book update with a multi-millisecond tail (measured, not assumed) — inline in T2 it would freeze the book mid-update every time an order goes out | **Directly measured** — `bench_sign` vs. `bench_engine`'s submit numbers. The other clean before/after number this report has |
 
 ### The comparison we didn't make
 
-[`tests/reference_book.hpp`](tests/reference_book.hpp) — the deliberately
+[`tests/reference_book.hpp`](../tests/reference_book.hpp) — the deliberately
 naive `std::map`+`std::deque`+heap-allocation-throughout book used to
 differentially fuzz `OrderBook` for *correctness* (see
-[`fuzz_vs_reference.cpp`](tests/fuzz_vs_reference.cpp), 20,000 iterations, 0
+[`fuzz_vs_reference.cpp`](../tests/fuzz_vs_reference.cpp), 20,000 iterations, 0
 mismatches) — carries its own header comment stating plainly: **"This is
 explicitly not the A/B performance twin... that was declined."** This report
 honors that decision rather than quietly overriding it to manufacture a
@@ -196,7 +196,7 @@ range as the test that found it — not a hypothetical list, an actual one:
 1. **`ShadowBook::set_level`'s side-flip fix, incomplete.** A price level
    flipping from one side to the other *at a zero quantity* still corrupted
    the shared `qty_`/mask-bit invariant. Found by
-   [`tests/test_replay_fuzz.cpp`](tests/test_replay_fuzz.cpp)'s biased
+   [`tests/test_replay_fuzz.cpp`](../tests/test_replay_fuzz.cpp)'s biased
    adversarial fuzzing (828,000 checks, 4,000 events, 2 markets) through a
    real `Brain` thread.
 2. **`OrderTracker::on_acked` zombie entries.** A fully-resolved
@@ -204,7 +204,7 @@ range as the test that found it — not a hypothetical list, an actual one:
    anyway, and nothing ever removed it — silently disabling
    `OrderBookImbalance`/`TradeFlow` (both gate re-entry on
    `outstanding_orders.empty()`) after their very first trade. Found by
-   [`tests/test_pipeline_e2e.cpp`](tests/test_pipeline_e2e.cpp), which
+   [`tests/test_pipeline_e2e.cpp`](../tests/test_pipeline_e2e.cpp), which
    proves the fix with a real second `Cross` after the first one fully
    resolves — the same test fails (times out) against the pre-fix code, on
    purpose, so the regression test is provably not vacuous.
@@ -213,14 +213,14 @@ range as the test that found it — not a hypothetical list, an actual one:
    `on_acked` — called immediately before it, for the same event — had
    already set `remaining_qty` from Kalshi's own authoritative number. A
    10-lot order reporting "6 remaining, 4 filled" tracked as 2 remaining.
-   Found by [`tests/test_hostile_events.cpp`](tests/test_hostile_events.cpp).
+   Found by [`tests/test_hostile_events.cpp`](../tests/test_hostile_events.cpp).
 4. **`SeqTracker`'s doc comment didn't match its code.** It promised "won't
    trust the stream again until the next Snapshot" after a gap; the code
    actually accepted the very next delta unconditionally. Found by the same
    file, alongside a matching unbounded-growth fix in
-   [`live/kalshi_gateway.hpp`](live/kalshi_gateway.hpp)'s Kalshi-UUID map.
+   [`live/kalshi_gateway.hpp`](../live/kalshi_gateway.hpp)'s Kalshi-UUID map.
 
-Full narrative for each in [README.md](README.md)'s Stage 3/Stage 4
+Full narrative for each in [README.md](../README.md)'s Stage 3/Stage 4
 sections.
 
 ---
@@ -372,7 +372,7 @@ profile, 3s/point):
 | 500,000 | 424,630 | 505 | 1,873 | 959,301 |
 | 1,000,000 | 429,221 | 501 | 1,541 | 886,440 |
 
-![throughput vs. tail latency](perf/results/throughput_vs_latency.png)
+![throughput vs. tail latency](../perf/results/throughput_vs_latency.png)
 
 **Saturation knee is around 50k-100k events/sec** for tail latency (p99.9
 roughly triples between the 10k and 50k points, then grows another order of
@@ -452,7 +452,7 @@ itself).
 | 500 | 938 | 4,202 | 20.7 |
 | 1000 | 975 | 4,225 | 21.4 |
 
-![multi-market scaling](perf/results/scaling_vs_latency.png)
+![multi-market scaling](../perf/results/scaling_vs_latency.png)
 
 **Latency stays flat within noise across the entire range** — no monotonic
 growth trend from 1 to 1000 markets. RSS grows very mildly (~1.1MB total,

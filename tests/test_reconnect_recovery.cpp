@@ -17,7 +17,7 @@
 // from "a resync snapshot has arrived" and checks Brain's reaction to it,
 // not the socket mechanics that would have produced one.
 //
-// Per explicit user direction (see PERFORMANCE.md's Limitations section):
+// Per explicit user direction (see docs/PERFORMANCE.md's Limitations section):
 // this file does NOT build or test exchange-side order reconciliation — no
 // such mechanism exists (confirmed: live/kalshi_rest.hpp has no GET-orders
 // call), and none is added here. What IS tested and documented: the system
@@ -347,7 +347,7 @@ void test_market_data_resync_leaves_risk_state_untouched() {
 // subsequent decision for that market still gets sent to the exchange, but
 // becomes permanently untrackable locally (invisible to orders_for(),
 // therefore never targetable by a future Cancel). No fix ships here — see
-// this file's header comment and PERFORMANCE.md's Limitations section.
+// this file's header comment and docs/PERFORMANCE.md's Limitations section.
 void test_gateway_failure_path_orphans_pending_orders_without_lying() {
     for (FailureMode mode : {FailureMode::SignFailure, FailureMode::UnparseableStatus, FailureMode::UnparseableBody}) {
         Harness h;

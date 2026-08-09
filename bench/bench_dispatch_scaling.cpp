@@ -192,6 +192,6 @@ int main() {
         "extra never-firing strategies registered on markets that never receive traffic -- any growth in p50/p99 "
         "across the N values above is dispatch_market_triggered's O(N)-in-total-registered-strategies scan showing "
         "up; a flat curve is this benchmark's own evidence it doesn't matter at these scales, not an assumption. "
-        "See PERFORMANCE.md's Section 10 optimization log for the accept/reject call this feeds.\n");
+        "See docs/PERFORMANCE.md's Section 10 optimization log for the accept/reject call this feeds.\n");
     return 0;
 }

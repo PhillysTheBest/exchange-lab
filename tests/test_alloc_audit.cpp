@@ -1,5 +1,5 @@
 // tests/test_alloc_audit.cpp — Stage 5, Section 9: proves, rather than
-// assumes, the specific claim CLAUDE.md/README already make — "heap-
+// assumes, the specific claim docs/CLAUDE.md/README already make — "heap-
 // allocate-only at construction, not on the hot path" — for the exact four
 // operations Brain::dispatch_market_triggered runs per event
 // (bench/bench_pipeline_stages.cpp's stages 3-6): ShadowBook::apply_delta,

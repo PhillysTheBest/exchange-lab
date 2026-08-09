@@ -9,7 +9,7 @@ band for investigation.
 Deliberately does NOT hard-fail on small noise (per the plan's own
 instruction) -- exit code reflects only whether a FLAGGED regression exists,
 and the tolerance is wide enough that this machine's normal run-to-run
-laptop variance (see PERFORMANCE.md's own discussion of that variance)
+laptop variance (see docs/PERFORMANCE.md's own discussion of that variance)
 doesn't trip it on every run.
 
 OPERATIONAL NOTE, observed directly while building this: running
@@ -33,7 +33,7 @@ import sys
 # unmodified bench_ring binary (no code change between them at all) swung
 # same-thread push+pop's p999 by +65% purely from OS scheduling jitter on a
 # laptop (no isolcpus, Turbo Boost, no tuned bare-metal box -- see
-# PERFORMANCE.md's "How to read this"). p999 is the 1-in-1000 sample out of
+# docs/PERFORMANCE.md's "How to read this"). p999 is the 1-in-1000 sample out of
 # 500,000 -- extremely sensitive to a single rare preemption -- so it gets a
 # much wider band than p50/p90, which are dominated by real architectural
 # cost rather than one-off scheduling noise. Widen these further if a real

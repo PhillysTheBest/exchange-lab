@@ -1,7 +1,7 @@
 // telemetry/telemetry.hpp — Stage 6, Part G (extended Stage 6A): the metrics model. A
 // read-only snapshot the trading engine (Brain, T2) writes to and ANY other thread
 // (this process's own periodic JSON publisher today; nothing stops a future in-process
-// reader) may read concurrently, racily, by design — see CLAUDE.md's Part F/G:
+// reader) may read concurrently, racily, by design — see docs/CLAUDE.md's Part F/G:
 // "The dashboard should be allowed to become stale. The trading engine must never
 // wait for the dashboard," and "Separate: Trading State from Telemetry/Presentation
 // State."
