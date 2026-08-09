@@ -26,3 +26,11 @@ Cargo.lock
 # runtime output, not source (see telemetry/telemetry_publisher.hpp).
 telemetry/snapshot.json
 telemetry/snapshot.json.tmp
+
+# By explicit user request: docs/ is no longer tracked in git going forward.
+# CLAUDE.md and PERFORMANCE.md moved here from the repo root and are ignored
+# along with everything else under this path -- README.md stays tracked at
+# the root (GitHub/most tooling expects it there to render as the repo
+# landing page). Files already committed under docs/ remain in git history
+# untouched; this only stops NEW changes here from being picked up.
+docs/
