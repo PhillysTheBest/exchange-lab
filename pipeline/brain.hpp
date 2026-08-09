@@ -52,6 +52,7 @@
 #include "strategy/order_tracker.hpp"
 #include "strategy/strategy.hpp"
 #include "strategy/trade_window.hpp"
+#include "telemetry/telemetry.hpp"
 
 #include <array>
 #include <atomic>
@@ -99,6 +100,16 @@ public:
 
     std::function<void(const OrderIntent&, risk::Verdict)> on_reject; // optional, for logging/metrics only
 
+    // Stage 6, Part G: optional metrics sink, nullptr by default -- same
+    // pattern as on_reject just above. When unset, every call site below is a
+    // single `if (telemetry_)` null-check and nothing else; Brain's own
+    // decision path (what gets accepted/rejected/sent) never changes based on
+    // whether one is attached. Not a constructor parameter, so every existing
+    // test/bench/tool that builds a Brain (there are many) stays untouched --
+    // attach after construction, e.g. from tools/kalshi_pipeline.cpp, right
+    // where it already constructs both.
+    void attach_telemetry(telemetry::TelemetryState* t) noexcept { telemetry_ = t; }
+
     [[nodiscard]] std::uint64_t book_events_applied() const noexcept { return book_events_applied_; }
     [[nodiscard]] std::uint64_t intents_accepted() const noexcept { return intents_accepted_; }
     [[nodiscard]] std::uint64_t intents_rejected() const noexcept { return intents_rejected_; }
@@ -126,7 +137,8 @@ public:
 private:
     void dispatch_market_triggered(MarketId market, strategy::TriggerKind trigger, RingB& intent_out) noexcept;
     void evaluate_oracle_event(const strategy::OracleEvent& e, RingB& intent_out) noexcept;
-    void handle_decision(MarketId market, const strategy::ExecutionDecision& decision, RingB& intent_out) noexcept;
+    void handle_decision(MarketId market, const strategy::ExecutionDecision& decision, RingB& intent_out,
+                          const char* strategy_name, strategy::TriggerKind trigger) noexcept;
 
     // ~450 KB total (1024 * ~440 B; was ~110 KB at the pre-Stage-5
     // kMaxMarkets=256 — see px/types.hpp's kMaxMarkets comment) as declared,
@@ -172,6 +184,8 @@ private:
 
     risk::RiskEngine risk_;
     OrderId next_order_id_ = 1;
+
+    telemetry::TelemetryState* telemetry_ = nullptr; // optional, see attach_telemetry above
 
     std::uint64_t book_events_applied_ = 0;
     std::uint64_t intents_accepted_ = 0;

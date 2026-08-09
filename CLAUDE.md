@@ -12,6 +12,57 @@ and fixed, and what's honestly out of scope — and PERFORMANCE.md for every ben
 number in one place, with methodology. This file is about how to build/test it and
 how the pieces fit together, not a restatement of either.
 
+## Stage 6 status (in progress — read this before continuing it)
+
+Stage 6 (external review, strategy evaluation, observability dashboard — see
+`docs/*.md`) is partway done. **Committed, working, tested:**
+
+- `docs/EXTERNAL_REVIEW.md`, `docs/CROSS_MARKET_RESEARCH.md` (+
+  `research/cross_market/kalshi_polymarket_snapshot.py`), `docs/EXTERNAL_INFORMATION.md`
+  — Parts A/C/D, external/cross-market/external-info research.
+- `docs/BACKTEST_ASSESSMENT.md` + `eval/` (`fees.hpp`, `fill_simulator.hpp`,
+  `backtest_runner.hpp`, `eval_metrics.hpp`, `synthetic_market.hpp`) +
+  `tests/test_eval_framework.cpp` + `tools/run_backtest.cpp` — Parts B.2/B.3, the
+  strategy evaluation framework. Drives a real `Brain`/`Strategy`/`RiskEngine`
+  synchronously (single-threaded, deterministic — see `BacktestRunner`'s own header
+  comment for why, not `Brain::run()`'s threaded loop). Found and fixed two real
+  bugs in `pipeline/brain.cpp` along the way (a clock-unit bug that silently
+  disabled `TradeFlow` everywhere, live pipeline included, and a same-tick
+  Acked-before-Fill race) — both documented in `docs/BACKTEST_ASSESSMENT.md`, both
+  verified against the full existing test suite with zero regressions.
+  `pipeline/brain.hpp`'s `apply_book_event`/`apply_exec_report` are now public
+  (promoted from private) specifically so this evaluator can call them without
+  going through a ring/thread.
+
+- `telemetry/position_account.hpp`, `telemetry/telemetry.hpp`,
+  `telemetry/telemetry_publisher.hpp`, `tests/test_telemetry.cpp` (Part G — the
+  metrics model) — now building and passing (`Makefile`'s `test_telemetry` rule
+  added, header-only, no object link needed, same as `test_market_state.cpp`/
+  `test_alloc_audit.cpp`). `Brain` now holds an optional `TelemetryState*`
+  (`pipeline/brain.hpp`'s `attach_telemetry`, nullptr by default, same pattern as
+  `Brain::on_reject`) written from `apply_book_event`/`apply_exec_report`/
+  `handle_decision`/`run()` — book updates, lifecycle changes, every actionable
+  strategy decision, and the full order lifecycle (submit/ack/fill/cancel/reject).
+  `strategy/order_tracker.hpp` gained a small read-only `find(market, id)` lookup
+  (additive, not on any decision path) so the Acked/Cancelled/Reject hooks can
+  recover a tracked order's side/price, which `ExecReport` itself doesn't carry
+  for those kinds. Wired into `tools/kalshi_pipeline.cpp`'s existing 500ms polling
+  loop via a new `--telemetry-out FILE` flag (default `telemetry_snapshot.json`);
+  no new thread. Fee tracking is a known gap: `ExecReport` carries no fee field
+  today, so `on_order_filled` always publishes `fee_cents=0` — revisit once/if T3
+  starts reporting a real one. Verified against the full test suite (`test` +
+  `test-live`) with zero regressions, plus an end-to-end manual run through
+  `--replay tests/frames/smoke.jsonl` confirming real book events produce a
+  populated, valid telemetry JSON file.
+
+**Not started:** Part E/F (the Rust/Axum dashboard reading the published JSON —
+user has specified Rust for this; `--telemetry-out`'s default path is provisional
+until that dashboard settles on its own convention — see `docs/DASHBOARD.md`,
+referenced by `docs/EXTERNAL_REVIEW.md` but not yet written), the polished Part H
+comparison writeup (raw numbers already obtainable via `tools/run_backtest.cpp`,
+not yet written up), Part I's decision-gate doc and the README/CLAUDE.md Stage 6
+narrative section.
+
 ## Build
 
 No CMake/Ninja — a hand-written `Makefile`, built via `mingw32-make` (Windows/MSYS2

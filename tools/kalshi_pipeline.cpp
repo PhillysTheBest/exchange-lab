@@ -30,6 +30,8 @@
 #include "strategy/order_book_imbalance.hpp"
 #include "strategy/passive_market_maker.hpp"
 #include "strategy/trade_flow.hpp"
+#include "telemetry/telemetry.hpp"
+#include "telemetry/telemetry_publisher.hpp"
 #include "ticker_registry.hpp"
 
 #include <atomic>
@@ -54,12 +56,18 @@ void on_sigint(int) { g_stop = 1; }
 
 void print_usage(const char* argv0) {
     std::fprintf(stderr,
-        "usage: %s [--replay FILE] [--demo] TICKER [TICKER...]\n"
-        "  --replay FILE   drive T1 from a file of raw WS-message JSON lines\n"
-        "                  instead of a real connection (see tests/frames/)\n"
-        "  --demo          allow T3 to actually send to Kalshi's DEMO host\n"
-        "                  (needs KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY_PATH)\n"
-        "                  -- omit this and every order stays dry-run only\n",
+        "usage: %s [--replay FILE] [--demo] [--telemetry-out FILE] TICKER [TICKER...]\n"
+        "  --replay FILE       drive T1 from a file of raw WS-message JSON lines\n"
+        "                      instead of a real connection (see tests/frames/)\n"
+        "  --demo              allow T3 to actually send to Kalshi's DEMO host\n"
+        "                      (needs KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY_PATH)\n"
+        "                      -- omit this and every order stays dry-run only\n"
+        "  --telemetry-out FILE  where to publish the JSON telemetry snapshot every\n"
+        "                      ~500ms (default: telemetry_snapshot.json). Stage 6,\n"
+        "                      Part G -- see telemetry/telemetry_publisher.hpp. The\n"
+        "                      Part E/F dashboard that polls this doesn't exist yet\n"
+        "                      (docs/DASHBOARD.md, not started), so this path is\n"
+        "                      provisional until that settles on its own convention.\n",
         argv0);
 }
 } // namespace
@@ -67,6 +75,7 @@ void print_usage(const char* argv0) {
 int main(int argc, char** argv) {
     std::string replay_path;
     bool demo_send = false;
+    std::string telemetry_path = "telemetry_snapshot.json";
     std::vector<std::string> tickers;
 
     for (int i = 1; i < argc; ++i) {
@@ -75,6 +84,8 @@ int main(int argc, char** argv) {
             replay_path = argv[++i];
         } else if (arg == "--demo") {
             demo_send = true;
+        } else if (arg == "--telemetry-out" && i + 1 < argc) {
+            telemetry_path = argv[++i];
         } else if (arg == "-h" || arg == "--help") {
             print_usage(argv[0]);
             return 0;
@@ -143,6 +154,21 @@ int main(int argc, char** argv) {
                      static_cast<int>(intent.side), intent.price, intent.qty, risk::to_string(v));
     };
 
+    // ---- Stage 6, Part G: telemetry -- optional, attached before any thread
+    // starts so Brain's every telemetry_ != nullptr check is already correctly
+    // populated from T2's very first event. Constructed here (this thread), then
+    // only ever WRITTEN by T2 (via Brain's on_* calls, see telemetry/telemetry.hpp's
+    // own header comment on the two-tier design) and READ by this thread's existing
+    // 500ms polling loop below -- no new thread, matching CLAUDE.md's Stage 6 status
+    // note for this part.
+    const auto start_ts_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count();
+    telemetry::TelemetryState telemetry_state(start_ts_ms);
+    brain->attach_telemetry(&telemetry_state);
+    telemetry_state.set_mode(demo_send ? telemetry::Mode::Live : telemetry::Mode::DryRun);
+    telemetry_state.set_active_markets(static_cast<std::uint32_t>(tickers.size()));
+
     // ---- T3 Gateway: sink chosen once, here, never per-order --------------
     std::unique_ptr<Sink> sink;
     if (demo_send) {
@@ -185,9 +211,17 @@ int main(int argc, char** argv) {
     ingress.on_warning = [](std::string_view m) {
         std::fprintf(stderr, "[ingress-warn] %.*s\n", static_cast<int>(m.size()), m.data());
     };
-    ingress.on_reconnecting = [](int attempt, std::chrono::milliseconds backoff) {
+    ingress.on_reconnecting = [&telemetry_state](int attempt, std::chrono::milliseconds backoff) {
         std::fprintf(stderr, "[ingress] (re)connect attempt %d (waited %lldms)\n", attempt,
                      static_cast<long long>(backoff.count()));
+        // Ingress has no dedicated "connected" callback (see pipeline/ingress.hpp) --
+        // on_reconnecting is the one signal telemetry has that a (re)connect attempt
+        // is in flight. attempt > 1 means this isn't the very first connect of the
+        // process, i.e. a prior connection existed and was just lost -- that's the
+        // reconnect_count this counts, not every startup attempt.
+        telemetry_state.set_conn_status(telemetry::ConnStatus::Connecting);
+        telemetry_state.set_connected(false);
+        if (attempt > 1) telemetry_state.note_reconnect();
     };
 
     std::thread oracle_thread;
@@ -235,6 +269,20 @@ int main(int argc, char** argv) {
                      static_cast<unsigned long long>(brain->book_events_applied()),
                      static_cast<unsigned long long>(brain->intents_accepted()),
                      static_cast<unsigned long long>(brain->intents_rejected()));
+
+        // Best available "are we actually receiving data" signal: Ingress has no
+        // dedicated connected callback (see on_reconnecting above), but book_events
+        // only ever increment from real T1 traffic reaching T2 -- replay mode counts
+        // too, which is correct (it really is processing events, just from a file
+        // instead of a socket).
+        if (brain->book_events_applied() > 0) {
+            telemetry_state.set_connected(true);
+            telemetry_state.set_conn_status(telemetry::ConnStatus::Connected);
+        }
+        if (!telemetry::publish_snapshot(telemetry_state, telemetry_path)) {
+            std::fprintf(stderr, "[telemetry] failed to publish snapshot to %s\n", telemetry_path.c_str());
+        }
+
         if (!replay_path.empty()) break; // replay is a one-shot batch, not a long-running session
     }
 
@@ -243,6 +291,13 @@ int main(int argc, char** argv) {
     if (oracle_thread.joinable()) oracle_thread.join();
     brain_thread.join();
     gateway_thread.join();
+
+    // One last publish so a dashboard polling telemetry_path sees the run's final
+    // state (connected/false, final counters) rather than whatever was current up
+    // to 500ms before shutdown.
+    telemetry_state.set_connected(false);
+    telemetry_state.set_conn_status(telemetry::ConnStatus::Disconnected);
+    (void)telemetry::publish_snapshot(telemetry_state, telemetry_path);
 
     std::fprintf(stderr, "stopped. final: book_events=%llu intents_accepted=%llu intents_rejected=%llu\n",
                  static_cast<unsigned long long>(brain->book_events_applied()),

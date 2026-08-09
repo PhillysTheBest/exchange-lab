@@ -188,6 +188,22 @@ public:
         return std::span<const RestingOrder>(mo.orders.data(), mo.acked_count);
     }
 
+    // Read-only lookup by id (acked OR still-pending) — nullptr if `id` isn't
+    // currently tracked for `market`. Added for Stage 6, Part G: Brain's
+    // optional telemetry hooks need this order's own side/price when an
+    // ExecReport (Acked/Cancelled/Reject) arrives, and those reports don't
+    // carry either field themselves (see pipeline/events.hpp's ExecReport —
+    // side/price are documented "Fill only"). Never on any decision-path —
+    // only called from Brain's telemetry_ != nullptr branches, themselves
+    // O(1)/allocation-free and gated on order-lifecycle events, not every
+    // BookUpdate — so this doesn't change orders_for()'s own "acked-only, by
+    // construction" guarantee for what a Strategy can see.
+    [[nodiscard]] const RestingOrder* find(MarketId market, OrderId id) const noexcept {
+        const MarketOrders& mo = by_market_[market];
+        const std::size_t idx = find_index(mo, id);
+        return idx == kNotFound ? nullptr : &mo.orders[idx];
+    }
+
 private:
     static constexpr std::size_t kNotFound = static_cast<std::size_t>(-1);
 
