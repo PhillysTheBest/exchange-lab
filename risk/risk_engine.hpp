@@ -25,14 +25,31 @@ enum class Verdict : std::uint8_t {
     RejectFatFinger,
     RejectExposure,
     RejectRateLimited,
+    // RejectMarketHalted/RejectMarketResolved (Stage 4) are NOT produced by
+    // RiskEngine::check()/check_cancel() below — this class's own header
+    // comment still means it literally when it says "exactly three things
+    // and nothing more." Market lifecycle gating is Brain's own check
+    // (pipeline/brain.cpp's handle_decision, against market_status_), kept
+    // out of RiskEngine on purpose: RiskEngine's three checks protect
+    // against a broken/greedy STRATEGY's individual order regardless of
+    // market conditions; lifecycle gating is about respecting the
+    // EXCHANGE's own state, a different kind of question. These two values
+    // live here anyway, rather than inventing a parallel enum, because
+    // Brain::on_reject's signature already carries a Verdict — reusing this
+    // vocabulary for "why wasn't this intent sent" is more honest than
+    // forcing two call sites to agree on two separate reject-reason types.
+    RejectMarketHalted,
+    RejectMarketResolved,
 };
 
 [[nodiscard]] inline const char* to_string(Verdict v) noexcept {
     switch (v) {
-        case Verdict::Accept:            return "accept";
-        case Verdict::RejectFatFinger:   return "fat_finger";
-        case Verdict::RejectExposure:    return "exposure_limit";
-        case Verdict::RejectRateLimited: return "rate_limited";
+        case Verdict::Accept:              return "accept";
+        case Verdict::RejectFatFinger:     return "fat_finger";
+        case Verdict::RejectExposure:      return "exposure_limit";
+        case Verdict::RejectRateLimited:   return "rate_limited";
+        case Verdict::RejectMarketHalted:  return "market_halted";
+        case Verdict::RejectMarketResolved: return "market_resolved";
     }
     return "unknown";
 }

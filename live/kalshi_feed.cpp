@@ -127,10 +127,39 @@ bool parse_feed_message(std::string_view raw, FeedMsg& out, std::string& error) 
         return true;
     }
 
-    // Recognized-but-unhandled or genuinely unknown type (fill,
-    // market_lifecycle_v2, error, ...) — not this project's concern yet, and
-    // deliberately not treated as an error: a type we don't act on arriving on
-    // the wire is routine, not exceptional.
+    if (type == "market_lifecycle_v2") {
+        out.kind = FeedMsgKind::Lifecycle;
+        std::string_view ticker, event_type;
+        if (!json_extract_string(raw, "market_ticker", ticker) || !json_extract_string(raw, "event_type", event_type)) {
+            error = "market_lifecycle_v2 missing market_ticker/event_type";
+            return false;
+        }
+        out.market_ticker = std::string(ticker);
+        out.lifecycle_event_type = std::string(event_type);
+
+        // See this file's SCHEMA STATUS note for the full event_type ->
+        // MarketStatus mapping and why there's no "halted" value to map
+        // from directly. Anything not listed here (created,
+        // close_date_updated, price_level_structure_updated,
+        // metadata_updated) leaves has_status_change false — decoded, not
+        // dropped as Unknown, but implying no tradeability change.
+        if (event_type == "activated") {
+            out.has_status_change = true;
+            out.lifecycle_status = MarketStatus::Open;
+        } else if (event_type == "deactivated") {
+            out.has_status_change = true;
+            out.lifecycle_status = MarketStatus::Halted;
+        } else if (event_type == "determined" || event_type == "settled") {
+            out.has_status_change = true;
+            out.lifecycle_status = MarketStatus::Resolved;
+        }
+        return true;
+    }
+
+    // Recognized-but-unhandled or genuinely unknown type (fill, error, ...)
+    // — not this project's concern yet, and deliberately not treated as an
+    // error: a type we don't act on arriving on the wire is routine, not
+    // exceptional.
     out.kind = FeedMsgKind::Unknown;
     return true;
 }

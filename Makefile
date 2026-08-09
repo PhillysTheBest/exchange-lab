@@ -230,13 +230,20 @@ $(OBJDIR_RELEASE)/test_hostile_events$(EXE): tests/test_hostile_events.cpp $(REL
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) $< $(RELEASE_OBJS) $(LIVE_OBJS) $(PIPELINE_OBJS) -o $@ $(LIVE_LIBS)
 
+# test_lifecycle.cpp (Stage 4, second pass): market_lifecycle_v2 decoding,
+# the event_type -> MarketStatus mapping, and Brain's halt/resolution gate.
+$(OBJDIR_RELEASE)/test_lifecycle$(EXE): tests/test_lifecycle.cpp $(RELEASE_OBJS) $(LIVE_OBJS) $(PIPELINE_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) $< $(RELEASE_OBJS) $(LIVE_OBJS) $(PIPELINE_OBJS) -o $@ $(LIVE_LIBS)
+
 .PHONY: test-live
-test-live: $(OBJDIR_RELEASE)/test_feed_parse$(EXE) $(OBJDIR_RELEASE)/test_gateway_dry_run$(EXE) $(OBJDIR_RELEASE)/test_replay_determinism$(EXE) $(OBJDIR_RELEASE)/test_pipeline_e2e$(EXE) $(OBJDIR_RELEASE)/test_hostile_events$(EXE)
+test-live: $(OBJDIR_RELEASE)/test_feed_parse$(EXE) $(OBJDIR_RELEASE)/test_gateway_dry_run$(EXE) $(OBJDIR_RELEASE)/test_replay_determinism$(EXE) $(OBJDIR_RELEASE)/test_pipeline_e2e$(EXE) $(OBJDIR_RELEASE)/test_hostile_events$(EXE) $(OBJDIR_RELEASE)/test_lifecycle$(EXE)
 	@echo "== test_feed_parse ==" && $(OBJDIR_RELEASE)/test_feed_parse$(EXE)
 	@echo "== test_gateway_dry_run ==" && $(OBJDIR_RELEASE)/test_gateway_dry_run$(EXE)
 	@echo "== test_replay_determinism ==" && $(OBJDIR_RELEASE)/test_replay_determinism$(EXE)
 	@echo "== test_pipeline_e2e ==" && $(OBJDIR_RELEASE)/test_pipeline_e2e$(EXE)
 	@echo "== test_hostile_events ==" && $(OBJDIR_RELEASE)/test_hostile_events$(EXE)
+	@echo "== test_lifecycle ==" && $(OBJDIR_RELEASE)/test_lifecycle$(EXE)
 
 # ---- bench-live (OpenSSL-dependent benchmarks) ------------------------------
 # bench_sign only needs kalshi_auth.o directly (no Ingress/Brain involved).

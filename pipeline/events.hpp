@@ -35,7 +35,16 @@ namespace px::pipeline {
 // side/price/qty (the trade's own) plus ts_ms (the trade's own exchange
 // timestamp — NOT Brain's processing-time clock, needed for TradeWindow's
 // time-bounded recency logic in strategy/trade_window.hpp).
-enum class BookEventKind : std::uint8_t { SnapshotBegin, LevelSet, LevelDelta, Ticker, Trade };
+//
+// LifecycleStatus (Stage 4): a mapped market_lifecycle_v2 event (see
+// live/kalshi_feed.hpp's SCHEMA STATUS note for the event_type -> MarketStatus
+// mapping — Kalshi's spec has no literal "halted" value). Carries the new
+// status in `lifecycle_status`; every other field is unused. Brain applies it
+// to market_status_ and dispatches BookUpdate same as any other event, so a
+// strategy can react immediately (e.g. cancel a resting quote the moment its
+// market halts) — the actual "stop new execution" / "stop trading
+// permanently" gating happens in Brain::handle_decision, not here.
+enum class BookEventKind : std::uint8_t { SnapshotBegin, LevelSet, LevelDelta, Ticker, Trade, LifecycleStatus };
 
 struct BookEvent {
     BookEventKind kind = BookEventKind::LevelSet;
@@ -46,13 +55,15 @@ struct BookEvent {
     // per-level count anywhere near INT32_MAX would itself indicate a decode
     // bug upstream). Ticker: price/ask_price carry yes_bid/yes_ask; side and
     // qty/qty_delta are unused. Trade: side/price/qty are the trade's own,
-    // ts_ms is its exchange timestamp. SnapshotBegin uses only `market`.
+    // ts_ms is its exchange timestamp. LifecycleStatus: lifecycle_status only.
+    // SnapshotBegin uses only `market`.
     Side side = Side::Buy;
     Price price = 0;
     Qty qty = 0;
     std::int32_t qty_delta = 0;
     Price ask_price = 0;  // Ticker only: yes_ask (price above doubles as yes_bid)
     std::int64_t ts_ms = 0; // Trade only: the trade's own exchange timestamp
+    MarketStatus lifecycle_status = MarketStatus::Open; // LifecycleStatus only
 };
 static_assert(std::is_trivially_copyable_v<BookEvent>, "BookEvent crosses an SpscRing — must stay POD");
 

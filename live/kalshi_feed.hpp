@@ -20,6 +20,18 @@
 // field trade-message capture. Endpoint defaults to Kalshi's **demo**
 // environment; pointing this at production is a change the caller of
 // connect() makes explicitly (see KalshiConfig::host).
+//
+// `market_lifecycle_v2` (Stage 4), also checked against the same spec: the
+// envelope's `msg` carries `market_ticker` and an `event_type` enum —
+// `created`, `activated`, `deactivated`, `close_date_updated`, `determined`,
+// `settled`, `price_level_structure_updated`, `metadata_updated`. There is
+// **no** `"halted"` value anywhere in the spec — confirmed by checking, not
+// assumed from the name of the channel. This project maps `activated` ->
+// `MarketStatus::Open`, `deactivated` -> `MarketStatus::Halted` (the closest
+// real analog to a halt: "not tradeable right now," duration unstated), and
+// `determined`/`settled` -> `MarketStatus::Resolved` (outcome known or paid
+// out — nothing left to trade either way). The remaining four event types
+// are decoded but imply no status change — see FeedMsg::has_status_change.
 #pragma once
 
 #include "kalshi_auth.hpp"
@@ -48,7 +60,7 @@ struct KalshiConfig {
     std::string private_key_path; // PEM file — read at runtime, never embedded in source
 };
 
-enum class FeedMsgKind : std::uint8_t { Unknown, Subscribed, Snapshot, Delta, Ticker, Trade };
+enum class FeedMsgKind : std::uint8_t { Unknown, Subscribed, Snapshot, Delta, Ticker, Trade, Lifecycle };
 
 struct FeedLevel {
     Side  side;  // normalized YES-relative — see normalize.hpp
@@ -100,6 +112,17 @@ struct FeedMsg {
     Price trade_price = 0;
     Qty trade_qty = 0;
     std::int64_t trade_ts_ms = 0;
+
+    // Lifecycle only (market_lifecycle_v2 — see the SCHEMA STATUS note
+    // above). lifecycle_event_type is Kalshi's own raw event_type string,
+    // always populated when kind == Lifecycle — kept for logging/on_warning
+    // even for event types this project doesn't map to a status change.
+    // has_status_change is true only for the subset that actually implies
+    // one (see parse_feed_message's mapping); lifecycle_status is valid iff
+    // has_status_change is true.
+    std::string lifecycle_event_type;
+    bool has_status_change = false;
+    MarketStatus lifecycle_status = MarketStatus::Open;
 };
 
 // Pure, stateful gap detector for the `seq` field — isolated from the

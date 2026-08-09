@@ -11,23 +11,25 @@
 //     exactly what test_replay_fuzz.cpp's 4,000-event adversarial stream
 //     already is, and duplicating it under a different name would only
 //     conflate two test files' failure signals.
-//   - "Reconnect" is NOT tested, because it doesn't exist: Ingress::run
-//     (pipeline/ingress.cpp) has no retry/reconnect loop at all — a receive
-//     failure ends T1's thread outright (see test_connect_failure_ends_run
-//     below for the one piece of this that IS real and testable: a
-//     connection that never succeeds in the first place, handled cleanly).
-//     A live deployment currently has no signal that T1 died and the book
-//     has gone stale. Flagged as a real, un-built gap, not silently routed
-//     around or faked.
-//   - "Market halt" / "market resolution" are NOT handled by this pipeline —
-//     confirmed against live/kalshi_feed.cpp's own comment: `market_lifecycle_v2`
-//     decodes to FeedMsgKind::Unknown and is deliberately ignored.
-//     test_unrecognized_message_type_is_safely_ignored below proves that
-//     "ignored" means "safely dropped," not "corrupts state" — it does NOT
-//     claim any strategy reacts to a halt (none can; there's no signal for
-//     one to react to). Building halt/resolution-aware trading logic is
-//     real, scoped-out work, same honesty this project already applies to
-//     the async fill-listener gap (live/kalshi_gateway.hpp).
+//   - "Reconnect" (Stage 4, second pass): Ingress::run now retries connect/
+//     subscribe/receive failures with capped exponential backoff instead of
+//     ending T1's thread outright — see test_connect_failure_retries_until_stopped,
+//     test_reconnect_backs_off_between_attempts, and
+//     test_reconnect_stop_flag_interrupts_backoff_promptly below. What's
+//     NOT independently exercised here: an established connection dying
+//     mid-stream (only "never succeeds in the first place" is testable
+//     offline), and whether a successful reconnect's resync actually reaches
+//     the wire (request_resync's own early-return-without-a-real-sid means
+//     that, same boundary tests/test_pipeline_e2e.cpp and this file's other
+//     tests already accept for anything past signing/socket construction).
+//   - "Market halt" / "market resolution" (Stage 4, second pass) ARE now
+//     handled — see tests/test_lifecycle.cpp for that specifically:
+//     market_lifecycle_v2 decoding, the event_type -> MarketStatus mapping,
+//     and Brain's gate against it. test_unrecognized_message_type_is_safely_ignored
+//     below still proves the narrower, still-true claim that a genuinely
+//     unhandled message type (now "fill," not market_lifecycle_v2 — see that
+//     test) is safely dropped, not silently misparsed into something that
+//     corrupts state.
 //
 // Two real bugs were found and fixed while writing this file, both because a
 // test tried the adversarial case rather than assuming the happy path
@@ -363,17 +365,17 @@ void test_risk_rejection_never_reaches_order_tracker_or_gateway() {
     return wrote;
 }
 
-void test_connect_failure_ends_run_cleanly() {
+void test_connect_failure_retries_until_stopped() {
     // "Disconnect," tested the one honest way available offline: a
     // connection that never succeeds in the first place, via the same RFC
     // 6761 guaranteed-non-resolving host tests/test_gateway_dry_run.cpp
-    // already uses. What THIS proves: Ingress::run doesn't hang, doesn't
-    // crash, and reports the failure via on_error exactly once, cleanly
-    // exiting the thread — the honest boundary of what's testable without a
-    // real or mocked socket (an established connection dying mid-stream is
-    // not exercised here; see the file header for why that's flagged, not
-    // built, given Ingress::run has no reconnect logic to test in the first
-    // place).
+    // already uses. What THIS proves, post-reconnect-logic: Ingress::run no
+    // longer gives up after one failure — it keeps retrying (with backoff;
+    // see the next two tests for that specifically) until stop_flag is set,
+    // and reports every attempt via on_error rather than going silent. An
+    // established connection dying mid-stream (as opposed to never
+    // succeeding) isn't independently exercised here — that's still the
+    // honest boundary of what's testable without a real or mocked socket.
     const std::string key_path = "build/_test_hostile_key.pem";
     PX_CHECK(write_throwaway_key(key_path));
 
@@ -388,22 +390,93 @@ void test_connect_failure_ends_run_cleanly() {
 
     std::atomic<int> error_count{0};
     std::string last_error;
-    std::atomic<bool> error_set{false};
     ingress.on_error = [&](std::string_view msg) {
         last_error = std::string(msg);
         ++error_count;
-        error_set.store(true, std::memory_order_release);
     };
 
     RingA ring_a;
     std::atomic<bool> stop{false};
     std::thread t([&] { ingress.run(ring_a, stop); });
 
-    PX_CHECK(wait_until([&] { return error_set.load(std::memory_order_acquire); }));
-    t.join(); // run() returns on its own after a failed connect -- no stop_flag needed
-    PX_CHECK(error_count.load() == 1); // exactly once, not a retry storm
+    PX_CHECK(wait_until([&] { return error_count.load() >= 2; })); // more than one attempt -- not give-up-after-one
+    stop.store(true, std::memory_order_relaxed); // the only way run() exits now -- see ingress.hpp
+    t.join(); // if run() somehow never noticed stop_flag, this blocks -- the test itself times out the suite
+    PX_CHECK(error_count.load() >= 2);
     PX_CHECK(last_error.find("connect failed") != std::string::npos);
 
+    std::remove(key_path.c_str());
+}
+
+void test_reconnect_backs_off_between_attempts() {
+    // The retry schedule itself: attempt 2's reported backoff must be at
+    // least kInitialBackoff (1s) -- proving this isn't a tight retry loop
+    // hammering a down connection, which is its own kind of hostile-event
+    // risk (to the exchange, and to this process's own CPU).
+    const std::string key_path = "build/_test_hostile_key2.pem";
+    PX_CHECK(write_throwaway_key(key_path));
+
+    TickerRegistry registry;
+    MarketId market;
+    PX_CHECK(registry.add("HOSTILE-BACKOFF", market));
+
+    KalshiConfig cfg;
+    cfg.host = "invalid.invalid";
+    cfg.private_key_path = key_path;
+    Ingress ingress(cfg, registry);
+
+    std::atomic<int> last_attempt{0};
+    std::atomic<long long> last_backoff_ms{-1};
+    ingress.on_reconnecting = [&](int attempt, std::chrono::milliseconds backoff) {
+        last_attempt.store(attempt, std::memory_order_release);
+        last_backoff_ms.store(backoff.count(), std::memory_order_release);
+    };
+
+    RingA ring_a;
+    std::atomic<bool> stop{false};
+    std::thread t([&] { ingress.run(ring_a, stop); });
+
+    PX_CHECK(wait_until([&] { return last_attempt.load(std::memory_order_acquire) >= 2; }, /*seconds=*/5));
+    PX_CHECK(last_backoff_ms.load(std::memory_order_acquire) >= 1000); // >= kInitialBackoff
+
+    stop.store(true, std::memory_order_relaxed);
+    t.join();
+    std::remove(key_path.c_str());
+}
+
+void test_reconnect_stop_flag_interrupts_backoff_promptly() {
+    // Correctness property of sleep_or_stop (pipeline/ingress.cpp): a stop
+    // request arriving mid-backoff must be honored within one poll slice
+    // (100ms), not waited out to the full (up to 30s) backoff duration --
+    // otherwise a clean shutdown could hang for tens of seconds.
+    const std::string key_path = "build/_test_hostile_key3.pem";
+    PX_CHECK(write_throwaway_key(key_path));
+
+    TickerRegistry registry;
+    MarketId market;
+    PX_CHECK(registry.add("HOSTILE-STOP-DURING-BACKOFF", market));
+
+    KalshiConfig cfg;
+    cfg.host = "invalid.invalid";
+    cfg.private_key_path = key_path;
+    Ingress ingress(cfg, registry);
+
+    std::atomic<int> attempt_count{0};
+    ingress.on_reconnecting = [&](int, std::chrono::milliseconds) { ++attempt_count; };
+
+    RingA ring_a;
+    std::atomic<bool> stop{false};
+    std::thread t([&] { ingress.run(ring_a, stop); });
+
+    // Wait for the first attempt to fail and enter its ~1s backoff sleep,
+    // then stop immediately -- well before that backoff would naturally end.
+    PX_CHECK(wait_until([&] { return attempt_count.load() >= 1; }));
+    const auto stop_requested_at = std::chrono::steady_clock::now();
+    stop.store(true, std::memory_order_relaxed);
+    t.join();
+    const auto elapsed = std::chrono::steady_clock::now() - stop_requested_at;
+
+    PX_CHECK(elapsed < std::chrono::milliseconds(800)); // well under the ~1000ms backoff it interrupted
     std::remove(key_path.c_str());
 }
 
@@ -434,9 +507,14 @@ void test_unrecognized_message_type_is_safely_ignored() {
     ingress.handle_message(snap, ring_a);
     PX_CHECK(wait_until([&] { return brain->book_events_applied() >= 2; }));
 
+    // "fill" -- a real Kalshi channel this project deliberately doesn't
+    // decode (see live/kalshi_gateway.hpp's FILL TRACKING note on the
+    // still-scoped-out async fill listener). market_lifecycle_v2 is no
+    // longer a valid stand-in for "unrecognized" now that it's handled --
+    // see tests/test_lifecycle.cpp for that.
     FeedMsg unknown;
-    PX_CHECK(parse_feed_message(R"({"type":"market_lifecycle_v2","sid":23,)"
-                                 R"("msg":{"market_ticker":"HOSTILE-UNKNOWN","status":"halted"}})",
+    PX_CHECK(parse_feed_message(R"({"type":"fill","sid":23,)"
+                                 R"("msg":{"market_ticker":"HOSTILE-UNKNOWN","some_field":"some_value"}})",
                                  unknown, err));
     PX_CHECK(unknown.kind == FeedMsgKind::Unknown);
     ingress.handle_message(unknown, ring_a); // Ingress::handle_message's own Unknown-kind early return
@@ -464,7 +542,9 @@ int main() {
 
     test_risk_rejection_never_reaches_order_tracker_or_gateway();
 
-    test_connect_failure_ends_run_cleanly();
+    test_connect_failure_retries_until_stopped();
+    test_reconnect_backs_off_between_attempts();
+    test_reconnect_stop_flag_interrupts_backoff_promptly();
     test_unrecognized_message_type_is_safely_ignored();
 
     PX_TEST_REPORT_AND_RETURN();

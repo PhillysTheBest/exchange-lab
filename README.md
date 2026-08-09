@@ -722,8 +722,72 @@ decision path, not the wire, is where the real edge lives (see "On what
 'sub-microsecond' actually buys here," above).
 
 ```bash
-mingw32-make test-live   # now also builds/runs test_pipeline_e2e, test_hostile_events
+mingw32-make test-live   # now also builds/runs test_pipeline_e2e, test_hostile_events, test_lifecycle
 mingw32-make bench-live  # now also builds/runs bench_pipeline_e2e
+```
+
+### Closing the last two documented gaps: reconnect and market lifecycle
+
+Everything above proved the assembled system correct and measured under the
+assumption of a single, unbroken connection to an always-open market — two
+gaps this project had explicitly flagged as absent, not silently ignored
+(see the SCOPE note in [`tests/test_hostile_events.cpp`](tests/test_hostile_events.cpp)'s
+original version). Both are now built.
+
+**Reconnect.** [`Ingress::run`](pipeline/ingress.cpp) no longer exits the
+instant a connect/subscribe/receive fails once — it retries with capped
+exponential backoff (1s, 2s, 4s, ... up to 30s, resetting the moment a
+connection is healthy again) until `stop_flag` is set, never giving up and
+going silently dark. A fresh [`KalshiFeed`](live/kalshi_feed.hpp) is
+constructed for every attempt rather than reset in place — not a style
+choice: `TlsSocket` explicitly deletes its copy constructor/assignment
+without declaring a move constructor/assignment, which (per normal C++
+rules) suppresses the *implicit* move operations too, not just copy. That
+makes `KalshiFeed` — which holds a `WebSocketClient`, which holds a
+`TlsSocket`, both by value — neither copyable nor movable, so "reset for a
+reconnect" can only honestly mean "construct a new one." After a successful
+reconnect, every watched ticker gets an explicit fresh-snapshot request via
+`request_resync` — reusing the *exact* mechanism a seq gap already
+triggers, rather than assuming a bare `subscribe()` delivers one on its own
+(an assumption this project's own schema-verification discipline wouldn't
+let stand unconfirmed). That snapshot resynchronizes state through
+already-tested paths with nothing new to get wrong: `SnapshotBegin` already
+clears the `ShadowBook` (`pipeline/brain.cpp`), and a `Snapshot` already
+unconditionally re-baselines `SeqTracker` (`kalshi_feed.hpp`). Proven in
+[`tests/test_hostile_events.cpp`](tests/test_hostile_events.cpp): retries
+actually happen (not give-up-after-one-failure), the backoff schedule is
+real (not a tight retry loop), and `stop_flag` interrupts a backoff
+promptly rather than being waited out.
+
+**Market lifecycle.** Checked against Kalshi's real AsyncAPI spec before
+writing a line of mapping code — same discipline as every other schema fact
+in this project — `market_lifecycle_v2`'s `event_type` enum has **no
+`"halted"` value**: `created`, `activated`, `deactivated`,
+`close_date_updated`, `determined`, `settled`,
+`price_level_structure_updated`, `metadata_updated`. This project maps
+`activated` → `Open`, `deactivated` → `Halted` (the closest real analog —
+"not tradeable right now," duration unstated), and `determined`/`settled` →
+`Resolved`, reusing `px::MarketStatus` — the *offline* engine's own
+`PreOpen`/`Open`/`Halted`/`Resolved` vocabulary
+([`px/market.hpp`](include/px/market.hpp)) — rather than inventing a parallel
+enum for the live path. `Brain` tracks one `MarketStatus` per market,
+**defaulting to `Open`, not `PreOpen`**: Kalshi's lifecycle channel reports
+state *changes* from subscription time onward, not a backfill of current
+status, so a market already open before this pipeline connected would never
+get an explicit `activated` event — defaulting to `PreOpen` would misread
+silence as "not tradeable" and block every order this system would otherwise
+send, a strictly worse failure mode than the one line of code that avoids it.
+`Brain::handle_decision` gates on it before `RiskEngine` even runs: `Halted`
+blocks new orders but still allows `Cancel` (risk-reducing, the same
+reasoning `RiskEngine::check_cancel` already extends to fat-finger/exposure);
+`Resolved` blocks everything, cancels included — nothing is left to trade.
+Proven in [`tests/test_lifecycle.cpp`](tests/test_lifecycle.cpp) (68 checks)
+through the real `PassiveMarketMaker` reacting to real book movement — not a
+scripted stand-in — across the full schema-mapping, `Ingress`-decoding, and
+`Brain`-gating layers.
+
+```bash
+mingw32-make test-live   # now also builds/runs test_lifecycle
 ```
 
 ## Trying it yourself

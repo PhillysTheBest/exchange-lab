@@ -35,6 +35,17 @@ void Brain::apply_book_event(const BookEvent& e, RingB& intent_out) noexcept {
         case BookEventKind::Trade:
             trade_windows_[e.market].record(e.side, e.price, e.qty, e.ts_ms);
             break;
+        case BookEventKind::LifecycleStatus:
+            // Dispatched like any other BookUpdate (falls through to the
+            // shared tail below) so a strategy can react immediately — e.g.
+            // cancel a resting quote the instant its market halts, the same
+            // "don't wait for the next incidental tick" reasoning
+            // OwnOrderUpdate already exists for. The actual "stop new
+            // execution"/"stop trading permanently" enforcement is
+            // handle_decision's job (see market_status_'s own comment in
+            // brain.hpp), not this switch.
+            market_status_[e.market] = e.lifecycle_status;
+            break;
     }
     ++book_events_applied_;
     dispatch_market_triggered(e.market, strategy::TriggerKind::BookUpdate, intent_out);
@@ -93,24 +104,45 @@ void Brain::handle_decision(MarketId market, const strategy::ExecutionDecision& 
     }
 
     OrderIntent intent;
-    risk::Verdict verdict;
-
     if (decision.action == strategy::ExecutionAction::Cancel) {
         intent.kind = IntentKind::CancelOrder;
         intent.id = decision.cancel_target;
         intent.market = market;
-        verdict = risk_.check_cancel(now_ns());
     } else {
         // Join / Improve / Cross all become a NewOrder intent, using
         // whatever side/price/qty the Strategy already decided — Brain's own
-        // job here is only assigning the OrderId and running the risk gate,
-        // the same division of labor Stage 1 already established.
+        // job here is only assigning the OrderId and running the gates
+        // below, the same division of labor Stage 1 already established.
         intent = decision.intent;
         intent.kind = IntentKind::NewOrder;
         intent.id = next_order_id_++;
         intent.market = market;
-        verdict = risk_.check(market, intent.side, intent.price, intent.qty, now_ns());
     }
+
+    // Market lifecycle gate (Stage 4), checked before RiskEngine and for the
+    // same "cheapest, most-certain check first" reasoning RiskEngine's own
+    // fat-finger check runs before its rate-limited one — this doesn't even
+    // need now_ns(). RESOLVED blocks everything: nothing is left to trade.
+    // HALTED blocks only new orders; a Cancel is risk-reducing (same
+    // reasoning RiskEngine's own check_cancel already extends to fat-finger/
+    // exposure — see risk_engine.hpp) and stays allowed, so a strategy can
+    // still pull a resting quote while its market is halted.
+    const MarketStatus status = market_status_[market];
+    const bool blocked_by_lifecycle =
+        status == MarketStatus::Resolved ||
+        (status == MarketStatus::Halted && decision.action != strategy::ExecutionAction::Cancel);
+    if (blocked_by_lifecycle) {
+        ++intents_rejected_;
+        if (on_reject) {
+            on_reject(intent, status == MarketStatus::Resolved ? risk::Verdict::RejectMarketResolved
+                                                                 : risk::Verdict::RejectMarketHalted);
+        }
+        return;
+    }
+
+    const risk::Verdict verdict = (decision.action == strategy::ExecutionAction::Cancel)
+                                       ? risk_.check_cancel(now_ns())
+                                       : risk_.check(market, intent.side, intent.price, intent.qty, now_ns());
 
     if (verdict != risk::Verdict::Accept) {
         ++intents_rejected_;
