@@ -7,7 +7,11 @@
 
 #include <pthread.h>
 #include <sched.h>
+#include <sys/resource.h>
 #include <unistd.h>
+
+#include <cstdio>
+#include <cstring>
 
 namespace px {
 
@@ -43,6 +47,33 @@ bool pin_current_thread_to(unsigned logical_cpu) noexcept {
     sp.sched_priority = 10;
     pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
     return true;
+}
+
+std::uint64_t current_rss_bytes() noexcept {
+    // /proc/self/status's VmRSS line, reported in kB — not getrusage's
+    // ru_maxrss, which is a historical PEAK, not a current-instant reading
+    // (and its units are platform-inconsistent across libc versions).
+    std::FILE* f = std::fopen("/proc/self/status", "r");
+    if (!f) return 0;
+    char line[256];
+    std::uint64_t kb = 0;
+    while (std::fgets(line, sizeof(line), f)) {
+        if (std::strncmp(line, "VmRSS:", 6) == 0) {
+            std::sscanf(line + 6, "%llu", reinterpret_cast<unsigned long long*>(&kb));
+            break;
+        }
+    }
+    std::fclose(f);
+    return kb * 1024;
+}
+
+std::uint64_t process_cpu_time_ns() noexcept {
+    struct rusage ru;
+    if (getrusage(RUSAGE_SELF, &ru) != 0) return 0;
+    const auto to_ns = [](const timeval& tv) noexcept -> std::uint64_t {
+        return static_cast<std::uint64_t>(tv.tv_sec) * 1'000'000'000ull + static_cast<std::uint64_t>(tv.tv_usec) * 1'000ull;
+    };
+    return to_ns(ru.ru_utime) + to_ns(ru.ru_stime);
 }
 
 } // namespace px

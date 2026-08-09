@@ -80,9 +80,9 @@ constexpr std::size_t kExpectedBookEvents = 4 /* SnapshotBegin + 3 levels */ + 1
 
     risk::RiskConfig risk_cfg;
     // Heap-allocated, not a stack local — see pipeline/brain.hpp's SIZE
-    // WARNING (~780 KB; a stack-local Brain crashes with a stack overflow on
-    // a default-size thread stack, found the hard way during Stage 3
-    // development).
+    // WARNING (~3.0 MB as of Stage 5's kMaxMarkets bump, was ~780 KB; a
+    // stack-local Brain crashes with a stack overflow on a default-size
+    // thread stack, found the hard way during Stage 3 development).
     auto brain = std::make_unique<Brain>(risk_cfg);
 
     std::atomic<bool> stop{false};

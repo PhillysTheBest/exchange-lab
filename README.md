@@ -790,6 +790,92 @@ scripted stand-in — across the full schema-mapping, `Ingress`-decoding, and
 mingw32-make test-live   # now also builds/runs test_lifecycle
 ```
 
+## Stage 5 — proving and measuring it as a system
+
+Stages 1-4 built the thing and tested it adversarially. Stage 5 asked a
+different question: not "does it work," but "how does it behave under
+realistic load, where does time actually go, and does the architecture's own
+claims about itself hold up when measured instead of argued for." Full
+numbers, methodology, and an expanded Limitations section are in
+[PERFORMANCE.md](PERFORMANCE.md); this section is the narrative.
+
+**Profiling found the hot path isn't where intuition would put it.** A new
+per-stage benchmark ([`bench/bench_pipeline_stages.cpp`](bench/bench_pipeline_stages.cpp))
+broke the single-event decision path into six independently-timed stages for
+the first time. Parsing the raw WS text frame turned out to be ~80-85% of
+the total cost — not the strategy decision, not the risk check, not the
+shadow-book mutation, all of which are an order of magnitude cheaper. The
+mechanism traces to [`live/json_scan.hpp`](live/json_scan.hpp) re-scanning
+the same message from byte zero for every field it reads, independently.
+Identified precisely, deliberately **not** patched this stage (see
+PERFORMANCE.md's Section 10) — that file carries this project's highest
+verification bar for a reason, and a scan-strategy change deserves its own
+dedicated pass with full regression coverage, not a rushed fix squeezed in
+alongside eleven other things.
+
+**A synthetic workload generator caught its own measurement bug before it
+could publish a wrong number** — the same "the methodology is part of the
+system under test" lesson this project already learned once with
+[`bench_ring.cpp`](bench/bench_ring.cpp) (see "Measuring latency," above),
+learned independently a second time: the new deterministic workload
+generator ([`workload/generator.hpp`](workload/generator.hpp)) initially
+returned a freshly-heap-allocated JSON string on every call, and that
+allocation cost (~1166ns, comparable to parsing itself) was mostly what a
+first throughput sweep measured as "the pipeline's ceiling." Fixed (a
+reused, caller-owned buffer instead), and the measured ceiling roughly
+doubled once the harness stopped getting in its own way.
+
+**Multi-market scaling looked flat at the surface, and wasn't quite,
+underneath.** A full-pipeline sweep from 1 to 1000 registered markets showed
+no visible latency growth — but that measurement's own noise floor is
+larger than a real, smaller effect this project's static-analysis pass had
+already flagged: `Brain::dispatch_market_triggered` scanned every
+registered strategy on every single book update, not just the ones on the
+market that actually changed. A second, purpose-built micro-benchmark
+([`bench/bench_dispatch_scaling.cpp`](bench/bench_dispatch_scaling.cpp)),
+using the same one-event-at-a-time discipline `bench_pipeline_e2e.cpp`
+already established, found it: a real, if modest, cost that grows with
+total registered strategy count. Fixed by indexing strategies per market
+instead of scanning all of them — accepted only after re-measuring the same
+benchmark and confirming the growth disappeared, and re-running the entire
+existing correctness suite unchanged.
+
+**Failure testing found a real gap in order tracking, not just confirmed
+what was already believed.** Driving a broken exchange-response sink
+through a real `Brain`/`Gateway` pair
+([`tests/test_reconnect_recovery.cpp`](tests/test_reconnect_recovery.cpp))
+showed that once a market's 32-slot pending-order table fills up — for any
+reason, a Gateway failure or simply enough legitimate orders — every order
+placed after that point still gets sent to the real exchange, but becomes
+permanently untrackable locally: invisible to the acked-only view every
+`Strategy` sees, and never targetable by a future cancel. The system never
+lies about an order's state (verified directly — nothing was ever falsely
+reported as confirmed-live), but it also never learns the truth once
+tracking capacity runs out. No fix ships for this: building real order
+reconciliation against exchange truth would mean a new REST endpoint this
+project doesn't have, and adding one wasn't this stage's job — it's
+documented as a known limitation instead of silently left untested or
+quietly patched around.
+
+**Everything else, in one line each**: a reproducible baseline exists and
+is checked into `perf/baseline/`; `gprof` was attempted and produced no
+usable output on this Windows/MinGW toolchain (documented, not hidden); the
+existing lock-free ring's already-in-place spin-wait backpressure policy is
+now written down and justified instead of merely implicit; a hot-path
+allocation audit ([`tests/test_alloc_audit.cpp`](tests/test_alloc_audit.cpp))
+found zero heap allocations across 10,000 iterations of the real per-event
+decision path, in both debug and release builds; and a regression harness
+now diffs fresh benchmark runs against a frozen baseline with tolerances
+calibrated against this machine's own measured run-to-run noise, not guessed
+numbers.
+
+```bash
+mingw32-make bench-perf        # builds the Stage 5 throughput/scaling/dispatch-cost tools
+python perf/run_sweeps.py all  # runs every sweep, writes perf/results/*.csv
+python perf/plot_results.py    # turns those into perf/results/*.png
+mingw32-make perf-regression   # diffs a fresh run against perf/baseline/
+```
+
 ## Trying it yourself
 
 ```bash

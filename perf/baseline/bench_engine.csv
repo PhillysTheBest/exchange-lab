@@ -1,0 +1,6 @@
+label,p50_ns,p90_ns,p99_ns,p999_ns,p9999_ns,max_ns,mean_ns,min_ns
+submit: rest new order,160.3,221.6,284.9,595.8,9108.2,840076.9,171.7,60.1
+submit: single full cross,123.8,162.7,202.8,349.0,3077.7,69940.1,130.7,63.3
+submit: 50-level market sweep,52.1,1729.4,3120.6,4020.2,28431.3,185295.4,607.5,25.2
+cancel: resting order,93.0,140.6,218.0,342.6,2193.4,61279.5,100.6,26.0
+mixed load (rest/cross/cancel),162.7,302.1,590.6,2513.6,19664.1,248856.4,203.6,32.9

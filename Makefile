@@ -4,8 +4,9 @@
 # Targets:
 #   make test         debug build (PX_DEBUG invariants + _GLIBCXX_ASSERTIONS), builds &
 #                      runs the dependency-free unit/fuzz tests: core engine (Stage 1),
-#                      MarketState/Strategy unit tests, and the Brain/ShadowBook
-#                      adversarial-input fuzz test (Stage 3)
+#                      MarketState/Strategy unit tests, the Brain/ShadowBook
+#                      adversarial-input fuzz test (Stage 3), and Stage 5's hot-path
+#                      allocation audit (test_alloc_audit)
 #   make bench        release build (-O3 -march=native -flto), builds & runs the
 #                      dependency-free benchmarks: core engine (Stage 1) and
 #                      Strategy::on_event/extract_features latency (Stage 3)
@@ -17,12 +18,33 @@
 #                      (the full Stage 2 3-thread/3-ring live pipeline, now dispatching
 #                      to registered Strategy objects — see pipeline/brain.hpp)
 #   make test-live    builds & runs the OpenSSL-dependent tests: feed schema parsing,
-#                      the gateway's dry-run structural guarantee, and the replay
-#                      pipeline's determinism property
+#                      the gateway's dry-run structural guarantee, replay-pipeline
+#                      determinism, full pipeline E2E (real threads/rings), hostile-event
+#                      fuzzing (duplicate/reordered messages, races, reconnect backoff),
+#                      market lifecycle (halt/resolution) gating, the Stage 5 workload
+#                      generator's own correctness (test_workload_generator), and Stage 5
+#                      reconnect/resync/Gateway-failure-path recovery testing
+#                      (test_reconnect_recovery)
 #   make bench-live   builds & runs bench_sign (RSA-PSS signing latency — the measured
-#                      justification for keeping crypto off T2's thread) and
+#                      justification for keeping crypto off T2's thread),
 #                      bench_pipeline_e2e (Stage 4: the full WS-frame -> ... ->
-#                      OrderIntent decision path's real, measured latency)
+#                      OrderIntent decision path's real, measured latency), and
+#                      bench_pipeline_stages (Stage 5: that same path broken into
+#                      6 independently-attributed per-stage numbers)
+#   make profile      Stage 5: gprof flat profile + call graph of bench_pipeline_stages,
+#                      built with -pg (no LTO) — corroborates the hand-timed per-stage
+#                      breakdown with a sampling/instrumenting profiler; output in
+#                      perf/results/gprof_flat.txt and gprof_callgraph.txt
+#   make bench-perf   Stage 5, Sections 4/5/6: builds bench_workload_throughput (CLI-
+#                      driven throughput/saturation/backpressure/scaling tool — see
+#                      perf/run_sweeps.py to actually drive it across sweep points) and
+#                      bench_dispatch_scaling (Section 10: isolates
+#                      dispatch_market_triggered's per-strategy-count cost)
+#   make perf-regression  Stage 5, Section 7: re-runs bench_engine/bench_ring/
+#                      bench_strategy with --csv=, diffs each against perf/baseline/'s
+#                      frozen snapshot via perf/compare_baseline.py (tolerance-banded,
+#                      not a hard pass/fail on tiny noise — see that script's own
+#                      header comment)
 #   make all          test + bench + repl + strategy_demo (the dependency-free set)
 #   make clean
 
@@ -76,7 +98,7 @@ $(OBJDIR_RELEASE)/%.o: %.cpp
 	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) -c $< -o $@
 
 # ---- tests ------------------------------------------------------------------
-TEST_BINS := $(OBJDIR_DEBUG)/test_book$(EXE) $(OBJDIR_DEBUG)/test_engine$(EXE) $(OBJDIR_DEBUG)/fuzz_vs_reference$(EXE) $(OBJDIR_DEBUG)/test_risk$(EXE) $(OBJDIR_DEBUG)/test_market_state$(EXE) $(OBJDIR_DEBUG)/test_strategies$(EXE) $(OBJDIR_DEBUG)/test_replay_fuzz$(EXE)
+TEST_BINS := $(OBJDIR_DEBUG)/test_book$(EXE) $(OBJDIR_DEBUG)/test_engine$(EXE) $(OBJDIR_DEBUG)/fuzz_vs_reference$(EXE) $(OBJDIR_DEBUG)/test_risk$(EXE) $(OBJDIR_DEBUG)/test_market_state$(EXE) $(OBJDIR_DEBUG)/test_strategies$(EXE) $(OBJDIR_DEBUG)/test_replay_fuzz$(EXE) $(OBJDIR_DEBUG)/test_alloc_audit$(EXE)
 
 $(OBJDIR_DEBUG)/test_book$(EXE): tests/test_book.cpp $(DEBUG_OBJS)
 	@mkdir -p $(dir $@)
@@ -122,6 +144,12 @@ $(OBJDIR_DEBUG)/test_replay_fuzz$(EXE): tests/test_replay_fuzz.cpp $(OBJDIR_DEBU
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(DEBUG_FLAGS) $< $(OBJDIR_DEBUG)/pipeline/brain.o -o $@
 
+# test_alloc_audit.cpp (Stage 5, Section 9): header-only, same as
+# test_market_state.cpp/test_strategies.cpp above — no object link needed.
+$(OBJDIR_DEBUG)/test_alloc_audit$(EXE): tests/test_alloc_audit.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(DEBUG_FLAGS) $< -o $@
+
 .PHONY: test
 test: $(TEST_BINS)
 	@echo "== test_book ==" && $(OBJDIR_DEBUG)/test_book$(EXE)
@@ -131,6 +159,7 @@ test: $(TEST_BINS)
 	@echo "== test_market_state ==" && $(OBJDIR_DEBUG)/test_market_state$(EXE)
 	@echo "== test_strategies ==" && $(OBJDIR_DEBUG)/test_strategies$(EXE)
 	@echo "== test_replay_fuzz ==" && $(OBJDIR_DEBUG)/test_replay_fuzz$(EXE)
+	@echo "== test_alloc_audit ==" && $(OBJDIR_DEBUG)/test_alloc_audit$(EXE)
 
 # ---- benchmarks (release, no sanitizers, pinned) ----------------------------
 BENCH_BINS := $(OBJDIR_RELEASE)/bench_engine$(EXE) $(OBJDIR_RELEASE)/bench_ring$(EXE) $(OBJDIR_RELEASE)/bench_strategy$(EXE)
@@ -236,12 +265,29 @@ $(OBJDIR_RELEASE)/test_lifecycle$(EXE): tests/test_lifecycle.cpp $(RELEASE_OBJS)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) $< $(RELEASE_OBJS) $(LIVE_OBJS) $(PIPELINE_OBJS) -o $@ $(LIVE_LIBS)
 
+# test_workload_generator.cpp (Stage 5, Section 3): proves workload::Generator's
+# output actually parses and drives a real Ingress/Brain pair without hanging
+# or crashing, across all three profiles.
+$(OBJDIR_RELEASE)/test_workload_generator$(EXE): tests/test_workload_generator.cpp $(RELEASE_OBJS) $(LIVE_OBJS) $(PIPELINE_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) $< $(RELEASE_OBJS) $(LIVE_OBJS) $(PIPELINE_OBJS) -o $@ $(LIVE_LIBS)
+
+# test_reconnect_recovery.cpp (Stage 5, Section 8): resync correctness after a
+# reconnect-triggered snapshot, no premature strategy resumption, no duplicate
+# orders across a resync, risk state untouched by market-data-only events, and
+# the Gateway failure-path gap (orphaned pending orders) demonstrated directly.
+$(OBJDIR_RELEASE)/test_reconnect_recovery$(EXE): tests/test_reconnect_recovery.cpp $(RELEASE_OBJS) $(LIVE_OBJS) $(PIPELINE_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) $< $(RELEASE_OBJS) $(LIVE_OBJS) $(PIPELINE_OBJS) -o $@ $(LIVE_LIBS)
+
 .PHONY: test-live
-test-live: $(OBJDIR_RELEASE)/test_feed_parse$(EXE) $(OBJDIR_RELEASE)/test_gateway_dry_run$(EXE) $(OBJDIR_RELEASE)/test_replay_determinism$(EXE) $(OBJDIR_RELEASE)/test_pipeline_e2e$(EXE) $(OBJDIR_RELEASE)/test_hostile_events$(EXE) $(OBJDIR_RELEASE)/test_lifecycle$(EXE)
+test-live: $(OBJDIR_RELEASE)/test_feed_parse$(EXE) $(OBJDIR_RELEASE)/test_gateway_dry_run$(EXE) $(OBJDIR_RELEASE)/test_replay_determinism$(EXE) $(OBJDIR_RELEASE)/test_pipeline_e2e$(EXE) $(OBJDIR_RELEASE)/test_hostile_events$(EXE) $(OBJDIR_RELEASE)/test_lifecycle$(EXE) $(OBJDIR_RELEASE)/test_workload_generator$(EXE) $(OBJDIR_RELEASE)/test_reconnect_recovery$(EXE)
 	@echo "== test_feed_parse ==" && $(OBJDIR_RELEASE)/test_feed_parse$(EXE)
 	@echo "== test_gateway_dry_run ==" && $(OBJDIR_RELEASE)/test_gateway_dry_run$(EXE)
 	@echo "== test_replay_determinism ==" && $(OBJDIR_RELEASE)/test_replay_determinism$(EXE)
 	@echo "== test_pipeline_e2e ==" && $(OBJDIR_RELEASE)/test_pipeline_e2e$(EXE)
+	@echo "== test_workload_generator ==" && $(OBJDIR_RELEASE)/test_workload_generator$(EXE)
+	@echo "== test_reconnect_recovery ==" && $(OBJDIR_RELEASE)/test_reconnect_recovery$(EXE)
 	@echo "== test_hostile_events ==" && $(OBJDIR_RELEASE)/test_hostile_events$(EXE)
 	@echo "== test_lifecycle ==" && $(OBJDIR_RELEASE)/test_lifecycle$(EXE)
 
@@ -260,10 +306,84 @@ $(OBJDIR_RELEASE)/bench_pipeline_e2e$(EXE): bench/bench_pipeline_e2e.cpp $(RELEA
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) $< $(RELEASE_OBJS) $(LIVE_OBJS) $(PIPELINE_OBJS) -o $@ $(LIVE_LIBS)
 
+# bench_pipeline_stages.cpp (Stage 5, Section 2): the same logical path as
+# bench_pipeline_e2e, broken into 6 independently-attributed stage numbers
+# instead of one end-to-end one — see the file's own header comment for why
+# that's done single-threaded rather than by timestamping across the real
+# Ingress/Brain thread boundary.
+$(OBJDIR_RELEASE)/bench_pipeline_stages$(EXE): bench/bench_pipeline_stages.cpp $(RELEASE_OBJS) $(LIVE_OBJS) $(PIPELINE_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) $< $(RELEASE_OBJS) $(LIVE_OBJS) $(PIPELINE_OBJS) -o $@ $(LIVE_LIBS)
+
 .PHONY: bench-live
-bench-live: $(OBJDIR_RELEASE)/bench_sign$(EXE) $(OBJDIR_RELEASE)/bench_pipeline_e2e$(EXE)
+bench-live: $(OBJDIR_RELEASE)/bench_sign$(EXE) $(OBJDIR_RELEASE)/bench_pipeline_e2e$(EXE) $(OBJDIR_RELEASE)/bench_pipeline_stages$(EXE)
 	@echo "== bench_sign ==" && $(OBJDIR_RELEASE)/bench_sign$(EXE)
 	@echo "== bench_pipeline_e2e ==" && $(OBJDIR_RELEASE)/bench_pipeline_e2e$(EXE)
+	@echo "== bench_pipeline_stages ==" && $(OBJDIR_RELEASE)/bench_pipeline_stages$(EXE)
+
+# ---- bench-perf (Stage 5, Sections 4/5/6: throughput/saturation, backpressure,
+# multi-market scaling — one CLI-configurable tool, driven many times over by
+# perf/run_sweeps.py rather than run once like the bench-live targets above) --
+$(OBJDIR_RELEASE)/bench_workload_throughput$(EXE): bench/bench_workload_throughput.cpp $(RELEASE_OBJS) $(LIVE_OBJS) $(PIPELINE_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) $< $(RELEASE_OBJS) $(LIVE_OBJS) $(PIPELINE_OBJS) -o $@ $(LIVE_LIBS)
+
+$(OBJDIR_RELEASE)/bench_dispatch_scaling$(EXE): bench/bench_dispatch_scaling.cpp $(RELEASE_OBJS) $(LIVE_OBJS) $(PIPELINE_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) $< $(RELEASE_OBJS) $(LIVE_OBJS) $(PIPELINE_OBJS) -o $@ $(LIVE_LIBS)
+
+.PHONY: bench-perf
+bench-perf: $(OBJDIR_RELEASE)/bench_workload_throughput$(EXE) $(OBJDIR_RELEASE)/bench_dispatch_scaling$(EXE)
+	@echo "built $(OBJDIR_RELEASE)/bench_workload_throughput$(EXE) -- see perf/run_sweeps.py to drive it"
+	@echo "== bench_dispatch_scaling ==" && $(OBJDIR_RELEASE)/bench_dispatch_scaling$(EXE)
+
+# ---- profile (Stage 5, Section 2: gprof, corroborating the hand-timed
+# per-stage breakdown above with a sampling/instrumenting profiler instead of
+# hand-rolled TSC brackets) --------------------------------------------------
+# No -flto here deliberately: LTO and gprof instrumentation don't reliably
+# cooperate (symbols/call-graph edges get folded away), so this is its own
+# object set, not a reuse of $(OBJDIR_RELEASE). -O2, not -O3/-O0: representative
+# of real optimized code (unlike -O0) while still leaving enough of the call
+# graph intact for gprof to attribute (unlike -flto's aggressive inlining).
+OBJDIR_PROFILE := build/profile
+PROFILE_FLAGS = -O2 -g -pg -fno-omit-frame-pointer -DNDEBUG
+
+$(OBJDIR_PROFILE)/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(PROFILE_FLAGS) -c $< -o $@
+
+PROFILE_CORE_OBJS := $(patsubst %.cpp,$(OBJDIR_PROFILE)/%.o,$(CORE_SRC))
+PROFILE_LIVE_OBJS := $(patsubst %.cpp,$(OBJDIR_PROFILE)/%.o,$(LIVE_SRC))
+PROFILE_PIPELINE_OBJS := $(patsubst %.cpp,$(OBJDIR_PROFILE)/%.o,$(PIPELINE_SRC))
+
+$(OBJDIR_PROFILE)/bench_pipeline_stages$(EXE): bench/bench_pipeline_stages.cpp $(PROFILE_CORE_OBJS) $(PROFILE_LIVE_OBJS) $(PROFILE_PIPELINE_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(PROFILE_FLAGS) -pg $< $(PROFILE_CORE_OBJS) $(PROFILE_LIVE_OBJS) $(PROFILE_PIPELINE_OBJS) -o $@ $(LIVE_LIBS)
+
+.PHONY: profile
+profile: $(OBJDIR_PROFILE)/bench_pipeline_stages$(EXE)
+	@mkdir -p perf/results
+	cd $(OBJDIR_PROFILE) && ./bench_pipeline_stages$(EXE)
+	gprof $(OBJDIR_PROFILE)/bench_pipeline_stages$(EXE) $(OBJDIR_PROFILE)/gmon.out --flat-profile > perf/results/gprof_flat.txt
+	gprof $(OBJDIR_PROFILE)/bench_pipeline_stages$(EXE) $(OBJDIR_PROFILE)/gmon.out --graph > perf/results/gprof_callgraph.txt
+	@echo "gprof flat profile:    perf/results/gprof_flat.txt"
+	@echo "gprof call graph:      perf/results/gprof_callgraph.txt"
+
+# ---- perf-regression (Stage 5, Section 7) -----------------------------------
+# Re-runs the three dependency-free benches with --csv pointed at
+# perf/results/, then diffs each against its frozen perf/baseline/ snapshot
+# via perf/compare_baseline.py. Needs Python (any python3 on PATH); not a
+# hard CI gate by itself -- see compare_baseline.py's own header comment for
+# why a flagged regression doesn't fail the build outright.
+.PHONY: perf-regression
+perf-regression: $(BENCH_BINS)
+	@mkdir -p perf/results
+	$(OBJDIR_RELEASE)/bench_engine$(EXE) --csv=perf/results/current_bench_engine.csv > /dev/null
+	$(OBJDIR_RELEASE)/bench_ring$(EXE) --csv=perf/results/current_bench_ring.csv > /dev/null
+	$(OBJDIR_RELEASE)/bench_strategy$(EXE) --csv=perf/results/current_bench_strategy.csv > /dev/null
+	python perf/compare_baseline.py perf/baseline/bench_engine.csv perf/results/current_bench_engine.csv
+	python perf/compare_baseline.py perf/baseline/bench_ring.csv perf/results/current_bench_ring.csv
+	python perf/compare_baseline.py perf/baseline/bench_strategy.csv perf/results/current_bench_strategy.csv
 
 .PHONY: all
 all: test bench repl strategy_demo
