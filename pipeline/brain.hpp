@@ -107,9 +107,23 @@ public:
     [[nodiscard]] const strategy::OrderTracker& order_tracker() const noexcept { return order_tracker_; }
     [[nodiscard]] MarketStatus market_status(MarketId m) const noexcept { return market_status_[m]; }
 
-private:
+    // Stage 6 (eval/backtest_runner.hpp): promoted from private to public so a
+    // single-threaded, fully deterministic backtest driver can call these directly —
+    // exactly the same dispatch/risk/strategy code path run() uses internally when it
+    // pops from a ring, just invoked synchronously instead of via SpscRing +
+    // std::thread. run() below is unchanged and still the right entry point for the
+    // live pipeline (real threads, real cross-core rings); this is NOT a second
+    // implementation of Brain's logic, it's the same one made callable without a ring
+    // in between. Why the eval framework needs synchronous, not threaded, dispatch:
+    // see docs/BACKTEST_ASSESSMENT.md's "why not reuse run()" section — a backtest's
+    // entire value proposition is reproducibility, and interleaving ring A/ring C
+    // processing order via OS thread scheduling (what run() does) is exactly the kind
+    // of nondeterminism this project's own test_replay_determinism.cpp already flags
+    // as unsafe to claim outside the book-update-only path.
     void apply_book_event(const BookEvent& e, RingB& intent_out) noexcept;
     void apply_exec_report(const ExecReport& e, RingB& intent_out) noexcept;
+
+private:
     void dispatch_market_triggered(MarketId market, strategy::TriggerKind trigger, RingB& intent_out) noexcept;
     void evaluate_oracle_event(const strategy::OracleEvent& e, RingB& intent_out) noexcept;
     void handle_decision(MarketId market, const strategy::ExecutionDecision& decision, RingB& intent_out) noexcept;

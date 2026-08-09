@@ -6,8 +6,36 @@
 namespace px::pipeline {
 
 namespace {
+// steady_clock, nanoseconds -- for RiskEngine's token bucket (risk/risk_engine.hpp),
+// which only ever needs ELAPSED time between calls, never wall-clock alignment, so a
+// monotonic-but-arbitrary-epoch clock (immune to NTP step adjustments) is exactly
+// right here.
 [[nodiscard]] std::int64_t now_ns() noexcept {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+// system_clock, milliseconds -- for strategy::extract_features's `now_ms` parameter,
+// which strategy/trade_window.hpp's TradeWindow::recent_counts compares DIRECTLY
+// against TradeRecord::ts_ms -- itself Kalshi's own real wall-clock,
+// milliseconds-since-Unix-epoch trade timestamp (live/kalshi_feed.cpp's trade
+// decoder). Found the hard way (Stage 6, building eval/backtest_runner.hpp against a
+// real Brain with a real TradeFlow strategy): this call site originally passed
+// now_ns() here too -- steady_clock's epoch is arbitrary (commonly time-since-boot,
+// never Unix time) and its units are nanoseconds, not milliseconds, so
+// `t.ts_ms < (now_ms - kTradeWindowMs)` was comparing two numbers with no defined
+// relationship to each other. Silent, not a crash: TradeWindow's ring never actually
+// throws for out-of-range values, it just (depending on how the two unrelated scales
+// happened to compare) undercounts or fully zeroes out "recent" trades -- and did,
+// unconditionally, in Stage 6's own evaluation run: TradeFlow (the one strategy that
+// reads MarketState::recent_trades) placed exactly zero orders across 20,000
+// synthetic events, traced back to this, not to TradeFlow's own (already
+// extensively tested — tests/test_strategies.cpp) threshold logic. Existing tests
+// never caught it because tests/test_strategies.cpp exercises TradeWindow/
+// extract_features directly with explicit, controlled now_ms values, never through
+// this specific Brain call site with a real elapsed-wall-clock gap.
+[[nodiscard]] std::int64_t now_ms_wall() noexcept {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
         .count();
 }
 } // namespace
@@ -82,7 +110,7 @@ void Brain::dispatch_market_triggered(MarketId market, strategy::TriggerKind tri
     for (const std::size_t idx : strategy_index_by_market_[market]) {
         strategy::Strategy& strat = *strategies_[idx].second;
         const strategy::MarketState state = strategy::extract_features(
-            market, books_[market], risk_.position(market), order_tracker_, trade_windows_[market], now_ns());
+            market, books_[market], risk_.position(market), order_tracker_, trade_windows_[market], now_ms_wall());
         const strategy::ExecutionDecision decision = strat.on_event(state, trigger, nullptr);
         handle_decision(market, decision, intent_out);
     }
@@ -96,7 +124,7 @@ void Brain::evaluate_oracle_event(const strategy::OracleEvent& e, RingB& intent_
     // Stage 1's Signal::evaluate already worked.
     for (auto& [market, strat] : strategies_) {
         const strategy::MarketState state = strategy::extract_features(
-            market, books_[market], risk_.position(market), order_tracker_, trade_windows_[market], now_ns());
+            market, books_[market], risk_.position(market), order_tracker_, trade_windows_[market], now_ms_wall());
         const strategy::ExecutionDecision decision = strat->on_event(state, strategy::TriggerKind::OracleEvent, &e);
         handle_decision(market, decision, intent_out);
     }
