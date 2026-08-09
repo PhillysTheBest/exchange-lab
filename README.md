@@ -876,6 +876,100 @@ python perf/plot_results.py    # turns those into perf/results/*.png
 mingw32-make perf-regression   # diffs a fresh run against perf/baseline/
 ```
 
+## Stage 6 — external review, strategy evaluation, and observability
+
+Stages 1-5 built and measured the engine. Stage 6 asked whether it's actually
+worth trading with — an external review of what comparable systems do, a real
+evaluation framework instead of "it compiled and didn't crash," and an
+observability layer, followed by an honest go/no-go read of the result. Full
+detail lives in six documents under `docs/` (`EXTERNAL_REVIEW.md`,
+`CROSS_MARKET_RESEARCH.md`, `EXTERNAL_INFORMATION.md`,
+`BACKTEST_ASSESSMENT.md`, `STRATEGY_COMPARISON.md`, `DASHBOARD.md`) plus the
+roll-up, [`docs/DECISION_GATE.md`](docs/DECISION_GATE.md); this section is the
+narrative.
+
+**A real evaluation framework, not a demo, found two production bugs before it
+found any strategy results.** [`eval/`](eval/) drives an actual
+`pipeline::Brain`/`Strategy`/`RiskEngine` synchronously against a seeded
+synthetic market ([`eval/synthetic_market.hpp`](eval/synthetic_market.hpp)) —
+same decision code the live pipeline runs, no parallel implementation to drift
+out of sync with it. Building it surfaced a clock-unit bug that had silently
+disabled `TradeFlow` in the *live* pipeline too (a `steady_clock` nanosecond
+reading was being compared against Kalshi's own wall-clock trade timestamps —
+`TradeFlow` had been placing zero orders, ever, and nothing said so) and a
+same-tick Acked-before-Fill race in the evaluator's own original design. Both
+fixed, both verified against the entire pre-existing test suite with zero
+regressions — see [`docs/BACKTEST_ASSESSMENT.md`](docs/BACKTEST_ASSESSMENT.md)
+for the full account.
+
+**Running that framework against `PassiveMarketMaker` found a real strategy
+bug, consistently, not once.** Five different seeds, five diverged runs: with
+this framework's two deliberately-widened real-world dampers removed (real
+signing/REST latency, the real rate limit — each widened for its own
+documented reason, see `BACKTEST_ASSESSMENT.md`), `PassiveMarketMaker`'s
+reactive exit logic can submit many same-direction orders before any of their
+fills are known, because `RiskEngine`'s exposure check only ever sees *filled*
+position — a gap that class's own header comment already named this exact
+strategy shape as capable of triggering. `eval/backtest_runner.hpp`'s
+DIVERGENCE GUARD catches it explicitly rather than let it silently corrupt a
+P&L number; [`docs/STRATEGY_COMPARISON.md`](docs/STRATEGY_COMPARISON.md) is
+the full table across seeds, including the (much better-behaved)
+`OrderBookImbalance` and `TradeFlow` results, and what each strategy's numbers
+do and don't actually support.
+
+**The dashboard's own honest rendering caught a bug the code review missed.**
+[`telemetry/`](telemetry/) is the metrics model `pipeline::Brain` optionally
+writes to (nullptr by default, same pattern as `Brain::on_reject` — zero
+behavior change when not attached); [`dashboard/`](dashboard/) is a small
+Rust/Axum service that polls the JSON file it publishes and serves a page over
+it, deliberately with **no channel back into the trading engine at all** — see
+[`docs/DASHBOARD.md`](docs/DASHBOARD.md) for why that's a hard architectural
+line, not a simplification. The first time that page was actually loaded
+against a real replay, it showed a market `Brain` already considered `Open` as
+`PreOpen` — a display default (`MarketSnapshot::status`) that had silently
+drifted from `Brain`'s own real default, invisible to every existing test
+because nothing had ever looked at the rendered page before. Fixed, with a
+regression test added specifically because that class of bug — a display
+default drifting from its source of truth — had zero coverage until this.
+Testing the dashboard against a live pipeline also reproduced a real,
+narrow Windows file-locking race between the C++ writer's atomic rename and
+the dashboard's own concurrent read of the same file — self-healing one
+publish cycle (~500ms) later, documented rather than papered over with
+platform-specific code for a race window that corrects itself.
+
+**Two research side-investigations, both concluding DEFER on real evidence
+rather than a guess.** `docs/CROSS_MARKET_RESEARCH.md` checked one real,
+correctly-matched Kalshi/Polymarket pairing and found gaps (≤2 percentage
+points) roughly the size of Kalshi's own taker fee — consistent with the
+published literature's "modest, structural, not exploitable" characterization,
+not a contradiction of it. `docs/EXTERNAL_INFORMATION.md` confirmed a
+plausible-sounding economic-data API is actually unusable as a live signal (by
+its own documented publication lag, not a judgment call), rejected an
+LLM-driven news signal on this project's own explainability grounds, and
+identified NOAA/weather as a real, verified-buildable, but not-yet-built
+oracle feed candidate. Neither investigation forced a feature into the system
+to justify the time spent looking.
+
+**The honest bottom line**: [`docs/DECISION_GATE.md`](docs/DECISION_GATE.md)
+rolls all of the above up into one verdict — **not ready for real capital**,
+with a specific, ordered list of what's blocking that (`PassiveMarketMaker`'s
+divergence chief among them) rather than a vague "needs more testing."
+`tools/kalshi_pipeline.cpp`'s existing default posture (dry-run, demo host
+only, real sends require both `--demo` and credentials) doesn't change as a
+result of this stage — if anything, this stage's findings are the concrete
+argument for why it stays exactly where it is until that list is closed.
+
+```bash
+mingw32-make run_backtest       # builds tools/run_backtest.cpp
+./build/release/run_backtest.exe --seed=42 --events=20000 --settle=yes
+
+mingw32-make live                                            # builds kalshi_pipeline.exe
+./build/release/kalshi_pipeline.exe --replay tests/frames/smoke.jsonl KNYC-DEMO
+                                                               # publishes telemetry/snapshot.json
+cd dashboard && cargo build --release && ./target/release/px-dashboard.exe
+                                                               # http://127.0.0.1:7878/
+```
+
 ## Trying it yourself
 
 ```bash
