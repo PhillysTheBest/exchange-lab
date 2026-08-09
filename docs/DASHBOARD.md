@@ -1,10 +1,22 @@
-# Observability Dashboard — Stage 6, Part E/F
+# Observability Dashboard — Stage 6, Part E/F (redesigned, Stage 6A)
 
 `dashboard/` is a small Rust/Axum web service (`px-dashboard`) that polls the
 JSON telemetry snapshot `telemetry/telemetry_publisher.hpp` writes and serves a
 browser page over it. This document is the "why" behind its shape; the code
 itself (`dashboard/src/main.rs`, `dashboard/static/index.html`) carries the
-"how" in its own header comments, not duplicated here.
+"how" in its own header comments, not duplicated here. For the exact field-by-
+field inventory of what's real vs. derived vs. deliberately not built, see
+[`docs/DASHBOARD_DATA_CONTRACT.md`](DASHBOARD_DATA_CONTRACT.md) — this document
+covers the architecture, that one covers the data.
+
+**Stage 6A note**: the original Part E/F build (a stat-card grid) was replaced
+this pass with a hierarchical trading-workstation layout — system status,
+performance (with a real session P&L chart), market state (order book depth +
+trade tape), positions/orders, strategy activity, and risk — organized by what
+an operator needs to know first, not by "one box per number." Getting there
+required real backend additions (order-book depth, a public trade tape, P&L
+history, and live risk-limit figures — see the data contract doc), not just a
+CSS pass; nothing in the new layout is fabricated to fill space.
 
 ## The one design constraint everything else follows from
 
@@ -95,17 +107,47 @@ already takes with `--demo`.
 
 ## What it shows
 
-Connection status / mode (dry-run vs. live) / reconnect count, event and order
-counters, realized/unrealized/net P&L and total exposure, a per-market position
-table (position, average entry, live bid/ask, per-market P&L, lifecycle
-status), and the last 64 order events / strategy decisions each (server-side
-ring buffers — `telemetry/telemetry.hpp`'s `RecentRing`), newest first. Every
-number here is exactly what `telemetry::TelemetryState` computed inside
-`Brain`, cents and all — this page performs zero of its own trading-domain
-arithmetic, only presentation (currency formatting, status-code-to-name
-mapping via `static/index.html`'s own `STATUS_NAMES`/`STATUS_CLASS` tables,
-which must stay in sync with `px::MarketStatus`'s ordinal order,
-`include/px/types.hpp` — `PreOpen`=0, `Open`=1, `Halted`=2, `Resolved`=3).
+Top to bottom, in the order an operator actually needs it (see
+`static/index.html`'s own header comment for the full reasoning):
+
+1. **System status** (top bar) — connection, mode (dry-run/live), active market
+   count, uptime, and snapshot freshness, always visible.
+2. **Performance** — a headline Net P&L number, its realized/unrealized/fee
+   breakdown, and a real session P&L chart (plain `<canvas>`, no charting
+   library — drawn from `pnl_history[]`, a genuine time series `TelemetryState`
+   samples on every fill and on throttled book updates, not interpolated or
+   synthesized).
+3. **Active Markets** + **Current Market** — a clickable market list next to a
+   detail panel for whichever one is selected: YES/NO bid-ask (NO derived
+   client-side from YES via this project's own documented normalization
+   identity, not a second data source), a real order-book depth ladder, and
+   a recent-trades tape for that market.
+4. **Positions** and **Orders / Execution** — a position table (only markets
+   with a nonzero position) and a dense, clickable order-event table; clicking
+   an order groups every telemetry event sharing its `id` into that order's own
+   real lifecycle (submit → ack → fill/cancel/reject), not a fabricated stepper
+   with invented intermediate stages.
+5. **Strategy Activity** — a chronological feed of real `ExecutionDecision`s,
+   including whatever free-form `reason` string the strategy provided (often
+   empty today — see the data contract's "known gap" on this).
+6. **Risk** — per-market exposure utilization against the real configured cap
+   (as a bar, correctly scoped to "worst single market," not a fabricated
+   portfolio-wide number — see the data contract's own note on why), live
+   rate-limit token headroom, the real fat-finger bounds, and both rejection
+   counters (pre-send `risk_rejections` vs. post-send `orders_rejected` — kept
+   visually and semantically distinct, matching how `Brain`/`RiskEngine`
+   already keep them distinct internally).
+7. **System Events** — a merged, severity-tagged log of real order-lifecycle
+   events and reconnects. No synthesized "book update received"/"queue depth"
+   entries — see the data contract for why those would require inventing data
+   this pass didn't add.
+
+Every number traces to a real `telemetry::TelemetryState` field or an
+explicitly-documented client-side derivation — see
+`docs/DASHBOARD_DATA_CONTRACT.md` for the complete source-of-truth table.
+Status-code-to-name mapping (`static/index.html`'s `STATUS_NAMES`/
+`STATUS_CLASS`) must stay in sync with `px::MarketStatus`'s ordinal order
+(`include/px/types.hpp` — `PreOpen`=0, `Open`=1, `Halted`=2, `Resolved`=3).
 
 ## What this is not
 
