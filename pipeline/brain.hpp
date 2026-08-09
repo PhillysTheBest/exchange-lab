@@ -31,7 +31,7 @@
 // by value, per kMaxMarkets — sizeof(Brain) is currently ~3.0 MB (measured;
 // was ~780 KB before Stage 5 raised kMaxMarkets 256->1024 to reach its
 // multi-market scaling sweep's 500/1000-market points — see px/types.hpp's
-// kMaxMarkets comment and PERFORMANCE.md's "Multi-market scaling" section).
+// kMaxMarkets comment and docs/PERFORMANCE.md's "Multi-market scaling" section).
 // That's exactly right as a heap-allocated object (every real call site uses
 // std::make_unique<Brain> — see tools/kalshi_pipeline.cpp,
 // tests/test_replay_determinism.cpp, tests/test_replay_fuzz.cpp) and exactly
@@ -173,7 +173,7 @@ private:
     // O(this market's own). Confirmed as a real, if modest, measurable cost
     // by bench/bench_dispatch_scaling.cpp (a targeted, low-noise, one-event-
     // at-a-time benchmark built specifically to isolate it from parse/
-    // generator noise — see PERFORMANCE.md's Section 10 optimization log for
+    // generator noise — see docs/PERFORMANCE.md's Section 10 optimization log for
     // the before/after numbers). This index maps MarketId -> the indices
     // into strategies_ registered on that market, so dispatch_market_triggered
     // touches only this market's own strategies. evaluate_oracle_event's own

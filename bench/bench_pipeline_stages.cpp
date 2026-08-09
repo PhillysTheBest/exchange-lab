@@ -29,7 +29,7 @@
 // bench_pipeline_e2e's own p50 MINUS roughly twice bench_ring's cross-core
 // ping-pong cost (two ring hops that number pays and this one doesn't) —
 // reported explicitly at the end, in the same "show your work" spirit as
-// PERFORMANCE.md's "methodology bug" section, not asserted and left
+// docs/PERFORMANCE.md's "methodology bug" section, not asserted and left
 // unverified.
 #include "pipeline/brain.hpp" // BookEvent/BookEventKind, for the switch this file's apply_to_book mirrors
 #include "pipeline/ingress.hpp"
@@ -246,7 +246,7 @@ int main() {
     const double sum_p50 = h_parse.summarize().p50 + h_ingress.summarize().p50 + h_book.summarize().p50 +
                             h_features.summarize().p50 + h_strategy.summarize().p50 + h_risk.summarize().p50;
     std::printf(
-        "\nsum of stage p50s = %.1f ns -- compare against bench_pipeline_e2e's own p50 (see PERFORMANCE.md) "
+        "\nsum of stage p50s = %.1f ns -- compare against bench_pipeline_e2e's own p50 (see docs/PERFORMANCE.md) "
         "MINUS roughly twice bench_ring's cross-core ping-pong p50 (two ring hops this single-threaded "
         "benchmark doesn't pay): that difference is what this file adds up to, and the two numbers landing "
         "in the same neighborhood is this benchmark's own internal consistency check, not an assumed "

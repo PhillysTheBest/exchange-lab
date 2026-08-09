@@ -54,7 +54,7 @@ inline constexpr std::size_t kMaxOrdersPerMarket = std::size_t{1} << 16; // 6553
 // books_/trade_windows_/market_status_, OrderTracker::by_market_,
 // RiskEngine::position_, Ingress::seq_trackers_) and gates
 // TickerRegistry::add. Raised from 256 to 1024 in Stage 5 specifically to
-// reach the plan's 500/1000-market scaling-sweep points (see PERFORMANCE.md's
+// reach the plan's 500/1000-market scaling-sweep points (see docs/PERFORMANCE.md's
 // "Multi-market scaling" section) — every use is flat std::array sizing, so
 // this is a mechanical capacity change, not a behavioral one. Brain's own
 // SIZE WARNING doc comment (pipeline/brain.hpp) is re-measured and updated
