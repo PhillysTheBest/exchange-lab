@@ -66,7 +66,7 @@ namespace px::pipeline {
 
 class Brain {
 public:
-    explicit Brain(const risk::RiskConfig& risk_cfg) : risk_(risk_cfg) {}
+    explicit Brain(const risk::RiskConfig& risk_cfg) : risk_(risk_cfg) { market_status_.fill(MarketStatus::Open); }
 
     // `market` is which ShadowBook/MarketState this strategy reads when it
     // fires, for every trigger kind — see strategy/strategy.hpp's TriggerKind.
@@ -92,6 +92,7 @@ public:
     [[nodiscard]] const ShadowBook& book(MarketId m) const noexcept { return books_[m]; }
     [[nodiscard]] const risk::RiskEngine& risk() const noexcept { return risk_; }
     [[nodiscard]] const strategy::OrderTracker& order_tracker() const noexcept { return order_tracker_; }
+    [[nodiscard]] MarketStatus market_status(MarketId m) const noexcept { return market_status_[m]; }
 
 private:
     void apply_book_event(const BookEvent& e, RingB& intent_out) noexcept;
@@ -108,6 +109,21 @@ private:
     std::array<ShadowBook, kMaxMarkets> books_{};
     std::array<strategy::TradeWindow, kMaxMarkets> trade_windows_{};
     strategy::OrderTracker order_tracker_; // already indexed internally per-market — one instance, not an array
+
+    // Stage 4: per-market lifecycle status, reused from px::MarketStatus
+    // (px/types.hpp — already the offline Market's own PreOpen/Open/Halted/
+    // Resolved vocabulary, not a parallel enum invented for the live path).
+    // Defaults to Open, not PreOpen, deliberately: Kalshi's market_lifecycle_v2
+    // channel reports STATE CHANGES from subscription time onward, not a
+    // backfill of "here's the current status of everything you're watching"
+    // — a market that was already open before this connection subscribed
+    // will never get an explicit `activated` event. Defaulting to PreOpen
+    // would misread "no lifecycle event has arrived yet" as "not tradeable,"
+    // silently blocking every order this pipeline would otherwise have sent
+    // — a strictly worse failure mode than the one line above fixes.
+    // Explicit `deactivated`/`determined`/`settled` events (see
+    // live/kalshi_feed.hpp) still correctly transition it away from Open.
+    std::array<MarketStatus, kMaxMarkets> market_status_{};
     std::vector<std::pair<MarketId, std::unique_ptr<strategy::Strategy>>> strategies_;
     risk::RiskEngine risk_;
     OrderId next_order_id_ = 1;

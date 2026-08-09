@@ -80,6 +80,8 @@ KALSHI --TLS/WS--> [T1 Ingress]  --ring A-->  [T2 Brain]  --ring B-->  [T3 Egres
 - **T1 Ingress** (`pipeline/ingress.*`) owns the Kalshi WebSocket, decodes messages
   (`live/kalshi_feed.*`), resolves ticker strings to compact `MarketId`s
   (`live/ticker_registry.hpp`) — nothing downstream of T1 ever touches a `std::string`.
+  Retries connect/subscribe/receive failures with capped backoff rather than exiting —
+  see "Reconnection and market lifecycle" below.
 - **T2 Brain** (`pipeline/brain.*`) is the *sole* owner of all mutable market/risk/order
   state, on one thread, no locks. It mutates per-market `ShadowBook`s, dispatches to
   registered `Strategy` objects, runs `RiskEngine` pre-trade checks, and tracks this
@@ -137,7 +139,34 @@ a *quoted decimal string*, not a bare number). Never add or modify a Kalshi fiel
 assumption without fetching the current docs first; when something is genuinely
 unconfirmed even after checking (e.g. whether `seq` is scoped per-subscription or
 per-market — see `kalshi_feed.hpp`'s SEQ SCOPING comment), the code says so explicitly
-and picks the direction that fails safe, rather than picking silently and hoping.
+and picks the direction that fails safe, rather than picking silently and hoping. Same
+discipline caught a wrong assumption before it was ever written: `market_lifecycle_v2`'s
+`event_type` enum has **no `"halted"` value** — confirmed by checking the spec, not
+inferred from the channel's name — so the mapping (`activated`→Open,
+`deactivated`→Halted, `determined`/`settled`→Resolved) uses the real values, not an
+invented one (see `kalshi_feed.hpp`'s SCHEMA STATUS note).
+
+### Reconnection and market lifecycle (Stage 4)
+
+`Ingress::run` (`pipeline/ingress.cpp`) retries connect/subscribe/receive failures with
+capped exponential backoff (1s→30s) rather than exiting T1's thread on the first one — a
+fresh `live::KalshiFeed` is constructed per attempt, never reset in place, because
+`TlsSocket` deletes its copy ctor/assignment without declaring move, which suppresses
+the *implicit* move too (found while building this — see `pipeline/ingress.hpp`'s `feed_`
+comment). After a successful reconnect, every watched ticker gets an explicit
+`request_resync` — reusing the same mechanism a seq gap already triggers — so the
+`ShadowBook` resync goes through already-tested paths (`SnapshotBegin` clearing the book,
+a `Snapshot` re-baselining `SeqTracker`) rather than new ones.
+
+`Brain` tracks one `px::MarketStatus` per market (reused from the offline engine's own
+`PreOpen`/`Open`/`Halted`/`Resolved` vocabulary, `px/market.hpp` — not a parallel live-only
+enum), defaulting to `Open` rather than `PreOpen` since Kalshi's lifecycle channel reports
+*changes* from subscription time onward, not a backfill of current status.
+`Brain::handle_decision` gates on it before `RiskEngine` runs: `Halted` blocks new orders
+but still allows `Cancel` (risk-reducing, same reasoning `RiskEngine::check_cancel` already
+gets); `Resolved` blocks everything. See `risk::Verdict::RejectMarketHalted`/
+`RejectMarketResolved` — produced by `Brain`, not `RiskEngine::check()`/`check_cancel()`,
+which still does "exactly three things and nothing more" as its own header claims.
 
 ### Domain rules that shape everything
 

@@ -33,6 +33,7 @@
 #include "ticker_registry.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -182,6 +183,10 @@ int main(int argc, char** argv) {
     };
     ingress.on_warning = [](std::string_view m) {
         std::fprintf(stderr, "[ingress-warn] %.*s\n", static_cast<int>(m.size()), m.data());
+    };
+    ingress.on_reconnecting = [](int attempt, std::chrono::milliseconds backoff) {
+        std::fprintf(stderr, "[ingress] (re)connect attempt %d (waited %lldms)\n", attempt,
+                     static_cast<long long>(backoff.count()));
     };
 
     std::thread oracle_thread;
