@@ -98,7 +98,7 @@ $(OBJDIR_RELEASE)/%.o: %.cpp
 	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) -c $< -o $@
 
 # ---- tests ------------------------------------------------------------------
-TEST_BINS := $(OBJDIR_DEBUG)/test_book$(EXE) $(OBJDIR_DEBUG)/test_engine$(EXE) $(OBJDIR_DEBUG)/fuzz_vs_reference$(EXE) $(OBJDIR_DEBUG)/test_risk$(EXE) $(OBJDIR_DEBUG)/test_market_state$(EXE) $(OBJDIR_DEBUG)/test_strategies$(EXE) $(OBJDIR_DEBUG)/test_replay_fuzz$(EXE) $(OBJDIR_DEBUG)/test_alloc_audit$(EXE) $(OBJDIR_DEBUG)/test_eval_framework$(EXE)
+TEST_BINS := $(OBJDIR_DEBUG)/test_book$(EXE) $(OBJDIR_DEBUG)/test_engine$(EXE) $(OBJDIR_DEBUG)/fuzz_vs_reference$(EXE) $(OBJDIR_DEBUG)/test_risk$(EXE) $(OBJDIR_DEBUG)/test_market_state$(EXE) $(OBJDIR_DEBUG)/test_strategies$(EXE) $(OBJDIR_DEBUG)/test_replay_fuzz$(EXE) $(OBJDIR_DEBUG)/test_alloc_audit$(EXE) $(OBJDIR_DEBUG)/test_eval_framework$(EXE) $(OBJDIR_DEBUG)/test_telemetry$(EXE)
 
 $(OBJDIR_DEBUG)/test_book$(EXE): tests/test_book.cpp $(DEBUG_OBJS)
 	@mkdir -p $(dir $@)
@@ -158,6 +158,13 @@ $(OBJDIR_DEBUG)/test_eval_framework$(EXE): tests/test_eval_framework.cpp $(OBJDI
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(DEBUG_FLAGS) $< $(OBJDIR_DEBUG)/pipeline/brain.o -o $@
 
+# test_telemetry.cpp (Stage 6, Part G): telemetry/*.hpp is header-only (no
+# telemetry/*.cpp exists, and it doesn't touch Brain/ShadowBook at all) --
+# no object link needed, same as test_market_state.cpp/test_alloc_audit.cpp above.
+$(OBJDIR_DEBUG)/test_telemetry$(EXE): tests/test_telemetry.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(DEBUG_FLAGS) $< -o $@
+
 .PHONY: test
 test: $(TEST_BINS)
 	@echo "== test_book ==" && $(OBJDIR_DEBUG)/test_book$(EXE)
@@ -169,6 +176,7 @@ test: $(TEST_BINS)
 	@echo "== test_replay_fuzz ==" && $(OBJDIR_DEBUG)/test_replay_fuzz$(EXE)
 	@echo "== test_alloc_audit ==" && $(OBJDIR_DEBUG)/test_alloc_audit$(EXE)
 	@echo "== test_eval_framework ==" && $(OBJDIR_DEBUG)/test_eval_framework$(EXE)
+	@echo "== test_telemetry ==" && $(OBJDIR_DEBUG)/test_telemetry$(EXE)
 
 # ---- benchmarks (release, no sanitizers, pinned) ----------------------------
 BENCH_BINS := $(OBJDIR_RELEASE)/bench_engine$(EXE) $(OBJDIR_RELEASE)/bench_ring$(EXE) $(OBJDIR_RELEASE)/bench_strategy$(EXE)

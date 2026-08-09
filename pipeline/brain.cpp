@@ -73,9 +73,16 @@ void Brain::apply_book_event(const BookEvent& e, RingB& intent_out) noexcept {
             // handle_decision's job (see market_status_'s own comment in
             // brain.hpp), not this switch.
             market_status_[e.market] = e.lifecycle_status;
+            if (telemetry_) telemetry_->on_lifecycle(e.market, static_cast<std::uint8_t>(e.lifecycle_status));
             break;
     }
     ++book_events_applied_;
+    if (telemetry_ && (e.kind == BookEventKind::LevelSet || e.kind == BookEventKind::LevelDelta)) {
+        Price bid = 0, ask = 0;
+        const bool have_bid = books_[e.market].best_bid(bid);
+        const bool have_ask = books_[e.market].best_ask(ask);
+        telemetry_->on_book_update(e.market, have_bid, bid, have_ask, ask);
+    }
     dispatch_market_triggered(e.market, strategy::TriggerKind::BookUpdate, intent_out);
 }
 
@@ -84,17 +91,39 @@ void Brain::apply_exec_report(const ExecReport& e, RingB& intent_out) noexcept {
         case ExecKind::Fill:
             risk_.record_fill(e.market, e.side, e.qty);
             order_tracker_.on_fill(e.market, e.id, e.qty);
+            // fee_cents hardcoded 0: the live pipeline doesn't compute per-fill fees
+            // anywhere today (eval/fees.hpp's Kalshi fee formula is backtest-only —
+            // see docs/BACKTEST_ASSESSMENT.md); telemetry reports what Brain actually
+            // knows rather than guessing. Revisit once/if T3 starts reporting a real
+            // fee alongside a fill.
+            if (telemetry_) telemetry_->on_order_filled(e.market, e.side, e.price, e.qty, /*fee_cents=*/0, now_ms_wall());
             break;
         case ExecKind::RateLimited:
             risk_.on_rate_limited_response(now_ns());
             return; // not tied to a specific order's resting state — no OwnOrderUpdate to dispatch
         case ExecKind::Reject:
+            // Looked up BEFORE the mutating call below: on_rejected() removes the
+            // pending entry outright, so this is the last point side/price (which
+            // ExecReport itself doesn't carry for Reject — see events.hpp) are
+            // available at all. Same reasoning for Acked/Cancelled below.
+            if (telemetry_) {
+                if (const auto* r = order_tracker_.find(e.market, e.id))
+                    telemetry_->on_order_rejected(e.market, r->side, r->price, e.qty, now_ms_wall());
+            }
             order_tracker_.on_rejected(e.market, e.id); // drops the pending entry handle_decision added optimistically
             break;
         case ExecKind::Acked:
+            if (telemetry_) {
+                if (const auto* r = order_tracker_.find(e.market, e.id))
+                    telemetry_->on_order_acked(e.market, r->side, r->price, e.qty, now_ms_wall());
+            }
             order_tracker_.on_acked(e.market, e.id, e.qty, books_[e.market]);
             break;
         case ExecKind::Cancelled:
+            if (telemetry_) {
+                if (const auto* r = order_tracker_.find(e.market, e.id))
+                    telemetry_->on_order_cancelled(e.market, r->side, r->price, e.qty, now_ms_wall());
+            }
             order_tracker_.on_cancelled(e.market, e.id, e.qty);
             break;
     }
@@ -112,7 +141,7 @@ void Brain::dispatch_market_triggered(MarketId market, strategy::TriggerKind tri
         const strategy::MarketState state = strategy::extract_features(
             market, books_[market], risk_.position(market), order_tracker_, trade_windows_[market], now_ms_wall());
         const strategy::ExecutionDecision decision = strat.on_event(state, trigger, nullptr);
-        handle_decision(market, decision, intent_out);
+        handle_decision(market, decision, intent_out, strat.name(), trigger);
     }
 }
 
@@ -126,14 +155,27 @@ void Brain::evaluate_oracle_event(const strategy::OracleEvent& e, RingB& intent_
         const strategy::MarketState state = strategy::extract_features(
             market, books_[market], risk_.position(market), order_tracker_, trade_windows_[market], now_ms_wall());
         const strategy::ExecutionDecision decision = strat->on_event(state, strategy::TriggerKind::OracleEvent, &e);
-        handle_decision(market, decision, intent_out);
+        handle_decision(market, decision, intent_out, strat->name(), strategy::TriggerKind::OracleEvent);
     }
 }
 
-void Brain::handle_decision(MarketId market, const strategy::ExecutionDecision& decision,
-                             RingB& intent_out) noexcept {
+void Brain::handle_decision(MarketId market, const strategy::ExecutionDecision& decision, RingB& intent_out,
+                             const char* strategy_name, strategy::TriggerKind trigger) noexcept {
     if (decision.action == strategy::ExecutionAction::None || decision.action == strategy::ExecutionAction::Wait) {
         return;
+    }
+
+    // Recorded here rather than at the call site: this is the first point
+    // every caller (dispatch_market_triggered AND evaluate_oracle_event)
+    // agrees an actionable decision (not None/Wait — see the early return
+    // above) actually happened, so the counter/ring means the same thing
+    // regardless of which trigger produced it.
+    if (telemetry_) {
+        const Price reason_price = decision.action == strategy::ExecutionAction::Cancel ? 0 : decision.intent.price;
+        const Qty reason_qty = decision.action == strategy::ExecutionAction::Cancel ? 0 : decision.intent.qty;
+        telemetry_->on_strategy_decision(market, strategy_name, static_cast<std::uint8_t>(trigger),
+                                          static_cast<std::uint8_t>(decision.action), reason_price, reason_qty,
+                                          /*reason=*/nullptr, now_ms_wall());
     }
 
     OrderIntent intent;
@@ -198,6 +240,7 @@ void Brain::handle_decision(MarketId market, const strategy::ExecutionDecision& 
         // afterward, which at that order count already indicates a runaway
         // strategy rather than something worth adding recovery logic for.
         (void)order_tracker_.on_new(market, intent.id, intent.side, intent.price, intent.qty);
+        if (telemetry_) telemetry_->on_order_submitted(market, intent.side, intent.price, intent.qty, now_ms_wall());
     }
     // An accepted intent must not be silently dropped — same backpressure
     // reasoning as ring A in pipeline/ingress.cpp, not a discard.
@@ -211,19 +254,25 @@ void Brain::run(RingA& book_in, strategy::OracleRing& oracle_in, RingC& exec_in,
 
         BookEvent be;
         if (book_in.try_pop(be)) {
+            if (telemetry_) telemetry_->on_event_received();
             apply_book_event(be, intent_out);
+            if (telemetry_) telemetry_->on_event_processed();
             did_work = true;
         }
 
         ExecReport er;
         if (exec_in.try_pop(er)) {
+            if (telemetry_) telemetry_->on_event_received();
             apply_exec_report(er, intent_out);
+            if (telemetry_) telemetry_->on_event_processed();
             did_work = true;
         }
 
         strategy::OracleEvent oe;
         if (oracle_in.try_pop(oe)) {
+            if (telemetry_) telemetry_->on_event_received();
             evaluate_oracle_event(oe, intent_out);
+            if (telemetry_) telemetry_->on_event_processed();
             did_work = true;
         }
 
