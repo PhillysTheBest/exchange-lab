@@ -53,6 +53,33 @@ public:
                     label, p.p50, p.p90, p.p99, p.p999, p.p9999, p.max, p.mean, p.min);
     }
 
+    // Stage 5, Section 7 (performance regression harness): opens `path` in
+    // append mode and, iff the file is currently empty (a fresh file, or one
+    // truncated/deleted before this run — perf/run_sweeps.py-style callers
+    // typically remove the file first), writes the column header exactly
+    // once. Returns nullptr (and leaves the file untouched) on open failure
+    // — callers should treat that as "no CSV output this run," never fatal,
+    // matching this project's platform.hpp "best-effort, absent-on-failure"
+    // convention for measurement-only helpers.
+    [[nodiscard]] static std::FILE* open_csv_for_append(const char* path) {
+        std::FILE* f = std::fopen(path, "a");
+        if (!f) return nullptr;
+        std::fseek(f, 0, SEEK_END);
+        if (std::ftell(f) == 0) {
+            std::fprintf(f, "label,p50_ns,p90_ns,p99_ns,p999_ns,p9999_ns,max_ns,mean_ns,min_ns\n");
+        }
+        return f;
+    }
+
+    // Appends one row for `label`. No-op if `f` is nullptr (see
+    // open_csv_for_append) — every call site can pass the possibly-null
+    // result straight through without its own null check.
+    static void append_csv(std::FILE* f, const char* label, const Percentiles& p) {
+        if (!f) return;
+        std::fprintf(f, "%s,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f\n", label, p.p50, p.p90, p.p99, p.p999, p.p9999,
+                     p.max, p.mean, p.min);
+    }
+
 private:
     std::vector<double> samples_;
 };

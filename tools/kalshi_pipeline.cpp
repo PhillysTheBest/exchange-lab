@@ -132,7 +132,8 @@ int main(int argc, char** argv) {
     // line, so a real run shows their decisions side by side.
     risk::RiskConfig risk_cfg; // defaults to Kalshi's Basic tier — see risk_engine.hpp
     // Heap-allocated, not a stack local — see pipeline/brain.hpp's SIZE
-    // WARNING (~780 KB; found the hard way during development).
+    // WARNING (~3.0 MB as of Stage 5's kMaxMarkets bump, was ~780 KB;
+    // found the hard way during development).
     auto brain = std::make_unique<Brain>(risk_cfg);
     brain->add_strategy(0, std::make_unique<PassiveMarketMaker>(0, 0));
     brain->add_strategy(0, std::make_unique<OrderBookImbalance>(0, 0));

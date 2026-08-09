@@ -2,7 +2,19 @@
 
 #include <windows.h>
 
+#include <psapi.h>
+
 namespace px {
+
+namespace {
+[[nodiscard]] std::uint64_t filetime_to_ns(const FILETIME& ft) noexcept {
+    // FILETIME is 100ns ticks since 1601 — only the delta between two
+    // readings is ever used by process_cpu_time_ns's callers, so the epoch
+    // itself doesn't matter, only the tick width (100ns -> *100 for ns).
+    const std::uint64_t ticks = (static_cast<std::uint64_t>(ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
+    return ticks * 100;
+}
+} // namespace
 
 std::vector<unsigned> performance_core_ids() {
     std::vector<unsigned> fallback_all;
@@ -68,6 +80,18 @@ bool pin_current_thread_to(unsigned logical_cpu) noexcept {
     // Best-effort: a failure here doesn't unwind the affinity pin already applied.
     SetThreadPriority(h, THREAD_PRIORITY_TIME_CRITICAL);
     return true;
+}
+
+std::uint64_t current_rss_bytes() noexcept {
+    PROCESS_MEMORY_COUNTERS pmc;
+    if (!GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) return 0;
+    return static_cast<std::uint64_t>(pmc.WorkingSetSize);
+}
+
+std::uint64_t process_cpu_time_ns() noexcept {
+    FILETIME creation, exit, kernel, user;
+    if (!GetProcessTimes(GetCurrentProcess(), &creation, &exit, &kernel, &user)) return 0;
+    return filetime_to_ns(kernel) + filetime_to_ns(user);
 }
 
 } // namespace px

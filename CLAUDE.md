@@ -8,8 +8,9 @@ A C++20 prediction-market trading engine: an offline matching engine (array-back
 order book, integer-cent prices), a live pipeline that connects it to Kalshi's real
 WebSocket/REST API, and a deterministic execution-decision layer (Strategy interface)
 on top. See README.md for the full narrative — measured latency numbers, bugs found
-and fixed, and what's honestly out of scope. This file is about how to build/test it
-and how the pieces fit together, not a restatement of the README.
+and fixed, and what's honestly out of scope — and PERFORMANCE.md for every benchmark
+number in one place, with methodology. This file is about how to build/test it and
+how the pieces fit together, not a restatement of either.
 
 ## Build
 
@@ -17,23 +18,48 @@ No CMake/Ninja — a hand-written `Makefile`, built via `mingw32-make` (Windows/
 UCRT64) or `make` (Linux), no changes needed between platforms.
 
 ```bash
-mingw32-make test         # debug build (PX_DEBUG invariants + _GLIBCXX_ASSERTIONS), core tests
-mingw32-make bench        # release build (-O3 -march=native -flto), core benchmarks
+mingw32-make test         # debug build (PX_DEBUG invariants + _GLIBCXX_ASSERTIONS): core
+                           # engine, MarketState/Strategy unit tests, Brain/ShadowBook fuzz test
+mingw32-make bench        # release build (-O3 -march=native -flto): core engine + strategy
+                           # dispatch latency benchmarks
 mingw32-make repl         # interactive exchange REPL
 mingw32-make strategy_demo   # local oracle/book -> strategy -> engine demo, no network
 mingw32-make live         # Kalshi connectivity binaries: kalshi_shadow, kalshi_pipeline (needs OpenSSL)
-mingw32-make test-live    # feed schema, gateway dry-run, replay-determinism tests (needs OpenSSL)
-mingw32-make bench-live   # RSA-PSS signing latency benchmark (needs OpenSSL)
+mingw32-make test-live    # OpenSSL-dependent tests: feed schema, gateway dry-run, replay
+                           # determinism, full pipeline E2E (real threads/rings), hostile-event
+                           # fuzzing (duplicate/reordered messages, races, reconnect backoff),
+                           # market lifecycle gating
+mingw32-make bench-live   # RSA-PSS signing latency + full WS-frame -> OrderIntent decision-path
+                           # latency, and Stage 5's per-stage breakdown of that same path
+                           # (needs OpenSSL)
+mingw32-make profile      # Stage 5: gprof flat profile + call graph (-pg, no LTO) of the
+                           # per-stage benchmark -- see PERFORMANCE.md's Profiling section for
+                           # why gprof itself produces no usable data in this environment
+mingw32-make bench-perf   # Stage 5: builds the throughput/saturation/backpressure/scaling tool
+                           # (bench_workload_throughput) and the dispatch-scan-cost isolator
+                           # (bench_dispatch_scaling) -- see perf/run_sweeps.py to drive sweeps
+mingw32-make perf-regression  # Stage 5: re-runs bench_engine/bench_ring/bench_strategy with
+                           # --csv=, diffs against perf/baseline/'s frozen snapshot
+                           # (perf/compare_baseline.py, tolerance-banded, not a hard CI gate)
 mingw32-make all          # test + bench + repl + strategy_demo (the dependency-free set)
 mingw32-make clean
 ```
 
+No separate lint target — `-Wall -Wextra -Wpedantic` (Makefile's `WARN` var) apply to every
+compile, debug and release alike; a clean build with zero warnings *is* the lint check.
+
 To run or debug a single test binary directly (all test binaries are hand-rolled, no
-framework — see `tests/test_harness.hpp`'s `PX_CHECK` macro):
+framework — see `tests/test_harness.hpp`'s `PX_CHECK` macro). Dependency-free tests build to
+`build/debug/`; anything under `test-live`/`live`/`bench-live` (OpenSSL-linked) builds to
+`build/release/` even though it's not itself performance-sensitive — one release object set
+is shared across all of `live`/`test-live`/`bench-live` rather than duplicating a debug one:
 
 ```bash
 mingw32-make test                       # builds build/debug/test_book.exe etc.
 ./build/debug/test_book.exe             # run just that one
+
+mingw32-make test-live                  # builds build/release/test_lifecycle.exe etc.
+./build/release/test_hostile_events.exe # run just that one
 ```
 
 Live/OpenSSL-linked binaries (`kalshi_shadow`, `kalshi_pipeline`, `test-live`,
@@ -62,8 +88,9 @@ by the live pipeline's `Brain` — it has no order pool, since in shadow mode Ka
 already matched and this side only ever sets aggregate level quantities. Don't conflate
 the two or assume one can substitute for the other.
 
-**Both are heap-allocate-only.** `OrderBook` (~5.7 MB) and `Brain` (~780 KB — it embeds
-a `ShadowBook`/`TradeWindow`/order-tracking table per market) are far too large for a
+**Both are heap-allocate-only.** `OrderBook` (~5.7 MB) and `Brain` (~3.0 MB — it embeds
+a `ShadowBook`/`TradeWindow`/order-tracking table per market, `kMaxMarkets` = 1024 as of
+Stage 5) are far too large for a
 stack frame; every real construction site uses `std::make_unique`. This has bitten
 development twice (see each type's own SIZE WARNING doc comment) — always check for
 that comment before declaring one of these as a local.
@@ -167,6 +194,38 @@ but still allows `Cancel` (risk-reducing, same reasoning `RiskEngine::check_canc
 gets); `Resolved` blocks everything. See `risk::Verdict::RejectMarketHalted`/
 `RejectMarketResolved` — produced by `Brain`, not `RiskEngine::check()`/`check_cancel()`,
 which still does "exactly three things and nothing more" as its own header claims.
+
+### Performance tooling and one accepted optimization (Stage 5)
+
+`workload/` (new) holds a deterministic seeded workload generator
+(`generator.hpp`, reusing `tests/test_replay_fuzz.cpp`'s
+`std::mt19937_64 rng(42)` convention) and a cross-core latency-measurement
+primitive (`latency_watcher.hpp`) for measuring throughput under sustained,
+many-events-in-flight load — a different regime from `bench_ring.cpp`/
+`bench_pipeline_e2e.cpp`'s deliberate one-event-at-a-time ping-pong
+discipline, which exists specifically to isolate per-op cost from queueing
+delay (see PERFORMANCE.md's "methodology bug" section). `perf/` holds the
+sweep drivers, plotting scripts, baseline snapshots, and regression
+comparator built on top. Full methodology, results, and an expanded
+Limitations section are in [PERFORMANCE.md](PERFORMANCE.md)'s Stage 5
+section, not repeated here.
+
+Two changes from that pass affect the code directly:
+
+- **`kMaxMarkets` raised 256 → 1024** (`px/types.hpp`) to reach the
+  multi-market scaling sweep's higher points — mechanical (every use is
+  flat `std::array` sizing), but it grew `sizeof(Brain)` to ~3.0 MB and
+  `sizeof(OrderTracker)` to ~1.04 MB; re-check both types' SIZE
+  WARNING/NOTE comments before declaring either as a local.
+- **`Brain::dispatch_market_triggered` now indexes strategies by market**
+  (`strategy_index_by_market_`, populated once in `add_strategy`) instead
+  of linearly scanning every registered strategy on every dispatch —
+  profile-driven (a targeted micro-benchmark found a real, if modest, O(N)
+  cost at N=500-1000 total registered strategies), measured before and
+  after, and re-verified against the full existing correctness suite.
+  `evaluate_oracle_event`'s own all-strategies scan is unchanged — that one
+  is intentional (a single oracle event can matter to several differently-
+  registered strategies at once), not the bug this fixed.
 
 ### Domain rules that shape everything
 

@@ -1,0 +1,7 @@
+label,p50_ns,p90_ns,p99_ns,p999_ns,p9999_ns,max_ns,mean_ns,min_ns
+extract_features (MarketState assembly),37.3,41.7,47.3,54.5,336.2,26595.6,38.1,28.4
+PassiveMarketMaker (quoting),39.7,48.9,66.9,1432.5,12375.6,25087.4,44.5,21.2
+PassiveMarketMaker (managing position),42.5,48.9,60.1,71.7,3452.0,25111.0,44.7,35.7
+OrderBookImbalance (book-driven),43.3,50.5,62.5,81.3,2122.9,118454.6,45.8,26.8
+TradeFlow (trade-flow-driven),55.3,66.1,74.1,157.9,5193.5,47244.8,55.5,28.0
+OracleThresholdStrategy (oracle-driven),58.1,69.7,90.6,135.8,4294.3,29174.1,62.0,54.5

@@ -1,0 +1,50 @@
+Stage 5 baseline — machine/build configuration
+================================================
+Captured: 2026-08-09 (see perf/baseline/2026-08-09_baseline_run.txt for the
+matching raw build+bench+test output, produced by one uninterrupted run of
+`mingw32-make clean && mingw32-make all && mingw32-make test-live &&
+mingw32-make live && mingw32-make bench-live`, in that order, right after
+this file was written).
+
+CPU:      12th Gen Intel(R) Core(TM) i5-12450H (hybrid 4P+4E, 8 physical
+          cores / 12 logical — Hyper-Threading on the 4 P-cores only)
+OS:       Microsoft Windows 11 Home, 10.0.26200 (Build 26200)
+Kernel/shell reported by uname: MINGW64_NT-10.0-26200 3.4.10, x86_64, Msys
+Compiler: g++.exe (Rev3, Built by MSYS2 project) 13.2.0
+Toolchain: MSYS2 UCRT64
+Build flags:
+  debug:   -std=c++20 -Wall -Wextra -Wpedantic -O0 -g -DPX_DEBUG=1
+           -D_GLIBCXX_ASSERTIONS -fno-omit-frame-pointer
+  release: -std=c++20 -Wall -Wextra -Wpedantic -O3 -march=native -flto
+           -DNDEBUG
+No sanitizer runtime installed (no -lasan/-lubsan/-ltsan in this toolchain).
+No perf/Valgrind/VTune available on this machine (Windows, no WSL profiler
+set up) — gprof (MSYS2 UCRT64, C:\msys64\ucrt64\bin\gprof.exe) is the only
+sampling/instrumenting profiler used in Stage 5's Section 2 profiling pass,
+alongside this project's existing hand-rolled TSC-histogram technique.
+
+Isolation notes (unchanged from the pre-Stage-5 PERFORMANCE.md): this is a
+mobile-TDP laptop, not a tuned bare-metal box — no isolcpus, no disabled
+Turbo Boost, no disabled SMT. Every benchmark that can pin its thread(s) does
+(pin_current_thread_to + THREAD_PRIORITY_TIME_CRITICAL, restricted to
+performance_core_ids()'s P-core set). Numbers will drift run to run on this
+machine (background processes, thermal state, Turbo Boost) — this baseline
+is one coherent, immediately-sequential run, not a multi-session average, and
+is meant to be re-run rather than trusted as frozen truth. Compare
+perf/baseline/2026-08-09_baseline_run.txt's numbers against the pre-existing
+PERFORMANCE.md Stage 1-4 numbers for a sense of that run-to-run spread (e.g.
+bench_sign's RSA-PSS p50 reads ~631us here vs. ~1.39ms in the earlier
+document, and bench_pipeline_e2e's e2e p50 reads ~1.49us here vs. ~3.13us
+there) — both are real, honestly-measured numbers from the same methodology
+on the same physical machine; the spread itself is the evidence for why this
+project reports full percentile distributions and re-runs rather than
+memorizing a single number.
+
+This file plus 2026-08-09_baseline_run.txt together are Stage 5's Section 1
+deliverable: "a single baseline report" covering order submission,
+cancellation, matching/crossing, sweep, SPSC handoff, and RSA-PSS signing
+(all already benched pre-Stage-5) and end-to-end pipeline latency
+(bench_pipeline_e2e). ShadowBook update and feature extraction get their own
+independently-attributed numbers in Section 2's per-stage breakdown
+(bench_pipeline_stages) rather than only appearing bundled inside the e2e
+number, as they did before.

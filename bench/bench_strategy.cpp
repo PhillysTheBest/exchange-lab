@@ -30,6 +30,7 @@
 
 #include <array>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <vector>
 
@@ -40,6 +41,10 @@ namespace {
 
 constexpr int kWarmup = 10'000;
 constexpr int kIters  = 200'000;
+
+// Stage 5, Section 7: optional --csv=<path> regression-tracking output — see
+// bench_engine.cpp's identical pattern and px/histogram.hpp's append_csv.
+std::FILE* g_csv = nullptr;
 
 // A representative two-sided, moderately bid-skewed book with recent
 // buy-heavy trade flow and no resting orders of our own — the "there's
@@ -100,12 +105,14 @@ void bench_one(Strategy& strat, const char* scenario, const MarketState& state, 
     }
     char label[64];
     std::snprintf(label, sizeof(label), "%s (%s)", strat.name(), scenario);
-    LatencyHistogram::print(label, hist.summarize());
+    const auto p = hist.summarize();
+    LatencyHistogram::print(label, p);
+    LatencyHistogram::append_csv(g_csv, label, p);
 }
 
 void bench_extract_features(const TscClock& clock, unsigned& sink) {
     // Stack locals, deliberately — unlike OrderBook (~5.7 MB) and Brain
-    // (~780 KB), ShadowBook/TradeWindow carry no SIZE WARNING (~440 B and a
+    // (~3.0 MB as of Stage 5), ShadowBook/TradeWindow carry no SIZE WARNING (~440 B and a
     // fixed 64-entry ring, respectively); see tests/test_market_state.cpp,
     // which stack-allocates the identical pair for the same reason.
     ShadowBook book;
@@ -125,12 +132,18 @@ void bench_extract_features(const TscClock& clock, unsigned& sink) {
         if (i >= kWarmup) hist.record(clock.to_ns(t1 - t0));
         sink += static_cast<unsigned>(s.best_bid) + static_cast<unsigned>(s.best_ask);
     }
-    LatencyHistogram::print("extract_features (MarketState assembly)", hist.summarize());
+    const auto p = hist.summarize();
+    LatencyHistogram::print("extract_features (MarketState assembly)", p);
+    LatencyHistogram::append_csv(g_csv, "extract_features (MarketState assembly)", p);
 }
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    for (int i = 1; i < argc; ++i) {
+        if (std::strncmp(argv[i], "--csv=", 6) == 0) g_csv = LatencyHistogram::open_csv_for_append(argv[i] + 6);
+    }
+
     const auto cores = performance_core_ids();
     bool pinned = false;
     if (!cores.empty()) pinned = pin_current_thread_to(cores.front());
@@ -185,5 +198,6 @@ int main() {
     // claim instead of an assumed one: at a handful of strategies per market,
     // a few redundant extract_features calls per event cost nanoseconds, not
     // the microseconds that would actually justify restructuring the loop.
+    if (g_csv) std::fclose(g_csv);
     return 0;
 }

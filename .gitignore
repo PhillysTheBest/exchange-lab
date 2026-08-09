@@ -9,3 +9,7 @@ build/
 *.pem
 *.key
 .env
+
+# Stage 5: regenerated on every `make perf-regression` run — perf/baseline/'s
+# frozen snapshot is what's checked in, not this run's transient comparison.
+perf/results/current_*.csv

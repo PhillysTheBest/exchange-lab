@@ -74,11 +74,16 @@ void Brain::apply_exec_report(const ExecReport& e, RingB& intent_out) noexcept {
 }
 
 void Brain::dispatch_market_triggered(MarketId market, strategy::TriggerKind trigger, RingB& intent_out) noexcept {
-    for (auto& [strat_market, strat] : strategies_) {
-        if (strat_market != market) continue;
+    // Stage 5, Section 10: iterates only this market's own registered
+    // strategies (via strategy_index_by_market_, populated once at
+    // add_strategy time) instead of linearly scanning every strategy ever
+    // registered on any market — see strategy_index_by_market_'s own comment
+    // in pipeline/brain.hpp for the measured before/after this fixed.
+    for (const std::size_t idx : strategy_index_by_market_[market]) {
+        strategy::Strategy& strat = *strategies_[idx].second;
         const strategy::MarketState state = strategy::extract_features(
             market, books_[market], risk_.position(market), order_tracker_, trade_windows_[market], now_ns());
-        const strategy::ExecutionDecision decision = strat->on_event(state, trigger, nullptr);
+        const strategy::ExecutionDecision decision = strat.on_event(state, trigger, nullptr);
         handle_decision(market, decision, intent_out);
     }
 }

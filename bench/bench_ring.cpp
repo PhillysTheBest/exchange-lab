@@ -14,6 +14,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdint>
+#include <cstring>
 #include <thread>
 
 using namespace px;
@@ -28,6 +29,10 @@ struct Msg {
 constexpr std::size_t kRingCapacity = 1u << 14; // 16384
 constexpr std::uint64_t kWarmup = 20'000;
 constexpr std::uint64_t kIters  = 500'000;
+
+// Stage 5, Section 7: optional --csv=<path> regression-tracking output — see
+// bench_engine.cpp's identical pattern and px/histogram.hpp's append_csv.
+std::FILE* g_csv = nullptr;
 
 // IMPORTANT METHODOLOGY NOTE, kept rather than silently "fixed away": an earlier
 // version of this benchmark let the producer push as fast as it could with no
@@ -88,7 +93,9 @@ void bench_cross_core(const TscClock& clock) {
     std::printf("rings empty after run: %s\n",
                 (to_consumer.size_approx() == 0 && to_producer.size_approx() == 0) ? "yes" : "no");
 
-    LatencyHistogram::print("cross-core round trip (ping-pong)", hist.summarize());
+    const auto p = hist.summarize();
+    LatencyHistogram::print("cross-core round trip (ping-pong)", p);
+    LatencyHistogram::append_csv(g_csv, "cross-core round trip (ping-pong)", p);
 }
 
 void bench_same_thread_roundtrip(const TscClock& clock) {
@@ -106,12 +113,18 @@ void bench_same_thread_roundtrip(const TscClock& clock) {
         if (i >= kWarmup) hist.record(clock.to_ns(t1 - t0));
     }
 
-    LatencyHistogram::print("same-thread push+pop (no core hop)", hist.summarize());
+    const auto p = hist.summarize();
+    LatencyHistogram::print("same-thread push+pop (no core hop)", p);
+    LatencyHistogram::append_csv(g_csv, "same-thread push+pop (no core hop)", p);
 }
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    for (int i = 1; i < argc; ++i) {
+        if (std::strncmp(argv[i], "--csv=", 6) == 0) g_csv = LatencyHistogram::open_csv_for_append(argv[i] + 6);
+    }
+
     TscClock clock;
     std::printf("invariant TSC: %s, calibrated %.4f ticks/ns\n\n",
                 clock.invariant_tsc() ? "yes" : "no (results may drift)", clock.ticks_per_ns());
@@ -119,5 +132,7 @@ int main() {
     bench_same_thread_roundtrip(clock);
     std::printf("\n");
     bench_cross_core(clock);
+
+    if (g_csv) std::fclose(g_csv);
     return 0;
 }

@@ -28,13 +28,17 @@
 // SIZE WARNING (found the hard way — an ad-hoc stack-local Brain in a test
 // during Stage 3 development crashed with STATUS_STACK_OVERFLOW): Brain
 // embeds one ShadowBook, one TradeWindow, and OrderTracker's per-market table
-// by value, per kMaxMarkets — sizeof(Brain) is currently ~780 KB (measured).
+// by value, per kMaxMarkets — sizeof(Brain) is currently ~3.0 MB (measured;
+// was ~780 KB before Stage 5 raised kMaxMarkets 256->1024 to reach its
+// multi-market scaling sweep's 500/1000-market points — see px/types.hpp's
+// kMaxMarkets comment and PERFORMANCE.md's "Multi-market scaling" section).
 // That's exactly right as a heap-allocated object (every real call site uses
 // std::make_unique<Brain> — see tools/kalshi_pipeline.cpp,
 // tests/test_replay_determinism.cpp, tests/test_replay_fuzz.cpp) and exactly
 // wrong as a stack local or by-value parameter — the same SIZE WARNING
-// px/order_book.hpp already documents for OrderBook (~5.7 MB); this is a
-// smaller instance of the identical hazard, not a new kind of problem.
+// px/order_book.hpp already documents for OrderBook (~5.7 MB); this is now a
+// comparably-sized instance of the identical hazard, not a new kind of
+// problem.
 #pragma once
 
 #include "pipeline/events.hpp"
@@ -70,7 +74,16 @@ public:
 
     // `market` is which ShadowBook/MarketState this strategy reads when it
     // fires, for every trigger kind — see strategy/strategy.hpp's TriggerKind.
+    //
+    // Stage 5, Section 10: also records this entry's index into
+    // strategy_index_by_market_[market] — see that member's own comment for
+    // why. add_strategy is a one-time setup call (never on the hot path, same
+    // tier as Brain's own constructor), so paying an extra vector push here
+    // to make every future dispatch_market_triggered call O(this market's own
+    // strategies) instead of O(all registered strategies) is free in
+    // practice.
     void add_strategy(MarketId market, std::unique_ptr<strategy::Strategy> strat) {
+        strategy_index_by_market_[market].push_back(strategies_.size());
         strategies_.emplace_back(market, std::move(strat));
     }
 
@@ -101,11 +114,13 @@ private:
     void evaluate_oracle_event(const strategy::OracleEvent& e, RingB& intent_out) noexcept;
     void handle_decision(MarketId market, const strategy::ExecutionDecision& decision, RingB& intent_out) noexcept;
 
-    // ~110 KB total (256 * ~440 B) as declared, but only the entries the
-    // registry actually assigned (a handful, contiguous from index 0 — see
-    // ticker_registry.hpp) are ever touched, so the real working set stays
-    // the few-KB, L1-friendly figure the plan doc's ShadowBook design argues
-    // for — the unused tail of this array is never faulted into cache.
+    // ~450 KB total (1024 * ~440 B; was ~110 KB at the pre-Stage-5
+    // kMaxMarkets=256 — see px/types.hpp's kMaxMarkets comment) as declared,
+    // but only the entries the registry actually assigned (a handful,
+    // contiguous from index 0 — see ticker_registry.hpp) are ever touched,
+    // so the real working set stays the few-KB, L1-friendly figure the plan
+    // doc's ShadowBook design argues for — the unused tail of this array is
+    // never faulted into cache.
     std::array<ShadowBook, kMaxMarkets> books_{};
     std::array<strategy::TradeWindow, kMaxMarkets> trade_windows_{};
     strategy::OrderTracker order_tracker_; // already indexed internally per-market — one instance, not an array
@@ -125,6 +140,22 @@ private:
     // live/kalshi_feed.hpp) still correctly transition it away from Open.
     std::array<MarketStatus, kMaxMarkets> market_status_{};
     std::vector<std::pair<MarketId, std::unique_ptr<strategy::Strategy>>> strategies_;
+
+    // Stage 5, Section 10: dispatch_market_triggered used to linearly scan
+    // ALL of strategies_ on every single BookUpdate/OwnOrderUpdate, filtering
+    // by MarketId — O(total registered strategies across every market), not
+    // O(this market's own). Confirmed as a real, if modest, measurable cost
+    // by bench/bench_dispatch_scaling.cpp (a targeted, low-noise, one-event-
+    // at-a-time benchmark built specifically to isolate it from parse/
+    // generator noise — see PERFORMANCE.md's Section 10 optimization log for
+    // the before/after numbers). This index maps MarketId -> the indices
+    // into strategies_ registered on that market, so dispatch_market_triggered
+    // touches only this market's own strategies. evaluate_oracle_event's own
+    // all-strategies scan is UNCHANGED and does NOT use this index — that
+    // scan is intentional (a single oracle event can matter to several
+    // differently-registered strategies at once), not the bug this fixes.
+    std::array<std::vector<std::size_t>, kMaxMarkets> strategy_index_by_market_{};
+
     risk::RiskEngine risk_;
     OrderId next_order_id_ = 1;
 

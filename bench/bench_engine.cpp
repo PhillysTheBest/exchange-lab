@@ -9,6 +9,7 @@
 #include "px/tsc_clock.hpp"
 
 #include <cstdio>
+#include <cstring>
 #include <random>
 #include <string>
 #include <vector>
@@ -20,10 +21,18 @@ namespace {
 constexpr int kWarmup = 10'000;
 constexpr int kIters  = 200'000;
 
+// Stage 5, Section 7: optional --csv=<path> output, appended to by every
+// run_bench call below alongside the existing human-readable print — same
+// measurement, no duplicated timing logic, zero behavior change when the
+// flag is omitted (g_csv stays nullptr, append_csv is a no-op). See
+// perf/compare_baseline.py for what reads this.
+std::FILE* g_csv = nullptr;
+
 void run_bench(const char* label, const TscClock& clock, LatencyHistogram& hist) {
     LatencyHistogram::Percentiles p = hist.summarize();
     (void)clock;
     LatencyHistogram::print(label, p);
+    LatencyHistogram::append_csv(g_csv, label, p);
 }
 
 // Benchmark 1: rest a fresh GTC limit order that never crosses anything. Each
@@ -137,7 +146,11 @@ void bench_mixed_throughput(MatchingEngine& eng, MarketId m, TraderId a, TraderI
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    for (int i = 1; i < argc; ++i) {
+        if (std::strncmp(argv[i], "--csv=", 6) == 0) g_csv = LatencyHistogram::open_csv_for_append(argv[i] + 6);
+    }
+
     const auto cores = performance_core_ids();
     bool pinned = false;
     if (!cores.empty()) pinned = pin_current_thread_to(cores.front());
@@ -160,5 +173,6 @@ int main() {
     bench_cancel(eng, m, maker, clock);
     bench_mixed_throughput(eng, m, maker, taker, clock);
 
+    if (g_csv) std::fclose(g_csv);
     return 0;
 }

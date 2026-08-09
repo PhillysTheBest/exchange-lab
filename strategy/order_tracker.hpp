@@ -47,6 +47,19 @@ struct RestingOrder {
                                   // an explicit upper bound, not a live/exact figure
 };
 
+// SIZE NOTE (found while measuring Stage 5's kMaxMarkets bump, the same
+// class of hazard pipeline/brain.hpp's own SIZE WARNING documents for
+// Brain): OrderTracker embeds by_market_'s full std::array<MarketOrders,
+// kMaxMarkets> by value — sizeof(OrderTracker) is ~1.04 MB at kMaxMarkets =
+// 1024 (was ~260 KB at the pre-Stage-5 kMaxMarkets = 256). Existing test
+// files (tests/test_strategies.cpp, bench/bench_strategy.cpp) construct it as
+// a plain stack local dozens of times and still pass at this size — a
+// default Windows thread's reserved stack is comfortably larger than the
+// oft-quoted 1 MB figure in this toolchain — but that margin is now
+// meaningfully thinner than it was, and a future caller constructing one on
+// a thread with an explicitly reduced stack size should heap-allocate it
+// (std::make_unique<OrderTracker>()) rather than assume a stack local is
+// still safe by the same margin Stage 1-4 code relied on.
 class OrderTracker {
 public:
     // Optimistically records a pending (unacked) order the instant Brain
