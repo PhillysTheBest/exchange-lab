@@ -9,7 +9,9 @@
 // never drift more than `max_mid_drift_ticks` from its start, which bounds how
 // many distinct price levels can exist (well under EngineConfig::levels_per_side).
 // Each command is one of
-//   passive      GTC limit 1-50 ticks behind the mid (most within 5): builds depth
+//   passive      GTC limit behind the mid, mostly within 20 ticks (two thirds of
+//                those within 5); a configurable share spread further out, up to
+//                `far_offset_max_ticks` (50 by default, 1500 in deep_profile())
 //   marketable   limit 0-5 ticks through the mid, 70% GTC / 30% IOC: takes liquidity
 //   market       IOC sweep of any depth
 //   cancel       of an order that is really still resting — the generator replays
@@ -40,6 +42,10 @@ struct StreamConfig {
     Price tick = 100;                     // $0.01
     Price start_mid = 100 * kPriceScale;  // $100.00
     std::int64_t max_mid_drift_ticks = 500;
+    // Passive offsets from the mid: (100 - pct_far_passive)% land within 20 ticks
+    // (two thirds of those within 5), the rest spread over 21..far_offset_max_ticks.
+    unsigned pct_far_passive = 10;
+    std::int64_t far_offset_max_ticks = 50;
     std::uint32_t owners = 64;
     std::size_t max_resting = 20'000;
     unsigned pct_passive = 50;
@@ -51,6 +57,18 @@ struct StreamConfig {
 struct StreamMix {
     std::size_t passive = 0, marketable_gtc = 0, marketable_ioc = 0, market = 0, cancel = 0, late_cancel = 0;
 };
+
+// The deep-book profile: half the passive orders spread up to 1500 ticks from a
+// mid that drifts at most 200 ticks, and up to 60k resting orders, so each side
+// holds well over a thousand price levels (every price stays within 1700 ticks
+// of the start, inside the default 2048 levels per side).
+[[nodiscard]] inline StreamConfig deep_profile(StreamConfig c) {
+    c.pct_far_passive = 50;
+    c.far_offset_max_ticks = 1500;
+    c.max_mid_drift_ticks = 200;
+    c.max_resting = 60'000;
+    return c;
+}
 
 // Registers the stream's instruments ("SYM00", "SYM01", ...) on an engine.
 inline void add_instruments(MatchingEngine& engine, const StreamConfig& cfg) {
@@ -86,6 +104,9 @@ inline void add_instruments(MatchingEngine& engine, const StreamConfig& cfg) {
     const unsigned passive_end = cfg.pct_passive;
     const unsigned marketable_end = passive_end + cfg.pct_marketable;
     const unsigned market_end = marketable_end + cfg.pct_market;
+    const unsigned mid_end = 100 - cfg.pct_far_passive;
+    const unsigned near_end = mid_end * 2 / 3;
+    const auto far_span = static_cast<std::uint64_t>(cfg.far_offset_max_ticks - 20);
 
     // Pops a uniformly random entry of `resting` that is still live, moving the
     // filled ones it meets into the recently-filled ring. False if none is left.
@@ -148,9 +169,9 @@ inline void add_instruments(MatchingEngine& engine, const StreamConfig& cfg) {
         if (!built) {
             if (roll < passive_end) {
                 const auto r = rng() % 100;
-                const std::int64_t offset = r < 60 ? 1 + static_cast<std::int64_t>(rng() % 5)
-                                          : r < 90 ? 6 + static_cast<std::int64_t>(rng() % 15)
-                                                   : 21 + static_cast<std::int64_t>(rng() % 30);
+                const std::int64_t offset = r < near_end ? 1 + static_cast<std::int64_t>(rng() % 5)
+                                          : r < mid_end  ? 6 + static_cast<std::int64_t>(rng() % 15)
+                                                         : 21 + static_cast<std::int64_t>(rng() % far_span);
                 const Price px = side == Side::Buy ? m - offset * cfg.tick : m + offset * cfg.tick;
                 req = limit_order(id, instr, owner, side, px, qty, Tif::GTC);
                 ++mix.passive;

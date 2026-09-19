@@ -112,7 +112,7 @@ bool run_seed(std::uint64_t seed, Profile profile, int commands, const EngineCon
     auto eng = std::make_unique<MatchingEngine>(cfg);
     test::ReferenceEngine ref(cfg);
     for (int i = 0; i < kInstruments; ++i) {
-        char sym[8];
+        char sym[16];
         std::snprintf(sym, sizeof sym, "F%d", i);
         eng->add_instrument(sym, kTick);
         ref.add_instrument(kTick);
