@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <deque>
 #include <functional>
+#include <iterator>
 #include <map>
 #include <unordered_map>
 #include <vector>
@@ -52,6 +53,60 @@ public:
     }
 
     [[nodiscard]] std::size_t resting_orders() const { return live_.size(); }
+
+    // The whole side, best level first, in one pass (level() is O(rank) per call).
+    void ladder(InstrumentId i, Side s, std::vector<Top>& out) const {
+        out.clear();
+        const auto fill = [&out](const auto& m) {
+            for (const auto& [px, q] : m) {
+                Top t;
+                t.present = true;
+                t.price = px;
+                for (const Resting& r : q) t.qty += r.leaves;
+                t.orders = static_cast<std::uint32_t>(q.size());
+                out.push_back(t);
+            }
+        };
+        if (s == Side::Buy) {
+            fill(books_[i].bids);
+        } else {
+            fill(books_[i].asks);
+        }
+    }
+
+    // Where a live order rests: its level's rank from the best (0 == best), the
+    // side's depth, and how many orders share its level. False if not live.
+    bool locate(OrderId id, std::size_t& rank, std::size_t& depth, std::size_t& level_orders) const {
+        const auto it = live_.find(id);
+        if (it == live_.end()) return false;
+        const Where w = it->second;
+        const auto find_in = [&](const auto& m) {
+            const auto lvl = m.find(w.price);
+            rank = static_cast<std::size_t>(std::distance(m.begin(), lvl));
+            depth = m.size();
+            level_orders = lvl->second.size();
+        };
+        if (w.side == Side::Buy) {
+            find_in(books_[w.instr].bids);
+        } else {
+            find_in(books_[w.instr].asks);
+        }
+        return true;
+    }
+
+    // True if a GTC limit at `price` would open a new level behind every existing
+    // level on its side (the far-end insert, the most expensive index shift).
+    [[nodiscard]] bool is_far_end_price(InstrumentId i, Side s, Price price, std::size_t& depth) const {
+        if (i >= books_.size()) return false;
+        if (s == Side::Buy) {
+            const auto& m = books_[i].bids;
+            depth = m.size();
+            return !m.empty() && price < m.rbegin()->first;
+        }
+        const auto& m = books_[i].asks;
+        depth = m.size();
+        return !m.empty() && price > m.rbegin()->first;
+    }
 
 private:
     struct Resting {
