@@ -13,9 +13,17 @@
 // node per level, which the zero-allocation rule forbids.
 //
 // Cost bounds, stated rather than implied: lookup O(log L); insert or erase at
-// rank r from the best moves r entries (12 bytes each), so the worst case — a
-// brand-new price at the far end of a full side — is one memmove of about 24 KB.
-// It is bounded by the capacity and measured by bench_engine's deep-insert case.
+// rank r from the best moves r entries (12 bytes each), so the worst cases —
+// adding or removing a price at the far end of a full 2048-level side — shift
+// about 24 KB. Bounded by the capacity; measured by bench_engine's far-end cases.
+//
+// The shifts are explicit loops, NOT memmove. Measured on Windows' UCRT: a 24 KB
+// memmove one element DOWN (the erase direction: overlapping, destination below
+// source) took ~7.9 us, apparently a slow byte-granular path, while the same
+// shift UP took ~0.4 us. A plain loop that the compiler vectorises does either
+// direction in ~0.6 us on any C runtime. The Makefile passes
+// -fno-tree-loop-distribute-patterns so GCC cannot turn these loops back into
+// memmove calls.
 #pragma once
 
 #include "types.hpp"
@@ -23,7 +31,6 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
-#include <cstring>
 #include <memory>
 
 namespace px {
@@ -69,26 +76,29 @@ public:
     }
 
     // Precondition: !full() and `index` came from locate(key) with found == false.
+    // Both shifts copy through local pointers and a local size: Slot and size_ are
+    // both u32, so a store through slots_ could otherwise alias size_, forcing a
+    // reload every iteration and blocking vectorisation of the slot loop.
     void insert_at(std::uint32_t index, std::int64_t key, Slot slot) noexcept {
         assert(!full() && index <= size_);
-        const std::uint32_t tail = size_ - index;
-        if (tail != 0) {
-            std::memmove(&keys_[index + 1], &keys_[index], tail * sizeof(std::int64_t));
-            std::memmove(&slots_[index + 1], &slots_[index], tail * sizeof(Slot));
-        }
-        keys_[index] = key;
-        slots_[index] = slot;
-        ++size_;
+        const std::uint32_t n = size_;
+        std::int64_t* const k = keys_.get();
+        Slot* const s = slots_.get();
+        for (std::uint32_t i = n; i > index; --i) k[i] = k[i - 1]; // shift up: copy descending
+        for (std::uint32_t i = n; i > index; --i) s[i] = s[i - 1];
+        k[index] = key;
+        s[index] = slot;
+        size_ = n + 1;
     }
 
     void erase_at(std::uint32_t index) noexcept {
         assert(index < size_);
-        const std::uint32_t tail = size_ - index - 1;
-        if (tail != 0) {
-            std::memmove(&keys_[index], &keys_[index + 1], tail * sizeof(std::int64_t));
-            std::memmove(&slots_[index], &slots_[index + 1], tail * sizeof(Slot));
-        }
-        --size_;
+        const std::uint32_t last = size_ - 1;
+        std::int64_t* const k = keys_.get();
+        Slot* const s = slots_.get();
+        for (std::uint32_t i = index; i < last; ++i) k[i] = k[i + 1]; // shift down: copy ascending
+        for (std::uint32_t i = index; i < last; ++i) s[i] = s[i + 1];
+        size_ = last;
     }
 
     void pop_best() noexcept {

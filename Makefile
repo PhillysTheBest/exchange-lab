@@ -19,8 +19,12 @@ DEPFLAGS := -MMD -MP
 # No sanitizer runtimes ship with MSYS2's mingw-w64 g++, so debug builds rely on
 # _GLIBCXX_ASSERTIONS plus the engine's own PX_DEBUG checks. On Linux, add
 # -fsanitize=address,undefined to DEBUG_FLAGS.
-DEBUG_FLAGS   := -Og -g -DPX_DEBUG=1 -D_GLIBCXX_ASSERTIONS -fno-omit-frame-pointer
-RELEASE_FLAGS := -O3 -march=native -flto -DNDEBUG
+# -fno-tree-loop-distribute-patterns: stop GCC from rewriting the hand-written
+# shift loops in sorted_levels.hpp into memmove calls (see that file for why).
+# It is in both flag sets because with -flto code is generated at link time.
+CODEGEN       := -fno-tree-loop-distribute-patterns
+DEBUG_FLAGS   := -Og -g -DPX_DEBUG=1 -D_GLIBCXX_ASSERTIONS -fno-omit-frame-pointer $(CODEGEN)
+RELEASE_FLAGS := -O3 -march=native -flto -DNDEBUG $(CODEGEN)
 
 ifeq ($(OS),Windows_NT)
   PLATFORM_SRC := src/platform_win32.cpp
