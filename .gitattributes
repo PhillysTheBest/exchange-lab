@@ -1,0 +1,5 @@
+# Normalise every text file to LF, in the repository and on checkout, so the
+# Windows and WSL/Linux builds of one working tree see identical files (a shell
+# script with CRLF endings does not run under bash).
+* text=auto eol=lf
+*.png binary

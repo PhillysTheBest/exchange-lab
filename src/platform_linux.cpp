@@ -1,12 +1,12 @@
 // src/platform_linux.cpp — Linux implementation of px/platform.hpp. The Makefile
-// selects it automatically on a non-Windows build. The published numbers come
-// from the Windows build; this file compiles against glibc but has not been
-// benchmarked.
+// selects it automatically on a non-Windows build. It has been run under WSL2
+// (results/wsl2/), not on bare-metal Linux.
 #include "px/platform.hpp"
 
 #include <pthread.h>
 #include <sched.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <unistd.h>
 
 namespace px {
@@ -46,8 +46,14 @@ bool pin_current_thread_to(unsigned logical_cpu) noexcept {
 }
 
 void harden_process() noexcept {
-    // Needs CAP_IPC_LOCK or a sufficient RLIMIT_MEMLOCK; best-effort otherwise.
-    mlockall(MCL_CURRENT | MCL_FUTURE);
+    // Lock memory only when RLIMIT_MEMLOCK is unlimited (root, or ulimit -l
+    // unlimited). With a finite limit, MCL_FUTURE turns every allocation past the
+    // limit into a failure (std::bad_alloc), so there the pre-faulting done at
+    // construction has to be enough.
+    rlimit lim{};
+    if (getrlimit(RLIMIT_MEMLOCK, &lim) == 0 && lim.rlim_cur == RLIM_INFINITY) {
+        mlockall(MCL_CURRENT | MCL_FUTURE);
+    }
 }
 
 } // namespace px
