@@ -1,122 +1,41 @@
-// px/types.hpp — fundamental scalar types and enums shared across the engine.
+// px/types.hpp — scalar types shared by the engine, the simulator and the tests.
 //
-// Design rule: no floating point anywhere on the price/matching path. Prices are
-// integer cents on [1, 99] (a prediction-market contract always settles at 0 or 100).
-// Money is integer cents. This eliminates an entire class of rounding bugs and keeps
-// the hot path branch-friendly and reproducible bit-for-bit across runs.
+// Design rule: no floating point on the price or matching path. A price is a
+// signed 64-bit count of 1/10,000ths of a currency unit (kPriceScale), the same
+// fixed-point convention as NASDAQ ITCH's "Price(4)": $1.00 == 10'000. Every
+// instrument then declares its own tick size in those units (e.g. 100 == $0.01).
+// Integer prices compare, hash and order exactly, and replay bit-for-bit.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 
 namespace px {
 
-// ---- scalar aliases -------------------------------------------------------
+using Price        = std::int64_t;   // fixed-point, kPriceScale units per 1.0
+using Qty          = std::uint32_t;  // shares / contracts
+using OrderId      = std::uint64_t;  // exchange-unique among live orders
+using OwnerId      = std::uint32_t;  // submitting participant (self-trade prevention)
+using InstrumentId = std::uint16_t;
+using Slot         = std::uint32_t;  // index into a Pool — never a pointer
+using SeqNum       = std::uint64_t;  // engine event sequence number
+using Tsc          = std::uint64_t;  // raw time-stamp-counter ticks
 
-using Price    = std::int32_t;   // cents, valid range [kMinPrice, kMaxPrice]
-using Qty      = std::uint32_t;  // contract count
-using Cash     = std::int64_t;   // integer cents; signed so P&L / margin can go negative
-using OrderId  = std::uint64_t;  // externally-visible, caller-assigned or engine-assigned
-using TraderId = std::uint32_t;
-using MarketId = std::uint32_t;
-using Slot     = std::uint32_t;  // index into a pool — NOT a pointer
-using Tsc      = std::uint64_t;  // raw TSC tick count (see tsc_clock.hpp)
-using SeqNum   = std::uint64_t;  // monotonically increasing event/trade sequence number
+inline constexpr Price kPriceScale = 10'000;
+// Upper bound on any limit price ($1,000,000). Keeps `-price` (the ask-side sort
+// key, see sorted_levels.hpp) and every price*qty product far from overflow.
+inline constexpr Price kMaxPrice = 1'000'000 * kPriceScale;
 
 inline constexpr Slot kNullSlot = std::numeric_limits<Slot>::max();
-
-// Reserved sentinel — never assign this as a real OrderId. Used internally by
-// FlatOrderMap as the "empty slot" marker so lookups need no separate tombstone bit.
+// Reserved: the id map uses it as its empty-bucket marker, so no order may carry it.
 inline constexpr OrderId kInvalidOrderId = std::numeric_limits<OrderId>::max();
+inline constexpr InstrumentId kInvalidInstrument = std::numeric_limits<InstrumentId>::max();
 
-// ---- price ladder bounds ---------------------------------------------------
-//
-// A contract trades on integer cents 1..99 (0 and 100 are the settlement values,
-// never live order prices). The ladder array is sized 0..100 inclusive (101 slots)
-// so a price can index it directly with no offset arithmetic; slots 0 and 100 are
-// permanently empty sentinels, which also gives MARKET-order sweeps a natural
-// "one past the edge" stop without a separate bounds check.
-inline constexpr Price kMinPrice   = 1;
-inline constexpr Price kMaxPrice   = 99;
-inline constexpr int   kNumLevels  = 101; // indices [0, 100]
-
-[[nodiscard]] constexpr bool valid_price(Price p) noexcept {
-    return p >= kMinPrice && p <= kMaxPrice;
-}
-
-// Per-market resting-order capacity. Fixed at compile time so Pool/FlatOrderMap
-// preallocate once at construction and never resize/allocate again.
-inline constexpr std::size_t kMaxOrdersPerMarket = std::size_t{1} << 16; // 65536
-
-// Ceiling on how many distinct markets a single MatchingEngine instance manages.
-// Bounds Trader's flat per-market position array — no per-trader allocation either.
-// Also bounds every per-market array in the live pipeline (Brain's
-// books_/trade_windows_/market_status_, OrderTracker::by_market_,
-// RiskEngine::position_, Ingress::seq_trackers_) and gates
-// TickerRegistry::add. Raised from 256 to 1024 in Stage 5 specifically to
-// reach the plan's 500/1000-market scaling-sweep points (see docs/PERFORMANCE.md's
-// "Multi-market scaling" section) — every use is flat std::array sizing, so
-// this is a mechanical capacity change, not a behavioral one. Brain's own
-// SIZE WARNING doc comment (pipeline/brain.hpp) is re-measured and updated
-// alongside this constant; if you change it again, re-measure sizeof(Brain)
-// there too.
-inline constexpr std::size_t kMaxMarkets = 1024;
-
-using Position = std::int64_t; // signed net YES-contracts held; negative == net short
-
-// ---- enums ------------------------------------------------------------------
-
-// Which token the *caller* is trading. The engine internally normalizes every NO
-// order into an equivalent YES order (see OrderBook::normalize) and only ever
-// matches on a single YES book — Contract is retained on the Order record purely
-// for reporting/fills back to the trader, it plays no role in matching.
-enum class Contract : std::uint8_t { Yes, No };
-
-// Post-normalization side, always relative to the YES token.
-enum class Side : std::uint8_t { Buy, Sell };
+enum class Side : std::uint8_t { Buy = 0, Sell = 1 };
 
 [[nodiscard]] constexpr Side opposite(Side s) noexcept {
     return s == Side::Buy ? Side::Sell : Side::Buy;
 }
-
-enum class OrderType : std::uint8_t { Limit, Market };
-
-// GTC rests on the book after any partial fill. IOC fills what it can immediately
-// against the opposite side and cancels any remainder. A Market order is modeled
-// as a Limit at the extreme tick (kMaxPrice for a buy, kMinPrice for a sell) with
-// TimeInForce::IOC forced — see MatchingEngine — so there is exactly one matching
-// code path in OrderBook, not two.
-enum class TimeInForce : std::uint8_t { GTC, IOC };
-
-enum class OrderStatus : std::uint8_t {
-    New,
-    PartiallyFilled,
-    Filled,
-    Cancelled,
-    Rejected,
-};
-
-enum class MarketStatus : std::uint8_t {
-    PreOpen,
-    Open,
-    Halted,
-    Resolved,
-};
-
-// What a resolved market settled to. Undefined/meaningless while status != Resolved.
-enum class Settlement : std::uint8_t { Unresolved, Yes, No };
-
-// Reason a command was rejected — surfaced to the caller, never silently dropped.
-enum class RejectReason : std::uint8_t {
-    None,
-    MarketNotOpen,
-    InvalidPrice,
-    InvalidQty,
-    UnknownOrder,
-    DuplicateOrderId,
-    InsufficientCash,
-    InsufficientPosition,
-    PoolExhausted,
-};
 
 } // namespace px

@@ -9,11 +9,12 @@
 // full/empty. A producer that's comfortably ahead of the consumer touches the
 // consumer's cache line on essentially none of its pushes.
 //
-// The two cursors live in separate, cache-line-padded structs, one written only
-// by the producer and one written only by the consumer — no false sharing
-// between the threads, and each struct is small enough that its own two fields
-// (the real cursor + the cached copy of the other side's) share a line for free
-// since only one thread ever touches either of them.
+// The two cursors live in separate structs, one written only by the producer and
+// one written only by the consumer. Each is aligned to 128 bytes, not 64: Intel's
+// adjacent-line prefetcher pulls cache lines in 128-byte pairs, so two hot 64-byte
+// lines that merely sit next to each other can still ping-pong between cores.
+// Each struct's own two fields (its cursor + its cached copy of the other side's)
+// share a line for free, since only one thread ever touches either of them.
 #pragma once
 
 #include <array>
@@ -64,19 +65,19 @@ public:
 private:
     static constexpr std::size_t kMask = Capacity - 1;
 
-    struct alignas(64) ProducerCursor {
+    struct alignas(128) ProducerCursor {
         std::atomic<std::size_t> head{0};
         std::size_t cached_tail = 0; // producer's last-seen consumer tail_; avoids a
                                       // cross-core read on every push once comfortably ahead
     };
-    struct alignas(64) ConsumerCursor {
+    struct alignas(128) ConsumerCursor {
         std::atomic<std::size_t> tail{0};
         std::size_t cached_head = 0; // consumer's last-seen producer head_, symmetrically
     };
 
     ProducerCursor prod_;
     ConsumerCursor cons_;
-    alignas(64) std::array<T, Capacity> buffer_{};
+    alignas(128) std::array<T, Capacity> buffer_{};
 };
 
 } // namespace px

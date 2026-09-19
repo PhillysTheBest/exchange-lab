@@ -1,42 +1,52 @@
-// px/pool.hpp — fixed-capacity slab allocator with an intrusive free list.
+// px/pool.hpp — fixed-capacity slab allocator handing out Slot indices.
 //
-// The hot path never calls new/delete. All Order storage is a single contiguous
-// array allocated once (when the Pool object itself is constructed); acquire()/
-// release() are O(1) pointer-free operations that hand out/reclaim a `Slot`
-// (a plain u32 index), not a pointer — that keeps every reference into the pool
-// stable across the whole session and 4 bytes wide instead of 8.
+// The hot path never calls new/delete. All storage is one contiguous array
+// allocated (and zero-filled, which also pre-faults every page) when the Pool is
+// constructed; acquire()/release() are O(1) pushes and pops on a free list kept
+// in a parallel index array. Slots are plain u32 indices, so references into the
+// pool stay valid for the whole session and are half the width of a pointer.
 #pragma once
 
 #include "types.hpp"
 
-#include <array>
+#include <cassert>
 #include <cstddef>
+#include <memory>
 
 namespace px {
 
-template <typename T, std::size_t Capacity>
+template <typename T>
 class Pool {
 public:
-    Pool() noexcept {
-        for (std::size_t i = 0; i + 1 < Capacity; ++i) {
-            free_link_[i] = static_cast<Slot>(i + 1);
-        }
-        free_link_[Capacity - 1] = kNullSlot;
-        free_head_ = 0;
+    explicit Pool(std::size_t capacity)
+        : capacity_(capacity), storage_(new T[capacity]()), free_link_(new Slot[capacity]) {
+        assert(capacity > 0 && capacity < kNullSlot);
+        for (std::size_t i = 0; i + 1 < capacity; ++i) free_link_[i] = static_cast<Slot>(i + 1);
+        free_link_[capacity - 1] = kNullSlot;
+#ifdef PX_DEBUG
+        in_use_.reset(new bool[capacity]());
+#endif
     }
 
-    // Returns kNullSlot if the pool is exhausted — callers on the matching path
-    // must check this and reject the command (RejectReason::PoolExhausted) rather
-    // than let it propagate as a dangling reference.
+    // kNullSlot when exhausted. The engine checks capacity before it commits to
+    // an operation, so on the matching path this never actually returns null.
     [[nodiscard]] Slot acquire() noexcept {
         if (free_head_ == kNullSlot) return kNullSlot;
         const Slot s = free_head_;
         free_head_ = free_link_[s];
         ++live_;
+#ifdef PX_DEBUG
+        assert(!in_use_[s]);
+        in_use_[s] = true;
+#endif
         return s;
     }
 
     void release(Slot s) noexcept {
+#ifdef PX_DEBUG
+        assert(s < capacity_ && in_use_[s] && "double free or foreign slot");
+        in_use_[s] = false;
+#endif
         free_link_[s] = free_head_;
         free_head_ = s;
         --live_;
@@ -45,14 +55,20 @@ public:
     [[nodiscard]] T& operator[](Slot s) noexcept { return storage_[s]; }
     [[nodiscard]] const T& operator[](Slot s) const noexcept { return storage_[s]; }
 
-    [[nodiscard]] static constexpr std::size_t capacity() noexcept { return Capacity; }
+    [[nodiscard]] std::size_t capacity() const noexcept { return capacity_; }
     [[nodiscard]] std::size_t live() const noexcept { return live_; }
+    [[nodiscard]] std::size_t available() const noexcept { return capacity_ - live_; }
+    [[nodiscard]] bool full() const noexcept { return free_head_ == kNullSlot; }
 
 private:
-    alignas(64) std::array<T, Capacity> storage_{};
-    std::array<Slot, Capacity> free_link_{};
+    std::size_t capacity_;
+    std::unique_ptr<T[]> storage_;
+    std::unique_ptr<Slot[]> free_link_;
     Slot free_head_ = 0;
     std::size_t live_ = 0;
+#ifdef PX_DEBUG
+    std::unique_ptr<bool[]> in_use_;
+#endif
 };
 
 } // namespace px

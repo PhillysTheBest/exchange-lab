@@ -1,107 +1,113 @@
-// px/flat_map.hpp — fixed-capacity open-addressing map, OrderId -> Slot.
+// px/flat_map.hpp — fixed-capacity open-addressing hash map, OrderId -> Slot.
 //
-// Deliberately not std::unordered_map: that's a node-per-entry structure, it
-// allocates on every insert, and a lookup costs at least one guaranteed cache
-// miss chasing the bucket's node pointer. This is a single flat array pair,
-// sized once by the caller for the worst case (no rehashing, no allocation
-// after construction), linear-probed, with backward-shift deletion so heavy
-// insert/cancel churn — exactly this table's workload — never degrades lookups
-// via tombstone buildup. Algorithm: Knuth / Wikipedia "Open addressing", Deletion.
+// Deliberately not std::unordered_map, which allocates a node per insert and
+// costs a pointer chase per lookup. This is one flat array of 16-byte
+// {key, slot} entries, sized once by the caller (no rehash, no allocation after
+// construction), linear-probed so a probe sequence walks adjacent cache lines,
+// with backward-shift deletion so heavy insert/erase churn never accumulates
+// tombstones. The caller keeps the load factor at or below 50%; a completely full
+// table would make find() spin forever, so insert() refuses to fill it.
+// Algorithm: Knuth / Wikipedia "Open addressing", deletion without tombstones.
 #pragma once
 
 #include "types.hpp"
 
-#include <array>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 
 namespace px {
 
-template <std::size_t Capacity>
 class FlatOrderMap {
-    static_assert((Capacity & (Capacity - 1)) == 0, "Capacity must be a power of two");
-    static_assert(Capacity >= 2, "Capacity too small");
-
 public:
-    FlatOrderMap() noexcept { keys_.fill(kInvalidOrderId); }
+    explicit FlatOrderMap(std::size_t capacity_pow2)
+        : mask_(capacity_pow2 - 1), capacity_(capacity_pow2), entries_(new Entry[capacity_pow2]) {
+        assert(capacity_pow2 >= 2 && (capacity_pow2 & (capacity_pow2 - 1)) == 0);
+        for (std::size_t i = 0; i < capacity_; ++i) entries_[i] = Entry{};
+    }
 
-    // False if `key` already exists or the table is full (both are caller bugs
-    // on this path — order IDs are engine-assigned and the table is sized for
-    // the pool capacity — but checked rather than assumed).
+    // False if `key` is already present, is the reserved empty marker, or the
+    // table would become completely full.
     bool insert(OrderId key, Slot value) noexcept {
-        if (size_ >= Capacity) return false;
+        if (key == kInvalidOrderId || size_ + 1 >= capacity_) return false;
         std::size_t i = index_of(key);
         for (;;) {
-            if (keys_[i] == kInvalidOrderId) {
-                keys_[i] = key;
-                vals_[i] = value;
+            Entry& e = entries_[i];
+            if (e.key == kInvalidOrderId) {
+                e.key = key;
+                e.slot = value;
                 ++size_;
                 return true;
             }
-            if (keys_[i] == key) return false; // duplicate key
-            i = (i + 1) & kMask;
+            if (e.key == key) return false;
+            i = (i + 1) & mask_;
         }
     }
 
     [[nodiscard]] Slot find(OrderId key) const noexcept {
+        if (key == kInvalidOrderId) return kNullSlot;
         std::size_t i = index_of(key);
         for (;;) {
-            if (keys_[i] == kInvalidOrderId) return kNullSlot;
-            if (keys_[i] == key) return vals_[i];
-            i = (i + 1) & kMask;
+            const Entry& e = entries_[i];
+            if (e.key == key) return e.slot;
+            if (e.key == kInvalidOrderId) return kNullSlot;
+            i = (i + 1) & mask_;
         }
     }
 
     bool erase(OrderId key) noexcept {
+        if (key == kInvalidOrderId) return false;
         std::size_t i = index_of(key);
         for (;;) {
-            if (keys_[i] == kInvalidOrderId) return false; // not present
-            if (keys_[i] == key) break;
-            i = (i + 1) & kMask;
+            if (entries_[i].key == key) break;
+            if (entries_[i].key == kInvalidOrderId) return false;
+            i = (i + 1) & mask_;
         }
-
-        keys_[i] = kInvalidOrderId;
+        entries_[i].key = kInvalidOrderId;
         --size_;
 
-        // Backward-shift: pull subsequent cluster entries back into the gap as
-        // long as doing so doesn't violate their own probe sequence.
+        // Backward shift: pull later members of the probe cluster into the hole
+        // whenever that doesn't move them in front of their own home bucket.
         std::size_t hole = i;
-        std::size_t j = hole;
+        std::size_t j = i;
         for (;;) {
-            j = (j + 1) & kMask;
-            if (keys_[j] == kInvalidOrderId) return true;
-            const std::size_t ideal = index_of(keys_[j]);
-            bool blocked;
-            if (hole <= j) {
-                blocked = (ideal > hole) && (ideal <= j);
-            } else {
-                blocked = (ideal <= j) || (ideal > hole);
-            }
-            if (blocked) continue;
-            keys_[hole] = keys_[j];
-            vals_[hole] = vals_[j];
-            keys_[j] = kInvalidOrderId;
+            j = (j + 1) & mask_;
+            if (entries_[j].key == kInvalidOrderId) return true;
+            const std::size_t home = index_of(entries_[j].key);
+            const bool stays = (hole <= j) ? (home > hole && home <= j) : (home > hole || home <= j);
+            if (stays) continue;
+            entries_[hole] = entries_[j];
+            entries_[j].key = kInvalidOrderId;
             hole = j;
         }
     }
 
     [[nodiscard]] std::size_t size() const noexcept { return size_; }
-    [[nodiscard]] static constexpr std::size_t capacity() noexcept { return Capacity; }
+    [[nodiscard]] std::size_t capacity() const noexcept { return capacity_; }
 
 private:
-    static constexpr std::size_t kMask = Capacity - 1;
+    struct Entry {
+        OrderId key = kInvalidOrderId;
+        Slot slot = kNullSlot;
+        std::uint32_t pad = 0;
+    };
+    static_assert(sizeof(Entry) == 16);
 
-    [[nodiscard]] static std::size_t index_of(OrderId key) noexcept {
-        // splitmix64 finalizer: cheap, well-distributed avalanche for integer keys.
+    [[nodiscard]] std::size_t index_of(OrderId key) const noexcept {
+        // splitmix64 finalizer: cheap, full-avalanche mixing for sequential ids.
         std::uint64_t x = key;
-        x ^= x >> 30; x *= 0xbf58476d1ce4e5b9ULL;
-        x ^= x >> 27; x *= 0x94d049bb133111ebULL;
+        x ^= x >> 30;
+        x *= 0xbf58476d1ce4e5b9ULL;
+        x ^= x >> 27;
+        x *= 0x94d049bb133111ebULL;
         x ^= x >> 31;
-        return static_cast<std::size_t>(x) & kMask;
+        return static_cast<std::size_t>(x) & mask_;
     }
 
-    std::array<OrderId, Capacity> keys_{};
-    std::array<Slot, Capacity> vals_{};
+    std::size_t mask_;
+    std::size_t capacity_;
+    std::unique_ptr<Entry[]> entries_;
     std::size_t size_ = 0;
 };
 
