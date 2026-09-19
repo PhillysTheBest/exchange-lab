@@ -1,20 +1,11 @@
 #include "px/platform.hpp"
 
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00 // Windows 10: SetProcessInformation(ProcessPowerThrottling)
+#endif
 #include <windows.h>
 
-#include <psapi.h>
-
 namespace px {
-
-namespace {
-[[nodiscard]] std::uint64_t filetime_to_ns(const FILETIME& ft) noexcept {
-    // FILETIME is 100ns ticks since 1601 — only the delta between two
-    // readings is ever used by process_cpu_time_ns's callers, so the epoch
-    // itself doesn't matter, only the tick width (100ns -> *100 for ns).
-    const std::uint64_t ticks = (static_cast<std::uint64_t>(ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
-    return ticks * 100;
-}
-} // namespace
 
 std::vector<unsigned> performance_core_ids() {
     std::vector<unsigned> fallback_all;
@@ -82,16 +73,21 @@ bool pin_current_thread_to(unsigned logical_cpu) noexcept {
     return true;
 }
 
-std::uint64_t current_rss_bytes() noexcept {
-    PROCESS_MEMORY_COUNTERS pmc;
-    if (!GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) return 0;
-    return static_cast<std::uint64_t>(pmc.WorkingSetSize);
-}
+void harden_process() noexcept {
+    const HANDLE self = GetCurrentProcess();
+    SetPriorityClass(self, HIGH_PRIORITY_CLASS);
 
-std::uint64_t process_cpu_time_ns() noexcept {
-    FILETIME creation, exit, kernel, user;
-    if (!GetProcessTimes(GetCurrentProcess(), &creation, &exit, &kernel, &user)) return 0;
-    return filetime_to_ns(kernel) + filetime_to_ns(user);
+    // Opt out of EcoQoS: without this, Windows 11 may run a "background-looking"
+    // busy-spinning thread on reduced clocks or migrate it toward an E-core.
+    PROCESS_POWER_THROTTLING_STATE throttling{};
+    throttling.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    throttling.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    throttling.StateMask = 0; // control it, and turn it off
+    SetProcessInformation(self, ProcessPowerThrottling, &throttling, sizeof(throttling));
+
+    // Keep pre-faulted pools and rings resident: raise the minimum working set so
+    // the memory manager does not trim pages the matching thread will touch.
+    SetProcessWorkingSetSize(self, SIZE_T{512} << 20, SIZE_T{2048} << 20);
 }
 
 } // namespace px

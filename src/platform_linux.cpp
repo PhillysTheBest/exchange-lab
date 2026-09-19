@@ -1,17 +1,13 @@
-// src/platform_linux.cpp — real, compilable code, not written from memory of
-// what pthread_setaffinity_np looks like. The Makefile selects this file
-// automatically when built on Linux (see the OS branch at the top of the
-// Makefile); it has not been run on real hardware as part of this project since
-// the only machine available here is Windows — see the plan doc.
+// src/platform_linux.cpp — Linux implementation of px/platform.hpp. The Makefile
+// selects it automatically on a non-Windows build. The published numbers come
+// from the Windows build; this file compiles against glibc but has not been
+// benchmarked.
 #include "px/platform.hpp"
 
 #include <pthread.h>
 #include <sched.h>
-#include <sys/resource.h>
+#include <sys/mman.h>
 #include <unistd.h>
-
-#include <cstdio>
-#include <cstring>
 
 namespace px {
 
@@ -49,31 +45,9 @@ bool pin_current_thread_to(unsigned logical_cpu) noexcept {
     return true;
 }
 
-std::uint64_t current_rss_bytes() noexcept {
-    // /proc/self/status's VmRSS line, reported in kB — not getrusage's
-    // ru_maxrss, which is a historical PEAK, not a current-instant reading
-    // (and its units are platform-inconsistent across libc versions).
-    std::FILE* f = std::fopen("/proc/self/status", "r");
-    if (!f) return 0;
-    char line[256];
-    std::uint64_t kb = 0;
-    while (std::fgets(line, sizeof(line), f)) {
-        if (std::strncmp(line, "VmRSS:", 6) == 0) {
-            std::sscanf(line + 6, "%llu", reinterpret_cast<unsigned long long*>(&kb));
-            break;
-        }
-    }
-    std::fclose(f);
-    return kb * 1024;
-}
-
-std::uint64_t process_cpu_time_ns() noexcept {
-    struct rusage ru;
-    if (getrusage(RUSAGE_SELF, &ru) != 0) return 0;
-    const auto to_ns = [](const timeval& tv) noexcept -> std::uint64_t {
-        return static_cast<std::uint64_t>(tv.tv_sec) * 1'000'000'000ull + static_cast<std::uint64_t>(tv.tv_usec) * 1'000ull;
-    };
-    return to_ns(ru.ru_utime) + to_ns(ru.ru_stime);
+void harden_process() noexcept {
+    // Needs CAP_IPC_LOCK or a sufficient RLIMIT_MEMLOCK; best-effort otherwise.
+    mlockall(MCL_CURRENT | MCL_FUTURE);
 }
 
 } // namespace px

@@ -1,89 +1,125 @@
-// px/matching_engine.hpp — sole owner of all mutable state, single-threaded.
+// px/matching_engine.hpp — the single-threaded matching core.
 //
-// MatchingEngine ties Market/OrderBook/Trader together behind one command
-// surface: create markets/traders (administrative, may allocate — never called
-// from the trading hot path), then submit/cancel orders (the hot path — zero
-// allocation, see order_book.hpp). Every Trade the book produces during a
-// submit() call is applied to both counterparties' Trader accounts synchronously,
-// in the same call, before submit() returns — there is no separate event loop
-// to desync from, because everything happens on this one thread.
+// One MatchingEngine owns every book, order and price level for all of its
+// instruments. It is not thread-safe by design: the whole point of the pipeline
+// (sim/pipeline.hpp) is that exactly one thread ever calls process(), fed by a
+// lock-free ring, so the core needs no locks, atomics or fences of its own.
+//
+// Memory: every container is sized by EngineConfig and allocated once in the
+// constructor. process() performs no heap allocation, no system call and no
+// unbounded loop other than the sweep itself (one iteration per maker filled).
+//
+// Matching rules: price-time priority. A new order first matches against the
+// opposite side while it crosses (for a Market order, until it or the side is
+// exhausted), filling each level's FIFO oldest-first at the resting price. Self
+// trades are prevented by cancelling the resting order (cancel-resting). An IOC
+// or Market remainder is cancelled; a GTC Limit remainder rests.
+//
+// Admission is decided BEFORE matching, so an order is never partly executed and
+// then rejected: a GTC Limit needs a free order slot and, if its price is not
+// already a level on its own side, a free level and room in that side's index.
+// That can refuse an order which would have fully filled; the rule is
+// conservative, deterministic, and mirrored exactly by the test oracle.
 #pragma once
 
-#include "market.hpp"
-#include "trade.hpp"
-#include "trader.hpp"
-#include "tsc_clock.hpp"
+#include "flat_map.hpp"
+#include "messages.hpp"
+#include "order.hpp"
+#include "pool.hpp"
+#include "sorted_levels.hpp"
 #include "types.hpp"
 
-#include <array>
+#include <cstdint>
 #include <memory>
-#include <span>
 #include <string_view>
 #include <vector>
 
 namespace px {
 
-class MatchingEngine {
+struct EngineConfig {
+    std::uint32_t max_orders = 1u << 17;      // resting orders across all instruments
+    std::uint32_t max_levels = 1u << 14;      // price levels across all instruments
+    std::uint32_t levels_per_side = 2048;     // per instrument, per side
+    std::uint16_t max_instruments = 64;
+};
+
+// Function pointer + context rather than std::function or a virtual interface:
+// one predictable indirect call per event, no allocation, and the caller decides
+// what an event means (push it onto a ring, append it to a vector, hash it).
+class EventSink {
 public:
-    MatchingEngine() noexcept { traders_.reserve(4096); }
-
-    // ---- administrative (not hot path; may allocate) --------------------------
-    [[nodiscard]] MarketId create_market(std::string_view ticker) noexcept;
-    bool open_market(MarketId id) noexcept;
-    bool halt_market(MarketId id) noexcept;
-    bool resume_market(MarketId id) noexcept;
-    bool resolve_market(MarketId id, Settlement outcome) noexcept;
-
-    [[nodiscard]] TraderId create_trader(Cash starting_cash) noexcept;
-
-    // ---- hot path: trading commands -------------------------------------------
-    struct SubmitReport {
-        OrderId order_id   = kInvalidOrderId;
-        Qty     filled_qty = 0;
-        Qty     rested_qty = 0;
-        RejectReason reject = RejectReason::None;
-    };
-
-    // Engine assigns and returns the OrderId; the caller uses it for cancel().
-    [[nodiscard]] SubmitReport submit(MarketId market_id, TraderId trader_id, Contract contract,
-                                       Side side, OrderType type, TimeInForce tif,
-                                       Price price, Qty qty) noexcept;
-
-    [[nodiscard]] RejectReason cancel(MarketId market_id, OrderId order_id) noexcept;
-
-    // ---- introspection ----------------------------------------------------------
-    [[nodiscard]] Market* market(MarketId id) noexcept;
-    [[nodiscard]] const Market* market(MarketId id) const noexcept;
-    [[nodiscard]] Trader* trader(TraderId id) noexcept;
-    [[nodiscard]] const Trader* trader(TraderId id) const noexcept;
-
-    // Trades produced by the most recently completed submit() call, in the order
-    // they occurred. Valid until the next submit() call.
-    [[nodiscard]] std::span<const Trade> last_trades() const noexcept {
-        return {trade_buf_.data(), trade_count_};
-    }
-
-    [[nodiscard]] SeqNum trade_sequence() const noexcept { return seq_; }
+    using Fn = void (*)(void* ctx, const ExecEvent&);
+    constexpr EventSink(void* ctx, Fn fn) noexcept : ctx_(ctx), fn_(fn) {}
+    void operator()(const ExecEvent& e) const noexcept { fn_(ctx_, e); }
 
 private:
-    void on_trade(const Trade& raw) noexcept;
-    static void trade_sink_thunk(void* ctx, const Trade& t) noexcept;
+    void* ctx_;
+    Fn fn_;
+};
 
-    std::vector<std::unique_ptr<Market>> markets_;
-    std::vector<Trader> traders_;
+struct LevelView {
+    Price price = 0;
+    std::uint64_t qty = 0;
+    std::uint32_t orders = 0;
+};
 
-    SeqNum seq_ = 0;
-    OrderId next_order_id_ = 1;
+class MatchingEngine {
+public:
+    explicit MatchingEngine(const EngineConfig& cfg = {});
 
-    // Scratch buffer for the trades produced within a single in-flight submit()
-    // call. Sized generously; a submit that would produce more trades than this
-    // (i.e. it sweeps more than this many distinct resting orders in one call)
-    // simply stops recording further ones here — book state and counterparties'
-    // cash/position still update correctly for every trade via on_trade(), only
-    // the introspection copy is capped.
-    static constexpr std::size_t kMaxTradesPerSubmit = 4096;
-    std::array<Trade, kMaxTradesPerSubmit> trade_buf_{};
-    std::size_t trade_count_ = 0;
+    MatchingEngine(const MatchingEngine&) = delete;
+    MatchingEngine& operator=(const MatchingEngine&) = delete;
+
+    // Setup, not hot path (may allocate). Returns kInvalidInstrument if the
+    // instrument table is full or the tick size is not positive.
+    InstrumentId add_instrument(std::string_view symbol, Price tick_size);
+
+    // The hot path. Emits every resulting event, in order, through `sink`.
+    void process(const OrderRequest& req, EventSink sink) noexcept;
+
+    // ---- read-only views (tests, tools, benchmarks) ----
+    [[nodiscard]] std::size_t instrument_count() const noexcept { return books_.size(); }
+    [[nodiscard]] std::string_view symbol(InstrumentId id) const noexcept;
+    [[nodiscard]] Price tick_size(InstrumentId id) const noexcept { return books_[id].tick; }
+    [[nodiscard]] std::uint32_t depth(InstrumentId id, Side side) const noexcept;
+    // rank 0 == best price. Precondition: rank < depth(id, side).
+    [[nodiscard]] LevelView level(InstrumentId id, Side side, std::uint32_t rank) const noexcept;
+    [[nodiscard]] std::size_t resting_orders() const noexcept { return orders_.live(); }
+    [[nodiscard]] bool is_live(OrderId id) const noexcept { return ids_.find(id) != kNullSlot; }
+    [[nodiscard]] std::size_t live_levels() const noexcept { return levels_.live(); }
+    [[nodiscard]] SeqNum next_seq() const noexcept { return next_seq_; }
+    [[nodiscard]] const EngineConfig& config() const noexcept { return cfg_; }
+
+    // Full structural check of every book (O(total orders)). Returns false and
+    // stops at the first violation, whose description is left in `why`.
+    [[nodiscard]] bool check_invariants(const char** why = nullptr) const;
+
+private:
+    struct Book {
+        char symbol[16] = {};
+        Price tick = 1;
+        SortedLevels bids;
+        SortedLevels asks;
+        explicit Book(std::uint32_t levels_per_side) : bids(levels_per_side), asks(levels_per_side) {}
+        [[nodiscard]] SortedLevels& side(Side s) noexcept { return s == Side::Buy ? bids : asks; }
+        [[nodiscard]] const SortedLevels& side(Side s) const noexcept { return s == Side::Buy ? bids : asks; }
+    };
+
+    void process_new(const OrderRequest& req, EventSink sink) noexcept;
+    void process_cancel(const OrderRequest& req, EventSink sink) noexcept;
+    void reject(const OrderRequest& req, RejectReason why, EventSink sink) noexcept;
+
+    // Unlinks a resting order from its level's FIFO and frees it; frees the
+    // level too (and removes it from `idx`) when it becomes empty and
+    // `drop_empty_level` is set.
+    void remove_order(Slot os, bool drop_empty_level) noexcept;
+
+    EngineConfig cfg_;
+    Pool<Order> orders_;
+    Pool<PriceLevel> levels_;
+    FlatOrderMap ids_;
+    std::vector<Book> books_;
+    SeqNum next_seq_ = 1;
 };
 
 } // namespace px
