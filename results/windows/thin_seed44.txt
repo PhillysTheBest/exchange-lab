@@ -1,0 +1,18 @@
+MATCHING LATENCY: dequeue from the inbound ring -> last event written to the outbound ring
+machine    invariant TSC: yes, 2.496 ticks/ns; timer floor 33 ns (p50 of an empty bracket), not subtracted
+stream     profile thin, seed 44, 4 instruments, 1100000 requests = 100000 warmup + 1000000 recorded, gateway unpaced
+mix        passive GTC 50.0%, marketable GTC 10.5%, marketable IOC 4.5%, market 5.0%, cancel 28.6%, late cancel (order already filled) 1.5%
+threads    gateway cpu 2, matcher cpu 6, publisher cpu 4
+book       at the end: 1364 resting orders on 358 levels, deepest side 62 of 2048 levels
+
+run 1 of 1, every recorded order, by kind of work:
+all recorded orders            n=1000000  p50=    165  p90=    353  p99=    583  p99.9=    893  p99.99=   7976  max=   113903 ns
+  reject                       n=14802    p50=     93  p90=    136  p99=    350  p99.9=    441  p99.99=   4129  max=    11174 ns
+  cancel                       n=285960   p50=    103  p90=    217  p99=    373  p99.9=    518  p99.99=   7176  max=    83797 ns
+  new, no fill                 n=494081   p50=    173  p90=    339  p99=    415  p99.9=    600  p99.99=   7925  max=   113903 ns
+  new, 1 fill                  n=82192    p50=    212  p90=    401  p99=    488  p99.9=    963  p99.99=   8198  max=    15375 ns
+  new, 2-4 fills               n=120239   p50=    342  p90=    541  p99=    737  p99.9=   1257  p99.99=   9142  max=    84685 ns
+  new, 5+ fills                n=2726     p50=    627  p90=    876  p99=   1086  p99.9=   7359  p99.99=   9208  max=     9208 ns
+run 1      p50 165  p99 583  p99.9 893  p99.99 7976  max 113903 ns | 404 over 2 us (1227.7/s, median gap 0.02 ms) | idle hiccups >1 us: 0 (0/s, median 0.0 us, median gap 0.00 ms) | 3.04 M orders/s | hash 1d914943b90c8b43
+
+RESULT: PASS  worst run p99.9=893 ns (gate < 2000 ns), 404 of 1000000 orders over 2 us across 1 run(s), worst single order 113903 ns, stalls=0, allocations=0

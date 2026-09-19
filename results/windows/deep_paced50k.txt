@@ -1,0 +1,28 @@
+MATCHING LATENCY: dequeue from the inbound ring -> last event written to the outbound ring
+machine    invariant TSC: yes, 2.496 ticks/ns; timer floor 32 ns (p50 of an empty bracket), not subtracted
+stream     profile deep, seed 42, 4 instruments, 1300000 requests = 300000 warmup + 1000000 recorded, paced
+pacing     open loop, recorded orders sent on a fixed schedule of 50000 orders/s
+mix        passive GTC 49.8%, marketable GTC 10.5%, marketable IOC 4.5%, market 5.0%, cancel 28.7%, late cancel (order already filled) 1.5%
+threads    gateway cpu 2, matcher cpu 6, publisher cpu 4
+book       at the end: 59989 resting orders on 11819 levels, deepest side 1488 of 2048 levels
+
+run 1 of 3, every recorded order, by kind of work:
+all recorded orders            n=1000000  p50=    402  p90=    713  p99=   1216  p99.9=   7267  p99.99=  18762  max=    74861 ns
+  reject                       n=15272    p50=    298  p90=    413  p99=    553  p99.9=   5717  p99.99=  21741  max=    44172 ns
+  cancel                       n=288261   p50=    548  p90=    902  p99=   1438  p99.9=   8930  p99.99=  20822  max=    74861 ns
+  new, no fill                 n=516511   p50=    366  p90=    536  p99=    912  p99.9=   6351  p99.99=  15689  max=    65833 ns
+  new, 1 fill                  n=73481    p50=    365  p90=    494  p99=    661  p99.9=   5795  p99.99=  14319  max=    35618 ns
+  new, 2-4 fills               n=104051   p50=    493  p90=    753  p99=   1157  p99.9=   7989  p99.99=  22604  max=    62983 ns
+  new, 5+ fills                n=2424     p50=    926  p90=   1319  p99=   1959  p99.9=  16791  p99.99=  20661  max=    20661 ns
+run 1      p50 402  p99 1216  p99.9 7267  p99.99 18762  max 74861 ns | 3118 over 2 us (156.1/s, median gap 3.60 ms) | idle hiccups >1 us: 10725 (537/s, median 6.8 us, median gap 2.00 ms) | 0.05 M orders/s | hash 75ec1ab46ce5260a
+           178 of the 3118 orders over 2 us were dequeued within 50 us after an idle hiccup
+run 2      p50 399  p99 1163  p99.9 7460  p99.99 18611  max 77711 ns | 3037 over 2 us (152.0/s, median gap 3.96 ms) | idle hiccups >1 us: 10792 (540/s, median 7.0 us, median gap 2.00 ms) | 0.05 M orders/s | hash 75ec1ab46ce5260a
+           145 of the 3037 orders over 2 us were dequeued within 50 us after an idle hiccup
+run 3      p50 404  p99 1180  p99.9 7564  p99.99 17801  max 80488 ns | 3263 over 2 us (163.3/s, median gap 3.14 ms) | idle hiccups >1 us: 10793 (540/s, median 6.8 us, median gap 2.00 ms) | 0.05 M orders/s | hash 75ec1ab46ce5260a
+           134 of the 3263 orders over 2 us were dequeued within 50 us after an idle hiccup
+
+replays    3 runs of the same stream on fresh engines: event streams bit-identical (hash 75ec1ab46ce5260a, 1772254 events)
+best of K, per order           n=1000000  p50=    327  p90=    544  p99=    905  p99.9=   1252  p99.99=   1543  max=     1921 ns
+best of K  slowest order: 1921 ns (#822577, cancel); orders over 2 us in every one of the 3 runs: 0
+
+RESULT: FAIL  worst run p99.9=7568 ns (gate < 2000 ns), 9418 of 3000000 orders over 2 us across 3 run(s), worst single order 80488 ns, stalls=0, allocations=0, replays bit-identical

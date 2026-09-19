@@ -1,0 +1,9 @@
+single-thread engine cost per request (tsc bracket around process(); book restored untimed)
+new order, joins best level    n=200000   p50=     89  p90=    102  p99=    343  p99.9=    425  p99.99=   2557  max=    37330 ns
+new order, new best level      n=200000   p50=     62  p90=     66  p99=    300  p99.9=    341  p99.99=    610  max=     8999 ns
+cancel, from best level        n=200000   p50=     42  p90=     46  p99=     67  p99.9=    257  p99.99=    413  max=    40595 ns
+IOC take, 1 fill               n=200000   p50=     69  p90=    101  p99=    347  p99.9=    485  p99.99=   4400  max=    37037 ns
+market sweep, 10 levels        n=200000   p50=    234  p90=    300  p99=    487  p99.9=    696  p99.99=   8381  max=    81273 ns
+worst case: add far-end level  n=100000   p50=    576  p90=    779  p99=    855  p99.9=   1637  p99.99=  23262  max=   101475 ns
+worst case: drop far-end level n=100000   p50=    480  p90=    494  p99=    655  p99.9=    833  p99.99=   9370  max=    56915 ns
+(worst-case side: 2048 of 2048 levels)

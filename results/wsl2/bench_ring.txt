@@ -1,0 +1,4 @@
+invariant TSC: yes, 2.479 ticks/ns
+same-thread push+pop           n=500000   p50=     36  p90=     40  p99=     42  p99.9=     55  p99.99=    105  max=  1258162 ns
+order preserved: yes
+cross-core round trip          n=500000   p50=    396  p90=    439  p99=    513  p99.9=   2733  p99.99=  63546  max=  1966949 ns
