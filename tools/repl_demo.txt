@@ -1,0 +1,18 @@
+# tools/repl_demo.txt — a scripted session; run with:  build/release/repl < tools/repl_demo.txt
+add ACME
+sell ACME 100 10.02 as 2
+sell ACME 50 10.02 as 3
+sell ACME 70 10.01 as 4
+buy ACME 30 9.99 as 5
+book ACME
+# crosses 10.01 first (better price), then 10.02 oldest-first
+buy ACME 150 10.02 as 6
+book ACME
+# a market sell sweeps the bids; the remainder is cancelled, never rests
+msell ACME 40 as 7
+# order #1 belongs to participant 2: anyone else's cancel is refused
+cancel 1 as 9
+cancel 1 as 2
+# participant 3 buying into its own resting ask: that ask is cancelled instead
+buy ACME 10 10.02 as 3
+book ACME
