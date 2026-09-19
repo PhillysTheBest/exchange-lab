@@ -59,7 +59,7 @@ REPL_BIN   := $(REL)/repl$(EXE)
 
 .PHONY: all test bench latency repl clean
 
-all: test $(BENCH_BINS)
+all: test $(BENCH_BINS) $(REPL_BIN)
 
 test: $(TEST_BINS)
 	@set -e; for t in $(TEST_BINS); do echo "== $$t"; ./$$t; done
