@@ -2,16 +2,17 @@
 //
 //   [gateway] --inbound SpscRing<OrderRequest>--> [matcher] --outbound SpscRing<ExecEvent>--> [publisher]
 //
-// gateway    pushes a pre-generated request stream as fast as the ring accepts it,
-//            so the matcher never waits for input (throughput-bound, worst case
-//            for cache contention).
+// gateway    pushes a pre-generated request stream as fast as the ring accepts it
+//            (the matcher never waits: throughput-bound, caches stay hot), or,
+//            with pace_orders_per_sec, on a fixed open-loop schedule (the matcher
+//            idles between orders, so each one starts with colder caches).
 // matcher    the ONLY thread that touches the MatchingEngine. Pops a request,
 //            runs process(), and pushes every resulting event onto the outbound
 //            ring from inside the EventSink.
 // publisher  drains events and folds them into an EventHasher — standing in for
 //            a market-data / drop-copy consumer, and proving the stream's content.
 //
-// WHAT IS TIMED (tick-to-trade): on the matcher thread only, from the instant a
+// WHAT IS TIMED (matching latency): on the matcher thread only, from the instant a
 // request has been dequeued (tsc_begin() right after try_pop returns) to the
 // instant its last resulting event has been written to the outbound ring
 // (tsc_end() after process() returns). Both stamps come from the same core's TSC,
@@ -27,6 +28,8 @@
 #include "px/platform.hpp"
 #include "px/spsc_ring.hpp"
 #include "px/tsc_clock.hpp"
+
+#include <x86intrin.h>
 
 #include <array>
 #include <atomic>
@@ -50,6 +53,20 @@ inline constexpr const char* kOrderClassNames[kOrderClasses] = {
 struct PipelineOptions {
     std::size_t warmup = 0; // leading requests that are processed but not recorded
     bool pin_threads = true;
+    // Open-loop pacing: 0 = the gateway pushes as fast as the ring accepts.
+    // Otherwise recorded requests are sent on a fixed schedule (warmup ones
+    // unpaced), so the matcher idles between orders with cold caches, and a late
+    // send never delays the schedule of the ones after it.
+    double pace_orders_per_sec = 0;
+    double ticks_per_ns = 0; // TSC rate, required when pacing
+    // Keep each recorded order's dequeue timestamp (for outlier forensics).
+    bool record_start_times = false;
+    // Idle hiccup meter: while the matcher polls an empty inbound ring inside the
+    // recorded window, a gap between consecutive polls longer than the threshold
+    // means the core was taken away (interrupt, DPC, preemption). Up to
+    // `hiccup_capacity` of them are kept.
+    std::size_t hiccup_capacity = 0;
+    Tsc hiccup_threshold_ticks = 0;
     // Called on the matcher thread at the start and end of the recorded window
     // (used by the benchmark to count heap allocations inside it).
     void (*on_window_start)() = nullptr;
@@ -61,12 +78,20 @@ struct PipelineResult {
     std::uint64_t events = 0;
     std::uint64_t outbound_stalls = 0;       // spins on a full outbound ring, whole run
     std::uint64_t stalled_orders = 0;        // recorded orders during which that happened
+    Tsc window_start = 0;                    // TSC at the first recorded dequeue
     Tsc window_ticks = 0;                    // first recorded dequeue -> last recorded order done
     std::size_t recorded = 0;
     std::array<std::uint64_t, kOrderClasses> class_counts{};
     int gateway_cpu = -1, matcher_cpu = -1, publisher_cpu = -1;
     std::unique_ptr<LatencyRecorder> latency; // one sample per recorded request, in stream order
     std::vector<std::uint8_t> classes;        // OrderClass per sample
+    std::vector<Tsc> start_tsc;               // dequeue TSC per sample (if record_start_times)
+    struct Hiccup {
+        Tsc start;
+        Tsc duration;
+    };
+    std::vector<Hiccup> hiccups;              // first hiccup_capacity idle gaps, in time order
+    std::uint64_t hiccup_count = 0;           // all of them, including any past capacity
 };
 
 namespace detail {
@@ -120,6 +145,9 @@ inline void push_event(void* c, const ExecEvent& e) {
     // pre-faults it) here, before any thread starts.
     res.latency = std::make_unique<LatencyRecorder>(res.recorded);
     res.classes.assign(res.recorded, 0);
+    if (opt.record_start_times) res.start_tsc.assign(res.recorded, 0);
+    res.hiccups.assign(opt.hiccup_capacity, {}); // filled, not reserved: a first touch would itself be a hiccup
+    std::size_t hiccups_kept = 0;
     auto inbound = std::make_unique<InboundRing>();
     auto outbound = std::make_unique<OutboundRing>();
 
@@ -160,8 +188,16 @@ inline void push_event(void* c, const ExecEvent& e) {
     std::thread gateway([&] {
         if (res.gateway_cpu >= 0) pin_current_thread_to(static_cast<unsigned>(res.gateway_cpu));
         wait_for_all();
-        for (const OrderRequest& r : stream) {
-            while (!inbound->try_push(r)) cpu_relax();
+        const bool paced = opt.pace_orders_per_sec > 0 && opt.ticks_per_ns > 0;
+        const double interval = paced ? opt.ticks_per_ns * 1e9 / opt.pace_orders_per_sec : 0;
+        Tsc schedule_start = 0;
+        for (std::size_t i = 0; i < n; ++i) {
+            if (paced && i >= warmup) {
+                if (i == warmup) schedule_start = __rdtsc();
+                const Tsc due = schedule_start + static_cast<Tsc>(static_cast<double>(i - warmup) * interval);
+                while (__rdtsc() < due) cpu_relax();
+            }
+            while (!inbound->try_push(stream[i])) cpu_relax();
         }
     });
 
@@ -174,12 +210,28 @@ inline void push_event(void* c, const ExecEvent& e) {
         wait_for_all();
 
         Tsc window_start = 0;
+        const bool meter = opt.hiccup_capacity > 0 && opt.hiccup_threshold_ticks > 0;
         for (std::size_t i = 0; i < n; ++i) {
             OrderRequest req;
-            while (!inbound->try_pop(req)) cpu_relax();
+            if (!inbound->try_pop(req)) {
+                const bool in_window = meter && i > warmup;
+                Tsc prev = __rdtsc();
+                do {
+                    cpu_relax();
+                    if (in_window) {
+                        const Tsc now = __rdtsc();
+                        if (now - prev > opt.hiccup_threshold_ticks) {
+                            if (hiccups_kept < opt.hiccup_capacity) res.hiccups[hiccups_kept++] = {prev, now - prev};
+                            ++res.hiccup_count;
+                        }
+                        prev = now;
+                    }
+                } while (!inbound->try_pop(req));
+            }
             if (i == warmup) {
                 if (opt.on_window_start) opt.on_window_start();
                 window_start = tsc_begin();
+                res.window_start = window_start;
             }
             ctx.trades = 0;
             ctx.rejected = false;
@@ -191,6 +243,7 @@ inline void push_event(void* c, const ExecEvent& e) {
 
             if (i >= warmup) {
                 lat.record(t1 - t0);
+                if (opt.record_start_times) res.start_tsc[i - warmup] = t0;
                 const OrderClass cls = detail::classify(req, ctx);
                 res.classes[i - warmup] = static_cast<std::uint8_t>(cls);
                 ++res.class_counts[static_cast<std::size_t>(cls)];
@@ -211,6 +264,7 @@ inline void push_event(void* c, const ExecEvent& e) {
     gateway.join();
     matcher.join();
     publisher.join();
+    res.hiccups.resize(hiccups_kept);
     res.event_hash = hasher.value();
     res.events = hasher.count();
     return res;

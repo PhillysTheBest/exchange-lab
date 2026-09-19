@@ -20,7 +20,7 @@ struct Harness {
 
     explicit Harness(const EngineConfig& cfg = {}, int instruments = 1) : eng(std::make_unique<MatchingEngine>(cfg)) {
         for (int i = 0; i < instruments; ++i) {
-            char sym[8];
+            char sym[16];
             std::snprintf(sym, sizeof sym, "SYM%d", i);
             eng->add_instrument(sym, kTick);
         }
