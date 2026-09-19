@@ -1,0 +1,5 @@
+captured: 2026-09-19 05:40 UTC
+commit:   8055854 (+ uncommitted changes)
+compiler: g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+cpu:      12th Gen Intel(R) Core(TM) i5-12450H, 12 logical CPUs visible
+os:       Linux 6.18.33.2-microsoft-standard-WSL2 (WSL2 virtual machine)
