@@ -578,6 +578,68 @@ void test_ui_grid() {
     PX_CHECK(h == kPinnedFrameHash);
 }
 
+// docs/ARENA.md says someone can add a strategy by writing a header and one
+// line in the registry, without reading the engine. arena/bots/fader.hpp is that
+// worked example, and this is what keeps the claim honest: it checks that the
+// example is really registrable, really trades, and really cannot break anything
+// it does not own.
+void test_third_party_bot() {
+    // Off by default, which is what let it be added without moving a single
+    // published number.
+    const Roster plain = build_roster(RosterConfig{});
+    bool present = false;
+    for (const auto& b : plain.bots) present = present || std::string(b->name()) == "fader";
+    PX_CHECK(!present);
+
+    RosterConfig rc;
+    rc.fader_enabled = true;
+    rc.fader_trigger_ticks = 2; // keen enough to actually trade in a tight book
+    SessionConfig sc = small_session();
+    sc.max_requests = 60'000;
+
+    Session s;
+    PX_CHECK(s.start(sc, rc) == Session::StartError::None);
+    s.run();
+
+    int which = -1;
+    for (std::size_t i = 0; i < s.participants(); ++i) {
+        if (std::string(s.name_of(i)) == "fader") which = static_cast<int>(i);
+    }
+    PX_CHECK(which >= 0);
+    PX_CHECK(s.participants() == plain.size() + 1);
+
+    const Account& a = s.ledger().at(static_cast<std::size_t>(which));
+    std::printf("  third-party bot: %llu orders, %llu fills, %llu rejects\n",
+                static_cast<unsigned long long>(a.orders_sent), static_cast<unsigned long long>(a.fills),
+                static_cast<unsigned long long>(a.rejects));
+    // It took part: a bot that is registered but never acts would make the
+    // worked example worthless as a worked example.
+    PX_CHECK(a.orders_sent > 100);
+    PX_CHECK(a.fills > 100);
+    // And it was never handed the fundamental value, because the roster did not
+    // mark it informed.
+    PX_CHECK(!s.informed(static_cast<std::size_t>(which)));
+
+    // The contract holds an arbitrary bot harmlessly: an extra participant
+    // cannot break the closed-world identity, the book's tracking of the
+    // fundamental, or the session's ability to end.
+    PX_CHECK(s.ledger().cash_sum() == 0);
+    PX_CHECK(s.ledger().position_sum() == 0);
+    PX_CHECK(s.ledger().value_sum(s.fair_value().value()) == 0);
+    PX_CHECK(!s.stats().stalled);
+    PX_CHECK(s.stats().book_full_rejects == 0);
+    PX_CHECK(s.stats().action_drops == 0);
+
+    // Its parameters reach it through the registry, so it is sweepable like
+    // anything else rather than hard-coded.
+    RosterConfig shy = rc;
+    shy.fader_trigger_ticks = 40; // far wider than this market ever moves
+    Session quiet;
+    PX_CHECK(quiet.start(sc, shy) == Session::StartError::None);
+    quiet.run();
+    PX_CHECK(quiet.ledger().at(static_cast<std::size_t>(which)).orders_sent < a.orders_sent);
+}
+
 } // namespace
 
 int main() {
@@ -589,6 +651,7 @@ int main() {
     test_informed_switch();
     test_reaction_model();
     test_param_names_are_real();
+    test_third_party_bot();
     test_session_refuses_bad_configs();
     test_quiet_session_terminates();
     test_ui_grid();

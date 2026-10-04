@@ -355,9 +355,46 @@ identity, and the reaction model.
 A bot is a plain struct. It does not inherit from anything, never touches the
 engine, and cannot read a clock.
 
+**Bots are compiled in, not loaded.** There is no way to hand the running
+program a strategy — no plugin DLL, no scripting language, no socket, nothing to
+type at the terminal. That is the scope boundary at the top of this file, not an
+omission. A strategy is a header that gets compiled into the binary, which is how
+research platforms actually link strategies, and it is what lets a bot be a plain
+struct with no ABI, no sandbox and no marshalling. The cost is real and worth
+stating plainly: **a third party needs the source tree and a compiler, and has to
+rebuild.** On this machine that is about twenty seconds.
+
+What adding one actually takes, start to finish:
+
+1. Write the header in `arena/bots/`. The whole surface is in `arena/bot.hpp`:
+   `name`, `reaction_ns`, `timer_ns`, `reset(seed)`, `on_event(view)`.
+2. `#include` it in `arena/bots/registry.hpp` and push one instance in
+   `build_roster()`.
+3. Optionally add its fields to `RosterConfig` and one line each to
+   `set_roster_param()`, which makes them settable with `--set=` and sweepable
+   like every other parameter.
+4. `mingw32-make arena`.
+
+[`arena/bots/fader.hpp`](../arena/bots/fader.hpp) is that worked example, written
+against the contract alone — it includes `arena/bot.hpp` and nothing else, and it
+could not reach the engine, the session or the scheduler if it tried. It fades
+the recent move: keeps a slow integer average of the traded price and takes the
+other side when the last print is far enough away. It loses money, which is the
+honest outcome for uninformed flow crossing the spread.
+
+`test_arena` keeps the claim from being a claim: it asserts the example is absent
+by default, present when enabled, that it really trades (938 orders, 964 fills in
+a 60,000-request session), that it is never handed the fundamental value, that its
+registry parameters reach it, and — the part that matters for anyone else's bot —
+that an extra participant cannot break the closed-world accounting identity, the
+book's tracking of the fundamental, or the session's ability to end.
+
+It is off by default, so adding it moved no published number: the session hashes
+`dc1ab7b9798723c0` and `4c05d629279645e9` are unchanged.
+
 ```cpp
-struct Fader {
-    const char* name = "fader";
+struct MyBot {
+    const char* name = "mine";
     SimTime reaction_ns = 10'000;
     SimTime timer_ns = 0;             // 0, or a periodic self-wake
 
@@ -373,10 +410,9 @@ struct Fader {
 };
 ```
 
-Add the header to `arena/bots/`, include it in `registry.hpp`, and add a line to
-`build_roster()`. `ActionBatch` carries up to six actions per reaction, because a
-maker cancel-replacing both sides needs four and an API that forced it to spend
-four reaction windows doing so would be measuring itself.
+`ActionBatch` carries up to six actions per reaction, because a maker
+cancel-replacing both sides needs four and an API that forced it to spend four
+reaction windows doing so would be measuring itself.
 
 What a bot cannot see: the fundamental value (unless the roster marks it
 informed), the clock, other participants' positions, the engine's internals, or
@@ -423,6 +459,18 @@ taste; evidence is owed where claims are made, and the renderer makes none.
 
 ## What is not built
 
+- **Runtime bot loading of any kind.** No plugin DLL, no embedded scripting
+  language, nothing a running session will accept from outside itself, and no way
+  to type a strategy into the terminal. A bot is compiled in; see "Writing a bot"
+  above for what that costs. This is the scope boundary, and it is the single
+  thing most likely to be mistaken for a missing feature.
+- **Choosing the roster from the command line.** The existing participants can be
+  switched on and off and retuned with `--set=` (`rival.enabled`,
+  `informed.enabled`, `noise.count`, `fader.enabled`, every parameter), but there
+  is no `--bots=a,b,c` that composes an arbitrary line-up, and the viewer takes no
+  roster flags at all beyond `--maker-reaction`. Compiled-in strategies are
+  therefore less reachable than they could be, which is a real gap rather than a
+  decision.
 - More than one instrument on screen. The session supports one, deliberately: one
   legible ladder beats four grids of numbers, and the engine's multi-instrument
   support is already demonstrated by the benchmarks.

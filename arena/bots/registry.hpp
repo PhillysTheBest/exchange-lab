@@ -33,6 +33,7 @@
 #pragma once
 
 #include "arena/bot.hpp"
+#include "arena/bots/fader.hpp"
 #include "arena/bots/informed.hpp"
 #include "arena/bots/market_maker.hpp"
 #include "arena/bots/momentum.hpp"
@@ -103,6 +104,13 @@ struct RosterConfig {
     bool momentum_enabled = true;
     SimTime momentum_reaction_ns = 20'000;
     std::int64_t momentum_qty = 20;
+
+    // The worked example from docs/ARENA.md. Off by default, so adding it did
+    // not move a single published number.
+    bool fader_enabled = false;
+    SimTime fader_reaction_ns = 30'000;
+    std::int64_t fader_qty = 15;
+    std::int64_t fader_trigger_ticks = 6;
 };
 
 struct Roster {
@@ -166,6 +174,15 @@ struct Roster {
         r.informed.push_back(false);
     }
 
+    if (cfg.fader_enabled) {
+        bots::Fader fader;
+        fader.reaction_ns = cfg.fader_reaction_ns;
+        fader.qty = static_cast<Qty>(cfg.fader_qty);
+        fader.trigger_ticks = cfg.fader_trigger_ticks;
+        r.bots.push_back(make_bot(fader));
+        r.informed.push_back(false);
+    }
+
     if (cfg.momentum_enabled) {
         bots::Momentum momentum;
         momentum.reaction_ns = cfg.momentum_reaction_ns;
@@ -204,6 +221,10 @@ struct Roster {
     else if (key == "momentum.enabled") c.momentum_enabled = value != 0;
     else if (key == "momentum.reaction_ns") c.momentum_reaction_ns = value;
     else if (key == "momentum.qty") c.momentum_qty = value;
+    else if (key == "fader.enabled") c.fader_enabled = value != 0;
+    else if (key == "fader.reaction_ns") c.fader_reaction_ns = value;
+    else if (key == "fader.qty") c.fader_qty = value;
+    else if (key == "fader.trigger_ticks") c.fader_trigger_ticks = value;
     else return false;
     return true;
 }
@@ -217,6 +238,7 @@ inline constexpr const char* kRosterParamNames =
     "  rival.half_spread_ticks rival.quote_qty informed.enabled informed.reaction_ns\n"
     "  informed.edge_ticks informed.qty informed.max_position noise.count\n"
     "  noise.reaction_ns noise.timer_ns noise.qty noise.pct_market momentum.enabled\n"
-    "  momentum.reaction_ns momentum.qty";
+    "  momentum.reaction_ns momentum.qty fader.enabled fader.reaction_ns fader.qty\n"
+    "  fader.trigger_ticks";
 
 } // namespace px::arena
