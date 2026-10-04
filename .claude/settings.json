@@ -1,0 +1,14 @@
+{
+  "$comment": [
+    "Checked in, so the rule travels with the repository instead of living in",
+    "one machine's settings.local.json (which .gitignore excludes). Empty",
+    "attribution strings mean commits and pull requests carry no Claude",
+    "co-author or generated-by trailer: the history records the person who is",
+    "accountable for the code and nothing else. CLAUDE.md states the same rule",
+    "in prose; this is what enforces it."
+  ],
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  }
+}
