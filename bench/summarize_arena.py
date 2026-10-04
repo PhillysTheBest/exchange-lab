@@ -136,6 +136,51 @@ def power(sessions, rows, label):
     print("  underpowered, not null. Both readings are honest; only one is a finding.")
 
 
+def transfer(sessions, rows, label):
+    """Who paid whom, and how that changed across the sweep.
+
+    The closed-world identity says the values sum to zero, so a participant that
+    gained did so at some named participant's expense. That turns the headline
+    from an inference into a ledger: it shows whether a slow maker's money went
+    to the informed trader (adverse selection) or to its competitor (competition
+    for uninformed flow).
+
+    Keyed on the participant INDEX, never the name: two bots are both called
+    `noise`, so grouping by name silently averages them into one participant and
+    the ledger stops summing to zero.
+    """
+    if not sessions or len(rows) < 2:
+        return
+    first, last = rows[0]["value"], rows[-1]["value"]
+    names, totals, counts = {}, {}, {}
+    for r in sessions:
+        key = (r["value"], r["participant"])
+        totals[key] = totals.get(key, 0.0) + f(r, "value_currency")
+        counts[key] = counts.get(key, 0) + 1
+        names[r["participant"]] = r.get("name", "?")
+
+    def mean_at(value, who):
+        key = (value, who)
+        return totals[key] / counts[key] if counts.get(key) else None
+
+    who_list = sorted({p for (v, p) in totals if v in (first, last)}, key=int)
+    print("\n%s - who paid whom (mean value per participant, currency units)" % label)
+    print("  %-3s %-11s | %14s | %14s | %s" % ("#", "participant", ns(first), ns(last), "transfer"))
+    rule(72)
+    sum_first = sum_last = 0.0
+    for who in who_list:
+        a, b = mean_at(first, who), mean_at(last, who)
+        if a is None or b is None:
+            continue
+        sum_first += a
+        sum_last += b
+        print("  %-3s %-11s | %+14.2f | %+14.2f | %+14.2f" % (who, names[who], a, b, b - a))
+    rule(72)
+    print("  %-15s | %+14.2f | %+14.2f |" % ("sum", sum_first, sum_last))
+    print("  The sums are the closed-world identity: every participant's gain is some other")
+    print("  participant's loss, so a sum far from zero means this attribution is wrong.")
+
+
 def main(argv):
     if len(argv) != 2:
         print(__doc__)
@@ -177,7 +222,9 @@ def main(argv):
         health(rows, label)
         paired(rows, label, param)
         decomposition(rows, label)
-        power(read(os.path.join(d, label + "_sessions.csv")), rows, label)
+        sessions = read(os.path.join(d, label + "_sessions.csv"))
+        power(sessions, rows, label)
+        transfer(sessions, rows, label)
 
     # The comparison the whole result turns on, if both runs are present.
     h = read(os.path.join(d, "headline.csv"))

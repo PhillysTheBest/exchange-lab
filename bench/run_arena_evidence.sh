@@ -77,6 +77,22 @@ run null     --param=maker.reaction_ns --values="$DECADES" --replay-check --null
 # The market the design notes call degenerate, published so the claim is checkable.
 run no-rival --param=maker.reaction_ns --values="$DECADES" --set=rival.enabled=0
 
+# The positive control. A null run shows the effect disappears when its supposed
+# cause is removed; it does not show the measure can see the effect at all. This
+# does: it freezes the swept maker into a quoter whose prices never move —
+# learning off AND inventory skew off — which is adverse selection by
+# construction, and asks whether the columns respond. The rival keeps learning so
+# the book stays anchored to the fundamental; freezing both makers instead just
+# misprices the market, which the health line catches.
+#
+# What it establishes is a limitation rather than a reassurance, and the finding
+# is in docs/ARENA.md: the staleness penalty lands almost entirely in the
+# contemporaneous channel (filled far from fair value *now*) and barely at all in
+# the post-fill channel, which for a martingale fundamental is zero in
+# expectation for everybody.
+run stale    --param=maker.skew_ticks_at_limit --values=0,4,40 \
+             --set=maker.impact_centiticks=0 --set=rival.impact_centiticks=15
+
 # Robustness: does the shape survive changing everything else?
 run edge     --param=informed.edge_ticks    --values=0,1,2,4
 run spread   --param=maker.half_spread_ticks --values=1,2,4,8

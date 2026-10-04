@@ -344,13 +344,59 @@ integers) shows where the money actually went:
 
 The cost of being slow is a **liquidity-provision** effect, not an information one. A
 1 ms maker cannot keep a quote standing: it gets 5.5× fewer fills and earns 8.8× less
-spread. Adverse selection moves by about **$7 out of a $3,185 swing** — and in the
-*helpful* direction — and its paired range straddles zero at every point, so it is not
-established at all. Making the informed trader maximally aggressive
-(`results/arena-windows/edge.*`) does not change that.
+spread. The post-fill column moves by about **$7 out of a $3,185 swing** — and in the
+*helpful* direction — with a paired range that straddles zero at every point.
+
+**That column is empty for a structural reason, and a second control tried and failed to
+calibrate it.** A null run cannot distinguish a measure that works from one that is
+always zero, so the other control sets out to create the effect on purpose: freeze a
+maker's learning and its inventory skew and its quotes never move at all, which is a
+stale quoter by construction. Three variants were tried and **all three fail the health
+line** — a maker in this session is not a probe you can insert without perturbing what it
+measures, because jointly with the rival it *is* the price-discovery mechanism. Make it
+stale enough to be reliably picked off and the book stops tracking the fundamental, so
+the measure loses its reference. So the post-fill column's **sensitivity is not
+established**, and that is published rather than glossed.
+
+What the reading rests on instead is analytic, and solid: the fundamental is a martingale,
+so the expected post-fill move is zero for *every* participant regardless of what it
+traded. Only a participant that **predicts** the fundamental could make that column
+non-zero, and none here does — the informed trader reacts to V's current value, it does
+not forecast the next one. So the honest reading is **the post-fill channel is empty
+because the model requires it**, not that nothing adverse occurred; a stale quote's loss
+shows up in what the code calls `spread`, being filled at a price the fundamental has
+already left behind. [docs/ARENA.md](docs/ARENA.md) works through it, and
+`results/arena-windows/stale.*` holds the failed control, because a control that failed
+is still evidence about the instrument.
 
 That is the honest answer, and it is the one the evidence supports rather than the one
 the design was hoping for.
+
+### And the ledger says where the money went
+
+The session is closed, so every gain is some named participant's loss and the values must
+sum to zero. That turns the claim above from an inference into an audit — if the slow
+maker were being adversely selected, the informed trader would be richer for it:
+
+| Participant | 1 µs maker | 1 ms maker | Transfer |
+|---|---|---|---|
+| maker | +3856.91 | +739.77 | **−3117.13** |
+| rival | +3800.71 | +7466.36 | **+3665.65** |
+| informed | +1744.25 | +1624.82 | −119.43 |
+| noise | −5139.77 | −5346.70 | −206.93 |
+| noise | −4221.65 | −4305.66 | −84.01 |
+| momentum | −40.45 | −178.59 | −138.15 |
+| **sum** | **+0.00** | **+0.00** | |
+
+**The maker's loss goes to its competitor, and the informed trader ends up slightly worse
+off.** The −3117.13 here is the same number as the paired mean in the table above, arrived
+at from the other direction. Slowing one maker down does not feed the trader with
+information; it hands uninformed flow to the maker that is still quoting.
+
+The sums are the check on the attribution rather than decoration: they are exactly zero in
+integers, so nothing is unaccounted for. `summarize_arena.py` prints this table, and keys
+it on participant index rather than name — two of the bots are both called `noise`, and
+grouping by name averages them into one participant and silently breaks the identity.
 
 ### What this instrument cannot show
 
