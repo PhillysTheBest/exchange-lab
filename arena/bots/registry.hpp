@@ -41,6 +41,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -240,6 +241,141 @@ struct Roster {
 // Every name set_roster_param() accepts, for --help. Kept in step with the
 // function above by test_arena, which asserts that each name listed here is
 // actually settable — otherwise this comment rots the first time a bot changes.
+// ---- composing a roster by name ------------------------------------------
+//
+// build_roster() above assembles the default line-up from the enable flags, and
+// it is what every published number was produced with. This is the other way in:
+// name the participants you want. Strategies are still compiled in and still
+// registered by one line — nothing is loaded at runtime — but a compiled-in
+// strategy is no longer reachable only by editing build_roster().
+//
+// ADDING A BOT HERE is the same one line as everywhere else: a branch in
+// add_named_bot() and its name in kBotNames. test_arena checks the two agree,
+// so a strategy that is addable by name but missing from the list, or listed but
+// not addable, fails the suite rather than confusing somebody later.
+[[nodiscard]] inline bool add_named_bot(std::string_view name, const RosterConfig& cfg, Roster& r) {
+    if (name == "maker") {
+        bots::MarketMaker maker;
+        maker.reaction_ns = cfg.maker_reaction_ns;
+        maker.anchor = cfg.anchor;
+        maker.half_spread_ticks = cfg.maker_half_spread_ticks;
+        maker.quote_qty = static_cast<Qty>(cfg.maker_quote_qty);
+        maker.max_position = cfg.maker_max_position;
+        maker.skew_ticks_at_limit = cfg.maker_skew_ticks_at_limit;
+        maker.impact_centiticks = cfg.maker_impact_centiticks;
+        // The first maker named is the one a sweep is about.
+        if (r.maker_index < 0) r.maker_index = static_cast<int>(r.bots.size());
+        r.bots.push_back(make_bot(maker));
+        r.informed.push_back(false);
+    } else if (name == "rival") {
+        bots::MarketMaker rival;
+        rival.name = "rival";
+        rival.reaction_ns = cfg.rival_reaction_ns;
+        rival.anchor = cfg.anchor;
+        rival.half_spread_ticks = cfg.rival_half_spread_ticks;
+        rival.quote_qty = static_cast<Qty>(cfg.rival_quote_qty);
+        rival.max_position = cfg.maker_max_position;
+        rival.skew_ticks_at_limit = cfg.maker_skew_ticks_at_limit;
+        rival.impact_centiticks =
+            cfg.rival_impact_centiticks < 0 ? cfg.maker_impact_centiticks : cfg.rival_impact_centiticks;
+        if (r.rival_index < 0) r.rival_index = static_cast<int>(r.bots.size());
+        r.bots.push_back(make_bot(rival));
+        r.informed.push_back(false);
+    } else if (name == "informed") {
+        bots::Informed informed;
+        informed.reaction_ns = cfg.informed_reaction_ns;
+        informed.edge_ticks = cfg.informed_edge_ticks;
+        informed.qty = static_cast<Qty>(cfg.informed_qty);
+        informed.max_position = cfg.informed_max_position;
+        r.bots.push_back(make_bot(informed));
+        // Naming it informed is what grants it the fundamental value, exactly as
+        // in build_roster(): the roster decides, never the strategy.
+        r.informed.push_back(true);
+    } else if (name == "noise") {
+        bots::Noise noise;
+        noise.reaction_ns = cfg.noise_reaction_ns;
+        // Stagger heartbeats by how many noise traders are already in, so that
+        // naming three does not put them in lockstep.
+        int already = 0;
+        for (const auto& b : r.bots) already += std::string_view(b->name()) == "noise" ? 1 : 0;
+        noise.timer_ns = cfg.noise_timer_ns + already * (cfg.noise_timer_ns / 8 + 1);
+        noise.anchor = cfg.anchor;
+        noise.qty = static_cast<Qty>(cfg.noise_qty);
+        noise.pct_market = static_cast<unsigned>(cfg.noise_pct_market);
+        r.bots.push_back(make_bot(noise));
+        r.informed.push_back(false);
+    } else if (name == "momentum") {
+        bots::Momentum momentum;
+        momentum.reaction_ns = cfg.momentum_reaction_ns;
+        momentum.qty = static_cast<Qty>(cfg.momentum_qty);
+        r.bots.push_back(make_bot(momentum));
+        r.informed.push_back(false);
+    } else if (name == "fader") {
+        bots::Fader fader;
+        fader.reaction_ns = cfg.fader_reaction_ns;
+        fader.qty = static_cast<Qty>(cfg.fader_qty);
+        fader.trigger_ticks = cfg.fader_trigger_ticks;
+        r.bots.push_back(make_bot(fader));
+        r.informed.push_back(false);
+    } else {
+        return false;
+    }
+    return true;
+}
+
+inline constexpr const char* kBotNames = "maker rival informed noise momentum fader";
+
+// Builds a roster from a spec like "maker,rival,informed,noise:2,momentum":
+// comma-separated names, each optionally followed by :count to repeat it. On a
+// bad name or count it returns false and leaves `error` saying which token, so a
+// typo is a message rather than a silently different market.
+[[nodiscard]] inline bool roster_from_spec(std::string_view spec, const RosterConfig& cfg, Roster& out,
+                                           std::string& error) {
+    Roster r;
+    std::string_view rest = spec;
+    while (!rest.empty()) {
+        const std::size_t comma = rest.find(',');
+        std::string_view token = rest.substr(0, comma);
+        rest = comma == std::string_view::npos ? std::string_view{} : rest.substr(comma + 1);
+        if (token.empty()) continue;
+
+        int count = 1;
+        const std::size_t colon = token.find(':');
+        if (colon != std::string_view::npos) {
+            const std::string_view digits = token.substr(colon + 1);
+            token = token.substr(0, colon);
+            count = 0;
+            if (digits.empty()) {
+                error = "missing count after ':'";
+                return false;
+            }
+            for (const char c : digits) {
+                if (c < '0' || c > '9') {
+                    error = "count after ':' is not a number";
+                    return false;
+                }
+                count = count * 10 + (c - '0');
+            }
+        }
+        if (count < 1) {
+            error = "a count of zero: leave the name out instead";
+            return false;
+        }
+        for (int i = 0; i < count; ++i) {
+            if (!add_named_bot(token, cfg, r)) {
+                error = "unknown participant '" + std::string(token) + "'; known: " + kBotNames;
+                return false;
+            }
+        }
+    }
+    if (r.bots.empty()) {
+        error = "named no participants";
+        return false;
+    }
+    out = std::move(r);
+    return true;
+}
+
 inline constexpr const char* kRosterParamNames =
     "maker.reaction_ns maker.half_spread_ticks maker.quote_qty maker.max_position\n"
     "  maker.skew_ticks_at_limit maker.impact_centiticks rival.enabled rival.reaction_ns\n"

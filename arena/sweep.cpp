@@ -74,6 +74,7 @@ struct Options {
     bool replay_check = false;
     bool quiet = false;
     std::string label = "sweep";
+    std::string bots; // empty: the registry's default line-up
     std::vector<std::pair<std::string, std::int64_t>> overrides;
 };
 
@@ -85,6 +86,7 @@ void usage() {
         "  --seeds=N             sessions per point, all points sharing them (default 20)\n"
         "  --requests=N          engine requests per session (default 200000)\n"
         "  --base-seed=N         first seed (default 42)\n"
+        "  --bots=SPEC           compose the line-up by name, e.g. maker,rival,informed,noise:2\n"
         "  --set=NAME=VALUE      fix any other field; may be repeated\n"
         "  --null                shorthand for --set=informed.enabled=0\n"
         "  --csv=PATH            one row per participant per session\n"
@@ -92,10 +94,11 @@ void usage() {
         "  --label=NAME          a name for the run, written into both CSVs\n"
         "  --replay-check        run every session twice and compare hashes\n"
         "  --quiet               tables only\n\n"
+        "participants: %s\n\n"
         "fields:\n  %s\n  %s\n\n"
         "Every number this prints is simulated. The engine's measured latency is in\n"
         "README.md and is unrelated to any reaction delay set here.\n",
-        kRosterParamNames, Session::kSessionParamNames);
+        kBotNames, kRosterParamNames, Session::kSessionParamNames);
 }
 
 [[nodiscard]] bool parse_i64(std::string_view s, std::int64_t& out) {
@@ -160,7 +163,20 @@ struct Cell {
     if (!apply_field(rc, sc, opt.param, swept_value)) return false;
 
     Session s;
-    const Session::StartError bad = s.start(sc, rc);
+    Session::StartError bad = Session::StartError::None;
+    if (opt.bots.empty()) {
+        bad = s.start(sc, rc);
+    } else {
+        // A named line-up. The config still supplies every participant's
+        // parameters; the spec only decides who is in the room.
+        Roster roster;
+        std::string why;
+        if (!roster_from_spec(opt.bots, rc, roster, why)) {
+            std::fprintf(stderr, "--bots=%s: %s\n", opt.bots.c_str(), why.c_str());
+            return false;
+        }
+        bad = s.start(sc, std::move(roster));
+    }
     if (bad != Session::StartError::None) {
         std::fprintf(stderr, "cannot run this configuration: %s\n", Session::explain(bad));
         return false;
@@ -186,7 +202,12 @@ struct Cell {
     const Price mark = s.fair_value().value();
     const int mi = s.maker_index();
     const int ri = s.rival_index();
-    if (mi < 0) return false;
+    if (mi < 0) {
+        // Every column here is about the swept maker, so a line-up without one
+        // has nothing to report rather than something misleading.
+        std::fprintf(stderr, "this line-up has no 'maker', which every column here is about\n");
+        return false;
+    }
 
     for (std::size_t i = 0; i < s.participants(); ++i) {
         const Account& a = s.ledger().at(i);
@@ -290,6 +311,8 @@ int main(int argc, char** argv) {
             opt.param = std::string(a.substr(8));
         } else if (a.starts_with("--label=")) {
             opt.label = std::string(a.substr(8));
+        } else if (a.starts_with("--bots=")) {
+            opt.bots = std::string(a.substr(7));
         } else if (a.starts_with("--csv=")) {
             opt.csv = std::string(a.substr(6));
         } else if (a.starts_with("--summary-csv=")) {

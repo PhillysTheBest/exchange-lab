@@ -640,6 +640,96 @@ void test_third_party_bot() {
     PX_CHECK(quiet.ledger().at(static_cast<std::size_t>(which)).orders_sent < a.orders_sent);
 }
 
+// Composing a line-up by name. The default path (build_roster) is what every
+// published number came from; this is the other way in, and what it must not do
+// is disagree with itself.
+void test_roster_from_spec() {
+    const RosterConfig rc;
+    std::string why;
+
+    // Every name kBotNames advertises must actually be addable, and vice versa.
+    // A list that drifts from the code is worse than no list.
+    std::size_t listed = 0;
+    {
+        std::string tok;
+        for (const char* p = kBotNames;; ++p) {
+            if (*p == ' ' || *p == '\0') {
+                if (!tok.empty()) {
+                    ++listed;
+                    Roster one;
+                    if (!add_named_bot(tok, rc, one)) {
+                        std::printf("  advertised but not addable: %s\n", tok.c_str());
+                        PX_CHECK(false);
+                    }
+                    PX_CHECK(one.bots.size() == 1);
+                    PX_CHECK(one.informed.size() == 1);
+                    tok.clear();
+                }
+                if (*p == '\0') break;
+            } else {
+                tok.push_back(*p);
+            }
+        }
+    }
+    std::printf("  spec: %zu named participants, all addable\n", listed);
+    PX_CHECK(listed == 6);
+
+    // Counts repeat a name, and the roster comes out in the order written.
+    Roster r;
+    PX_CHECK(roster_from_spec("maker,rival,informed,noise:3,fader", rc, r, why));
+    PX_CHECK(r.bots.size() == 7);
+    PX_CHECK(std::string(r.bots[0]->name()) == "maker");
+    PX_CHECK(std::string(r.bots[1]->name()) == "rival");
+    PX_CHECK(std::string(r.bots[3]->name()) == "noise");
+    PX_CHECK(std::string(r.bots[5]->name()) == "noise");
+    PX_CHECK(std::string(r.bots[6]->name()) == "fader");
+    PX_CHECK(r.maker_index == 0);
+    PX_CHECK(r.rival_index == 1);
+    // Only the one named informed is informed, and the roster decides it.
+    PX_CHECK(r.informed.size() == r.bots.size());
+    int informed_count = 0;
+    for (std::size_t i = 0; i < r.informed.size(); ++i) informed_count += r.informed[i] ? 1 : 0;
+    PX_CHECK(informed_count == 1);
+    PX_CHECK(r.informed[2]);
+
+    // Repeated noise traders get staggered heartbeats, so naming three does not
+    // put them in lockstep.
+    PX_CHECK(r.bots[3]->timer_ns() != r.bots[4]->timer_ns());
+    PX_CHECK(r.bots[4]->timer_ns() != r.bots[5]->timer_ns());
+
+    // Every way of writing it wrong is a message, not a different market.
+    Roster junk;
+    PX_CHECK(!roster_from_spec("maker,nonsense", rc, junk, why));
+    PX_CHECK(why.find("nonsense") != std::string::npos);
+    PX_CHECK(!roster_from_spec("maker,noise:x", rc, junk, why));
+    PX_CHECK(!roster_from_spec("maker,noise:", rc, junk, why));
+    PX_CHECK(!roster_from_spec("maker,noise:0", rc, junk, why));
+    PX_CHECK(!roster_from_spec("", rc, junk, why));
+    PX_CHECK(!roster_from_spec(",,,", rc, junk, why));
+    // Stray commas around real names are tolerated rather than fatal.
+    Roster loose;
+    PX_CHECK(roster_from_spec("maker,,noise,", rc, loose, why));
+    PX_CHECK(loose.bots.size() == 2);
+
+    // A named line-up runs, and the closed-world identity holds for it just as
+    // it does for the default one.
+    Roster play;
+    PX_CHECK(roster_from_spec("maker,rival,informed,noise:2", rc, play, why));
+    Session s;
+    PX_CHECK(s.start(small_session(), std::move(play)) == Session::StartError::None);
+    s.run();
+    PX_CHECK(s.participants() == 5);
+    PX_CHECK(s.stats().trades > 100);
+    PX_CHECK(!s.stats().stalled);
+    PX_CHECK(s.ledger().value_sum(s.fair_value().value()) == 0);
+
+    // And the spec cannot be used to smuggle past the participant ceiling.
+    Roster huge;
+    PX_CHECK(roster_from_spec("maker,noise:100", rc, huge, why));
+    Session over;
+    PX_CHECK(over.start(small_session(), std::move(huge)) == Session::StartError::TooManyParticipants);
+}
+
 } // namespace
 
 int main() {
@@ -652,6 +742,7 @@ int main() {
     test_reaction_model();
     test_param_names_are_real();
     test_third_party_bot();
+    test_roster_from_spec();
     test_session_refuses_bad_configs();
     test_quiet_session_terminates();
     test_ui_grid();

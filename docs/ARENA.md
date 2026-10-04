@@ -474,6 +474,33 @@ struct MyBot {
 cancel-replacing both sides needs four and an API that forced it to spend four
 reaction windows doing so would be measuring itself.
 
+### Choosing who is in the market
+
+Once a strategy is registered, `--bots=` composes a line-up by name without
+editing anything:
+
+```bash
+build/release/sweep --bots=maker,rival,informed,noise:3,fader
+build/release/arena --bots=maker,informed,noise:2
+```
+
+Comma-separated names, each optionally `:count` to repeat it. Repeated noise
+traders get staggered heartbeats, so naming three does not put them in lockstep.
+Naming a participant `informed` is what grants it the fundamental value — the
+roster decides that, never the strategy. Every parameter still comes from the
+config, so `--set=` and sweeps work unchanged; the spec only decides who is in
+the room.
+
+An unknown name, a count that is not a number, a count of zero and an empty spec
+are each an error naming the offending token, because a typo that silently
+produced a different market would be worse than a failure. A line-up with no
+`maker` is refused by the sweep runner, since every column it prints is about the
+swept maker.
+
+Without `--bots=`, the registry's default line-up is used — which is what every
+published number was produced with, and the session hashes confirm it:
+`dc1ab7b9798723c0` and `4c05d629279645e9` are unchanged by any of this.
+
 What a bot cannot see: the fundamental value (unless the roster marks it
 informed), the clock, other participants' positions, the engine's internals, or
 its queue position except by having tracked the feed itself.
@@ -524,13 +551,6 @@ taste; evidence is owed where claims are made, and the renderer makes none.
   to type a strategy into the terminal. A bot is compiled in; see "Writing a bot"
   above for what that costs. This is the scope boundary, and it is the single
   thing most likely to be mistaken for a missing feature.
-- **Choosing the roster from the command line.** The existing participants can be
-  switched on and off and retuned with `--set=` (`rival.enabled`,
-  `informed.enabled`, `noise.count`, `fader.enabled`, every parameter), but there
-  is no `--bots=a,b,c` that composes an arbitrary line-up, and the viewer takes no
-  roster flags at all beyond `--maker-reaction`. Compiled-in strategies are
-  therefore less reachable than they could be, which is a real gap rather than a
-  decision.
 - More than one instrument on screen. The session supports one, deliberately: one
   legible ladder beats four grids of numbers, and the engine's multi-instrument
   support is already demonstrated by the benchmarks.

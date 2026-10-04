@@ -52,6 +52,7 @@ struct ViewOptions {
     SimTime still_at_ns = 0;              // >0: render one frame and exit
     double sim_ns_per_second = 2'000'000; // 2 ms of market per real second
     SimTime maker_reaction_ns = -1;       // <0 = the registry's default
+    std::string bots;                     // empty = the registry's default line-up
 };
 
 std::string fmt_price(Price p) {
@@ -325,6 +326,8 @@ int main(int argc, char** argv) {
                         "  --requests=N         stop after N engine requests (default: run on)\n"
                         "  --speed=NS           simulated ns per real second (default 2000000)\n"
                         "  --maker-reaction=NS  the swept maker's reaction delay\n"
+                        "  --bots=SPEC          compose the line-up by name, e.g.\n"
+                        "                       maker,rival,informed,noise:2,momentum\n"
                         "  --still=NS           render one frame at that simulated instant and exit\n\n"
                         "keys: space pause, + - speed, 1-9 focus, q quit\n\n"
                         "The viewer only reads the session. Pausing, speeding up and focusing cannot\n"
@@ -337,6 +340,10 @@ int main(int argc, char** argv) {
             out = std::atoll(std::string(a.substr(pfx.size())).c_str());
             return true;
         };
+        if (a.starts_with("--bots=")) {
+            opt.bots = std::string(a.substr(7));
+            continue;
+        }
         long long v = 0;
         if (num("--seed=", v)) {
             opt.seed = static_cast<std::uint64_t>(v);
@@ -361,7 +368,18 @@ int main(int argc, char** argv) {
     if (opt.maker_reaction_ns >= 0) rc.maker_reaction_ns = opt.maker_reaction_ns;
 
     Session sess;
-    const Session::StartError bad = sess.start(sc, rc);
+    Session::StartError bad = Session::StartError::None;
+    if (opt.bots.empty()) {
+        bad = sess.start(sc, rc);
+    } else {
+        Roster roster;
+        std::string why;
+        if (!roster_from_spec(opt.bots, rc, roster, why)) {
+            std::fprintf(stderr, "--bots=%s: %s\n", opt.bots.c_str(), why.c_str());
+            return 2;
+        }
+        bad = sess.start(sc, std::move(roster));
+    }
     if (bad != Session::StartError::None) {
         std::fprintf(stderr, "cannot run this configuration: %s\n", Session::explain(bad));
         return 2;
