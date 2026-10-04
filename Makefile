@@ -50,7 +50,8 @@ LIB_SRC := src/matching_engine.cpp $(PLATFORM_SRC)
 LIB_DBG := $(LIB_SRC:%.cpp=$(DBG)/%.o)
 LIB_REL := $(LIB_SRC:%.cpp=$(REL)/%.o)
 
-TESTS   := test_containers test_spsc_ring test_engine fuzz_vs_reference test_alloc_audit test_determinism
+TESTS   := test_containers test_spsc_ring test_engine fuzz_vs_reference test_alloc_audit test_determinism \
+           test_arena
 BENCHES := bench_engine bench_ring bench_matching_latency
 
 TEST_BINS  := $(TESTS:%=$(DBG)/%$(EXE))
@@ -92,4 +93,4 @@ $(REPL_BIN): $(REL)/tools/repl.o $(LIB_REL)
 clean:
 	rm -rf $(BUILD)
 
--include $(wildcard $(DBG)/*/*.d $(REL)/*/*.d)
+-include $(wildcard $(DBG)/*/*.d $(REL)/*/*.d $(DBG)/*/*/*.d $(REL)/*/*/*.d)
