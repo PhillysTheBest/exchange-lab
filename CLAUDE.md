@@ -25,8 +25,32 @@ trading strategy into the engine. Strategies live in `arena/bots/`, never in
 measured and committed: see `docs/ARENA.md` for its design, the four modelling
 mistakes that produced confidently wrong results on the way, and the two parameters
 that turned out to be load-bearing. Its scope boundary is binding — everything
-compiles into one binary and nothing talks over a network. The GitHub repo is being
-renamed from `prediction-markets` to `matching-engine`.
+compiles into one binary and nothing talks over a network.
+
+**The name.** The repository is being renamed to `exchange-lab`, from
+`prediction-markets`, which describes something this tree no longer contains. Not
+`matching-engine`, which was the earlier plan: the arena is now larger than the engine
+and holds the project's actual result, so that name undersells it and is also shared
+with several hundred other repositories. `exchange-lab` is the tree's own description
+of itself — an exchange, and the lab where strategies and speed compete.
+
+Two names to avoid, for reasons the code depends on. Anything containing **latency**
+would undo the one piece of vocabulary discipline this project keeps: the engine's
+latency is measured and a bot's `reaction_ns` is invented, nothing in `arena/` is called
+latency, and a repository named `latency-*` re-merges them before a reader opens a file.
+**tick-to-trade** would be a false claim, because the measurement is service time and
+README.md says so explicitly.
+
+The GitHub **description** field does the keyword work the name deliberately does not,
+and it is indexed where the name alone is not. Set it to:
+
+> Price-time-priority exchange matching engine in C++20 — p99.9 under 2µs, zero
+> allocation, bit-identical cross-OS replay — and the deterministic market simulator
+> built on it.
+
+Until the rename happens, paths in this file still say `prediction-markets`; after it,
+the local checkout directory and the WSL path in the sanitizer command below both change
+with it.
 
 ## Build and test
 
