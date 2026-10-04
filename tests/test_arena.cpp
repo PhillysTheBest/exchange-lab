@@ -27,6 +27,7 @@
 // nothing.
 #include "arena/book_mirror.hpp"
 #include "arena/session.hpp"
+#include "arena/ui.hpp"
 #include "px/matching_engine.hpp"
 #include "sim/order_stream.hpp"
 #include "test_harness.hpp"
@@ -40,6 +41,11 @@ using namespace px;
 using namespace px::arena;
 
 namespace {
+
+// The composed bytes of the fixed scene test_ui_grid draws. Pinned so that an
+// accidental change to the palette, a drawing primitive or the escape-emitting
+// fails here; a deliberate visual change updates this number along with it.
+constexpr std::uint64_t kPinnedFrameHash = 0xddfa48c44bff4de8ULL;
 
 // ---- 1. the mirror against the engine ------------------------------------
 
@@ -410,6 +416,168 @@ void test_param_names_are_real() {
     PX_CHECK(!Session::set_param(sc, "session.nonsense", 1));
 }
 
+// ---- the two configurations that used to go wrong silently ---------------
+//
+// Both were found by testing the arena rather than reasoning about it, and both
+// are pinned here because a bug that was found and not pinned gets found again
+// by a reader, in a repository whose whole pitch is evidence.
+
+void test_session_refuses_bad_configs() {
+    // A roster past the participant ceiling. It used to be accepted, and the
+    // participants past index 63 then never received an own-event wake: with 104
+    // identical noise traders, the first 64 took 151.9 fills each and the rest
+    // took 55.9. Wrong numbers that looked entirely plausible.
+    {
+        Roster big = build_roster(RosterConfig{});
+        bots::Noise filler;
+        while (big.bots.size() <= Session::kMaxParticipants) {
+            big.bots.push_back(make_bot(filler));
+            big.informed.push_back(false);
+        }
+        Session s;
+        const Session::StartError e = s.start(small_session(), std::move(big));
+        PX_CHECK(e == Session::StartError::TooManyParticipants);
+        // A refused session is inert rather than half-built, so a caller that
+        // ignores the result gets nothing instead of nonsense.
+        PX_CHECK(s.done());
+        PX_CHECK(s.participants() == 0);
+        PX_CHECK(s.stats().requests == 0);
+    }
+    // Exactly at the ceiling is still allowed: the guard must bite at 65, not 64.
+    {
+        Roster full = build_roster(RosterConfig{});
+        bots::Noise filler;
+        while (full.bots.size() < Session::kMaxParticipants) {
+            full.bots.push_back(make_bot(filler));
+            full.informed.push_back(false);
+        }
+        PX_CHECK(full.bots.size() == Session::kMaxParticipants);
+        Session s;
+        PX_CHECK(s.start(small_session(), std::move(full)) == Session::StartError::None);
+        PX_CHECK(s.participants() == Session::kMaxParticipants);
+    }
+    // No bound of any kind. A session ends on max_requests, max_time_ns or the
+    // stall limit; with the last two switched off a session that goes quiet
+    // would run forever, so the configuration is refused instead.
+    {
+        SessionConfig c = small_session();
+        c.max_time_ns = 0;
+        c.stall_limit_ns = 0;
+        Session s;
+        PX_CHECK(s.start(c, RosterConfig{}) == Session::StartError::NoStallBound);
+        PX_CHECK(s.done());
+    }
+    PX_CHECK(std::string(Session::explain(Session::StartError::None)) == "ok");
+}
+
+// A market with nobody to trade against. This used to hang: the maker quotes
+// once, has nothing further to do, and no request ever arrives again — so
+// max_requests stayed unreachable while the fundamental kept rescheduling
+// itself. It now ends on the stall limit and says so.
+void test_quiet_session_terminates() {
+    RosterConfig rc;
+    rc.rival_enabled = false;
+    rc.informed_enabled = false;
+    rc.momentum_enabled = false;
+    rc.noise_count = 0; // nothing left but the maker
+    SessionConfig sc = small_session();
+    sc.max_requests = 100'000; // far more than this roster can ever produce
+
+    Session s;
+    PX_CHECK(s.start(sc, rc) == Session::StartError::None);
+    s.run();
+
+    std::printf("  quiet session: stalled=%d after %zu requests, clock %lld ns\n", s.stats().stalled ? 1 : 0,
+                s.stats().requests, static_cast<long long>(s.now()));
+    PX_CHECK(s.done());
+    PX_CHECK(s.stats().stalled);
+    PX_CHECK(s.stats().requests < 100);
+    // It stopped shortly after the stall limit rather than running on, and the
+    // bound is in simulated time, so this is exact rather than timing-dependent.
+    PX_CHECK(s.now() <= sc.stall_limit_ns + sc.fair_step_mean_ns * 4);
+    // And a normal session must never trip it.
+    Session busy;
+    PX_CHECK(busy.start(small_session(), RosterConfig{}) == Session::StartError::None);
+    busy.run();
+    PX_CHECK(!busy.stats().stalled);
+}
+
+// ---- the renderer ---------------------------------------------------------
+//
+// It makes no measured claim, so what is pinned is not how it looks but the
+// invariants a layout edit could break without anyone noticing.
+void test_ui_grid() {
+    ui::Screen s(40, 12);
+    s.desktop();
+
+    // One cell per code point. The first version of text() advanced one byte at
+    // a time, so every multi-byte glyph was torn across two or three cells and
+    // rendered as replacement characters. This is that bug, pinned.
+    s.text(0, 0, "ab\xe2\x96\x88\xe2\x96\x8c", ui::pal::ink, ui::pal::panel);
+    PX_CHECK(s.glyph_at(0, 0) == "a");
+    PX_CHECK(s.glyph_at(1, 0) == "b");
+    PX_CHECK(s.glyph_at(2, 0) == "\xe2\x96\x88"); // U+2588, one cell
+    PX_CHECK(s.glyph_at(3, 0) == "\xe2\x96\x8c"); // U+258C, one cell
+
+    // `limit` counts columns, not bytes.
+    s.text(0, 1, "\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88", ui::pal::ink, ui::pal::panel, 2);
+    PX_CHECK(s.glyph_at(0, 1) == "\xe2\x96\x88");
+    PX_CHECK(s.glyph_at(1, 1) == "\xe2\x96\x88");
+    PX_CHECK(s.glyph_at(2, 1) != "\xe2\x96\x88");
+
+    // Drawing off every edge is clipped, not written out of bounds. Under ASan
+    // this is the check that would catch a layout change writing past the grid.
+    s.text(-5, 3, "clipped left", ui::pal::ink, ui::pal::panel);
+    s.text(38, 4, "clipped right", ui::pal::ink, ui::pal::panel);
+    s.text(0, -2, "above", ui::pal::ink, ui::pal::panel);
+    s.text(0, 99, "below", ui::pal::ink, ui::pal::panel);
+    s.window(ui::Rect{30, 9, 20, 10}, "OFF EDGE", ui::pal::teal);
+    PX_CHECK(s.glyph_at(39, 4).size() > 0);
+    PX_CHECK(s.glyph_at(40, 4).empty()); // past the right edge: nothing there
+
+    // A bar fills in eighths, so the full blocks are the floor of the fraction.
+    s.bar(0, 6, 8, 0.5, ui::pal::teal);
+    PX_CHECK(s.glyph_at(0, 6) == "\xe2\x96\x88");
+    PX_CHECK(s.glyph_at(3, 6) == "\xe2\x96\x88");
+    PX_CHECK(s.glyph_at(4, 6) != "\xe2\x96\x88");
+    s.bar(0, 7, 8, 0.0, ui::pal::teal);
+    PX_CHECK(s.glyph_at(0, 7) == " ");
+    s.bar(0, 8, 8, 1.0, ui::pal::teal);
+    PX_CHECK(s.glyph_at(7, 8) == "\xe2\x96\x88");
+    // Out-of-range fractions are clamped rather than overflowing the row.
+    s.bar(0, 8, 8, 9.0, ui::pal::teal);
+    PX_CHECK(s.glyph_at(7, 8) == "\xe2\x96\x88");
+    PX_CHECK(s.glyph_at(8, 8) != "\xe2\x96\x88");
+
+    // A signed bar grows from the middle, each way, in its own colour.
+    s.signed_bar(0, 10, 11, 0.9);
+    PX_CHECK(s.fg_at(6, 10) == ui::pal::up);
+    s.signed_bar(0, 11, 11, -0.9);
+    PX_CHECK(s.fg_at(4, 11) == ui::pal::down);
+
+    // Composing is deterministic and self-contained: same grid, same bytes, and
+    // the frame both starts at home and leaves no colour set behind it.
+    const std::string first = s.compose();
+    const std::string again = s.compose();
+    PX_CHECK(first == again);
+    PX_CHECK(first.rfind("\x1b[H", 0) == 0);
+    PX_CHECK(first.size() > 4 && first.compare(first.size() - 4, 4, "\x1b[0m") == 0);
+    // Every row is emitted, and none of them is left wider than the grid.
+    std::size_t rows = 1;
+    for (const char ch : first) rows += ch == '\n' ? 1 : 0;
+    PX_CHECK(rows == 12);
+
+    std::uint64_t h = 0xcbf29ce484222325ULL;
+    for (const unsigned char ch : first) {
+        h ^= ch;
+        h *= 0x100000001b3ULL;
+    }
+    std::printf("  ui: %zu-byte frame, hash %016llx\n", first.size(), static_cast<unsigned long long>(h));
+    // Pinned. If a change to the palette or the drawing primitives moves this,
+    // that was a deliberate visual change and this number is updated with it.
+    PX_CHECK(h == kPinnedFrameHash);
+}
+
 } // namespace
 
 int main() {
@@ -421,6 +589,9 @@ int main() {
     test_informed_switch();
     test_reaction_model();
     test_param_names_are_real();
+    test_session_refuses_bad_configs();
+    test_quiet_session_terminates();
+    test_ui_grid();
     test_speed_beats_slow();
     PX_TEST_REPORT_AND_RETURN();
 }

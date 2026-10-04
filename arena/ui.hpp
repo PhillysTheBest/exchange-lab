@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <string_view>
 #include <string>
 #include <vector>
 
@@ -219,8 +220,45 @@ public:
         for (int i = 0; i < count && i < in.h; ++i) text(in.x, in.y + i, lines[i], pal::ink, pal::panel, in.w);
     }
 
+    // ---- reading the grid back, for tests -------------------------------
+    //
+    // The renderer is the one part of the arena that makes no measured claim, so
+    // what is worth pinning is not how it looks but the invariants a layout edit
+    // could silently break: one cell per code point, clipping at the edges, and
+    // a frame that composes identically every time. test_arena asserts those
+    // through these three accessors and a hash of compose().
+
+    [[nodiscard]] std::string_view glyph_at(int x, int y) const {
+        if (x < 0 || y < 0 || x >= w_ || y >= h_) return {};
+        const Cell& c = cells_[static_cast<std::size_t>(y) * static_cast<std::size_t>(w_) +
+                               static_cast<std::size_t>(x)];
+        return std::string_view(c.g, c.len);
+    }
+
+    [[nodiscard]] Rgb fg_at(int x, int y) const {
+        if (x < 0 || y < 0 || x >= w_ || y >= h_) return Rgb{};
+        return cells_[static_cast<std::size_t>(y) * static_cast<std::size_t>(w_) +
+                      static_cast<std::size_t>(x)]
+            .fg;
+    }
+
+    [[nodiscard]] Rgb bg_at(int x, int y) const {
+        if (x < 0 || y < 0 || x >= w_ || y >= h_) return Rgb{};
+        return cells_[static_cast<std::size_t>(y) * static_cast<std::size_t>(w_) +
+                      static_cast<std::size_t>(x)]
+            .bg;
+    }
+
     // One frame, one write. Colour escapes only where a colour changes.
     void present(std::FILE* f) {
+        const std::string& frame = compose();
+        std::fwrite(frame.data(), 1, frame.size(), f);
+        std::fflush(f);
+    }
+
+    // The bytes present() would write. Split out so a test can hash a frame
+    // without a terminal, and so present() stays one write.
+    const std::string& compose() {
         out_.assign("\x1b[H");
         Rgb fg{1, 2, 3}, bg{4, 5, 6}; // impossible, so the first cell emits both
         char esc[48];
@@ -245,8 +283,7 @@ public:
             fg = Rgb{1, 2, 3};
         }
         out_ += "\x1b[0m";
-        std::fwrite(out_.data(), 1, out_.size(), f);
-        std::fflush(f);
+        return out_;
     }
 
 private:

@@ -160,8 +160,20 @@ struct Cell {
     if (!apply_field(rc, sc, opt.param, swept_value)) return false;
 
     Session s;
-    s.start(sc, rc);
+    const Session::StartError bad = s.start(sc, rc);
+    if (bad != Session::StartError::None) {
+        std::fprintf(stderr, "cannot run this configuration: %s\n", Session::explain(bad));
+        return false;
+    }
     s.run();
+    // A session that went quiet produced fewer requests than asked for, so its
+    // numbers are not comparable with the other points. Say so rather than
+    // averaging it in silently.
+    if (s.stats().stalled) {
+        std::fprintf(stderr, "warning: session (seed %llu, %s=%lld) went quiet after %zu of %zu requests\n",
+                     static_cast<unsigned long long>(seed), opt.param.c_str(),
+                     static_cast<long long>(swept_value), s.stats().requests, opt.requests);
+    }
 
     if (opt.replay_check) {
         Session again;
@@ -351,7 +363,11 @@ int main(int argc, char** argv) {
         for (int k = 0; k < opt.seeds; ++k) {
             Cell c;
             if (!run_one(opt, value, opt.base_seed + static_cast<std::uint64_t>(k), csv, c)) {
-                std::fprintf(stderr, "unknown field '%s' (try --help)\n", opt.param.c_str());
+                // A refused session has already explained itself; this covers
+                // the other reason run_one fails, which is a field name that
+                // nothing will accept.
+                std::fprintf(stderr, "could not run '%s' = %lld (an unknown field? try --help)\n",
+                             opt.param.c_str(), static_cast<long long>(value));
                 if (csv != nullptr) std::fclose(csv);
                 return 2;
             }
