@@ -1,0 +1,10 @@
+arena evidence
+label:    windows
+date:     2026-10-04T06:45:30Z
+commit:   9c4d52d
+dirty:    7 files
+compiler: g++.exe (Rev3, Built by MSYS2 project) 13.2.0
+
+Every number in this directory is simulated. Reaction delays are inputs
+chosen by the experimenter, not measurements. The engine's measured
+latency is in results/windows/ and results/wsl2/ and is unrelated.
