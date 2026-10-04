@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="700" height="67" viewBox="0 0 700 67" role="img" aria-label="arena --still=60000000 --seed=42">
+<style>
+  text{font-family:'Cascadia Mono',Consolas,'DejaVu Sans Mono','Liberation Mono',ui-monospace,monospace;font-size:13px;white-space:pre}
+  .c{fill:#9a89c4;font-size:11px}
+</style>
+<rect width="100%" height="100%" fill="#2a1b4a"/>
+<text x="14.00" y="26.50" fill="#e8dfff" textLength="672.00" lengthAdjust="spacingAndGlyphs">bench/run_arena_evidence.sh: line 120: build-linux/release/arena: Is a directory</text>
+<text class="c" x="14.00" y="45.00">arena --still=60000000 --seed=42</text>
+</svg>

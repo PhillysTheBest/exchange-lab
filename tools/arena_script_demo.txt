@@ -1,0 +1,21 @@
+# tools/arena_script_demo.txt - a worked script for `arena --script=`.
+#
+# One order per line, in simulated time from the start of the session:
+#   <at>  buy|sell  <qty>  <price>      a GTC limit
+#   <at>  buy|sell  <qty>  market       takes whatever is resting
+#   <at>  cancel    <n>                 cancels your own n-th live order
+#
+# Times may carry us or ms. Prices are in currency units, four decimals at most,
+# and must sit on the instrument's tick grid (0.01 by default). The session plays
+# this at the same instants on every machine, so a hand-played session replays
+# bit-identically - which live keystrokes could never do.
+#
+# The market opens around 100.00 and the fundamental wanders from there.
+
+2ms    buy   50   99.95      # join the bid, below where the makers are quoting
+3ms    sell  50  100.05      # and the offer, so you are a two-sided quoter
+8ms    buy   25   market     # pay the spread to get long
+12ms   cancel 1             # pull the first order still live (the 99.95 bid)
+16ms   sell  40  100.08      # offer higher, out of the way
+25ms   sell  60   market     # flatten and then some
+40ms   buy   30   99.90      # a patient bid, far from the touch

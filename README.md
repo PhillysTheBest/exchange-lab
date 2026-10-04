@@ -283,15 +283,12 @@ was added — `arena/book_mirror.hpp` reconstructs every level and every FIFO fr
 `ExecEvent` stream, which is the only thing a real venue sends out. So a bot provably
 sees no more than a real participant would.
 
-```
- ORDER BOOK                       ■■■    PARTICIPANTS                              ■■■
-│                                    │  │   participant  delay    pos     value        │
-│ 100.06          25  ███▎           │  │ 1 maker       10us   -195    +16.50     │██  │
-│ 100.04         100  █████████████  │  │ 2 rival        1us   -150    +21.55     │███ │
-│  value 100.03 ──────────────────── │  │ 3 informed     1us    175     -0.80     │    │
-│ 100.01          25  ███▎           │  │ 4 noise       50us    250    -15.00   ██│    │
-│ 100.00         100  █████████████  │  │ 5 noise       50us   -100    -22.25  ███│    │
-```
+<img src="docs/arena.svg" alt="The arena: order book, participants, reaction-delay sliders, session and tape, drawn in a terminal" width="100%">
+
+That picture is generated, not screenshotted: `arena --still=60000000 --seed=42` runs a
+session headless to one simulated instant and prints the frame, and
+`bench/frame_to_svg.py` turns it into the SVG above. Regenerate it and diff it — a
+screenshot is a thing somebody took once and nobody can check.
 
 ### What is 10 microseconds worth?
 
@@ -452,9 +449,28 @@ Found by testing the arena, fixed, and pinned by regression tests in
 - **Replay**: every session in the headline and null runs was executed twice and the
   session hashes compared. All identical.
 
-Regenerate the whole directory with `bash bench/run_arena_evidence.sh windows`. Unlike
-the engine's benchmarks these results do not depend on the machine, the power plan or the
-load: the same seed gives the same answer anywhere.
+Regenerate the whole directory with `bash bench/run_arena_evidence.sh windows`, or
+`BUILD=build-linux bash bench/run_arena_evidence.sh wsl2` for the Linux tree.
+`python bench/summarize_arena.py results/arena-windows` prints every table quoted above,
+so a number here that the script does not print has no evidence behind it.
+
+### The same answer on both platforms, to the last digit
+
+Unlike the engine's benchmarks, these results do not depend on the machine, the power
+plan or the load. `results/arena-wsl2/` is the whole suite run again under Linux, and
+**all eight sweeps come out identical** — every paired difference, every adverse and
+spread figure, every book-to-fundamental gap, and every session hash:
+
+| | Windows (UCRT) | Linux (glibc) |
+|---|---|---|
+| headline, seed 42, four points | `aebce54544c10ca5 35859f327b69af22 800430353d000562 9f777b5eb3508703` | identical |
+| 1 ms paired difference | −3075.1000 | −3075.1000 |
+
+That is what the no-floating-point rule buys. A session is integer arithmetic over a
+seeded RNG, so there is no libm, no `long double` spill and no ordering difference left
+to diverge; the arena's numbers are a property of the code rather than of the computer
+that ran it. The evidence directories differ only in `about.txt`, which records which
+compiler and which binary produced them.
 
 ## Build and run
 

@@ -28,11 +28,21 @@ set -euo pipefail
 
 label="${1:-local}"
 out="results/arena-${label}"
-sweep="build/release/sweep"
+
+# BUILD picks the output directory, the same knob the Makefile takes, so a Linux
+# run reads the Linux binaries out of build-linux/ instead of whatever is in
+# build/. This matters more than it looks: WSL can execute a Windows .exe on
+# /mnt/c through interop, so a script that just probed for build/release/sweep.exe
+# would happily run the *Windows* binary and write the results into
+# results/arena-wsl2/. Cross-platform evidence that is secretly one platform is
+# worse than no cross-platform evidence.
+BUILD="${BUILD:-build}"
+sweep="${BUILD}/release/sweep"
 [[ -x "${sweep}.exe" ]] && sweep="${sweep}.exe"
 
 if [[ ! -x "$sweep" ]]; then
-    echo "build the sweep runner first:  make arena" >&2
+    echo "build the sweep runner first:  make arena   (BUILD=... for another tree)" >&2
+    echo "looked for: $sweep" >&2
     exit 1
 fi
 
@@ -47,6 +57,8 @@ echo "writing $out"
     echo "commit:   $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
     echo "dirty:    $(git status --porcelain 2>/dev/null | wc -l) files"
     echo "compiler: $(${CXX:-g++} --version | head -1)"
+    echo "binary:   $sweep"
+    echo "uname:    $(uname -srm 2>/dev/null || echo unknown)"
     echo
     echo "Every number in this directory is simulated. Reaction delays are inputs"
     echo "chosen by the experimenter, not measurements. The engine's measured"
@@ -101,11 +113,18 @@ run learning --param=maker.impact_centiticks --values=15,30,60,120
 
 # A frame of the desktop from a fixed seed and a fixed instant, so the picture in
 # the documentation is reproducible rather than a screenshot somebody took once.
-arena="build/release/arena"
+arena="${BUILD}/release/arena"
 [[ -x "${arena}.exe" ]] && arena="${arena}.exe"
 if [[ -x "$arena" ]]; then
     echo "  still frame"
-    "$arena" --still=4000000 --seed=42 > "$out/still.ansi" 2>&1 || true
+    "$arena" --still=60000000 --seed=42 > "$out/still.ansi" 2>&1 || true
+    # The picture README.md shows, regenerated from the same seed and the same
+    # simulated instant rather than screenshotted, so a reader can diff it
+    # against the code instead of trusting it.
+    if command -v python3 > /dev/null 2>&1; then
+        python3 bench/frame_to_svg.py "$out/still.ansi" "$out/still.svg" \
+            "arena --still=60000000 --seed=42" > /dev/null 2>&1 || true
+    fi
     sed -e 's/\x1b\[[0-9;]*m//g' -e 's/\x1b\[H//' "$out/still.ansi" > "$out/still.txt" || true
 fi
 
