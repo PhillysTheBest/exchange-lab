@@ -1,0 +1,40 @@
+arena sweep — simulated, not measured. The engine's latency is in README.md.
+  sweeping informed.edge_ticks over 4 points, 24 shared seeds each, 200000 requests per session
+
+  0              done
+  1              done
+  2              done
+  4              done
+
+market health — every point must look like a market, or nothing below counts
+  informed.edge_ticks | |mid - fundamental|      | worst     | one-sided  | trades
+  ----------------------------------------------------------------------------------
+  0              |   8.62 ticks ( 1.45..63.19) |     61 tk |      0.7% |    33621
+  1              |  10.64 ticks ( 1.78..67.79) |     63 tk |      0.6% |    31283
+  2              |  10.16 ticks ( 2.16..63.05) |     63 tk |      0.6% |    29918
+  4              |   9.99 ticks ( 3.10..66.88) |     65 tk |      0.7% |    28678
+
+levels - medians across 24 seeds, range in brackets, currency units
+  informed.edge_ticks | maker value                      | adverse    | spread     | rival     | informed  | fills
+  ----------------------------------------------------------------------------------------------------------------
+  0              |   +3764.32 ( +1205.60.. +4845.45) |     -3.995 |  +2876.963 |  +3975.50 |   +921.75 |   11359
+  1              |   +3888.43 ( +1407.90.. +5072.15) |    -28.140 |  +2904.584 |  +4073.20 |  +1169.95 |   10870
+  2              |   +3720.25 ( +1442.70.. +4850.60) |     -3.704 |  +3037.374 |  +3974.12 |  +1276.50 |   10604
+  4              |   +3753.10 ( +1648.25.. +5019.25) |     +3.911 |  +3135.401 |  +3921.60 |  +1278.42 |   10343
+
+paired against informed.edge_ticks = 0, seed by seed - the statistic to read
+  informed.edge_ticks | maker value, paired                | adverse per fill, paired           | value separated?
+  ----------------------------------------------------------------------------------------------------------
+  0              |       +0.00 (     +0.00..     +0.00) |      +0.000 (    +0.000..    +0.000) | baseline
+  1              |      +55.05 (   -515.30..   +673.60) |      -1.340 (  -104.219..  +130.804) | no
+  2              |      +44.10 (  -1790.50..   +658.95) |      +8.443 (   -72.267..   +84.201) | no
+  4              |      +13.08 (  -1881.90..   +931.30) |      +2.891 (   -85.216..   +86.980) | no
+
+  informed.edge_ticks 0 -> 4
+    maker value, paired   +13.08   (range -1881.90..+931.30 over 24 seeds)
+    the paired range STRADDLES zero, so the difference is NOT established at this seed count.
+    share of flow         11359 fills -> 10343 fills, 40743 looks at the market -> 42344
+  Value moves for two reasons at once: a slower maker is picked off more per fill, and it also
+  gets fewer fills, because it cannot keep a quote standing. Separate them by reading
+  `adverse` — which is per fill, so flow-independent — beside the fill counts.
+  session hash at seed 42, per point: 9ebc20136f9eca34 35859f327b69af22 1aad237395d620bd f9a656f53d83c4eb

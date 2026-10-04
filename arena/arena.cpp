@@ -22,6 +22,7 @@
 //
 // --still runs a session headless to one simulated instant and prints a single
 // frame, which makes a screenshot reproducible from a seed.
+#include "arena/bots/script.hpp"
 #include "arena/session.hpp"
 #include "arena/term.hpp"
 #include "arena/ui.hpp"
@@ -53,6 +54,7 @@ struct ViewOptions {
     double sim_ns_per_second = 2'000'000; // 2 ms of market per real second
     SimTime maker_reaction_ns = -1;       // <0 = the registry's default
     std::string bots;                     // empty = the registry's default line-up
+    std::string script;                   // a file of orders to play, as a participant
 };
 
 std::string fmt_price(Price p) {
@@ -328,6 +330,8 @@ int main(int argc, char** argv) {
                         "  --maker-reaction=NS  the swept maker's reaction delay\n"
                         "  --bots=SPEC          compose the line-up by name, e.g.\n"
                         "                       maker,rival,informed,noise:2,momentum\n"
+                        "  --script=PATH        play a file of orders as a participant, in\n"
+                        "                       simulated time; see tools/arena_script_demo.txt\n"
                         "  --still=NS           render one frame at that simulated instant and exit\n\n"
                         "keys: space pause, + - speed, 1-9 focus, q quit\n\n"
                         "The viewer only reads the session. Pausing, speeding up and focusing cannot\n"
@@ -342,6 +346,10 @@ int main(int argc, char** argv) {
         };
         if (a.starts_with("--bots=")) {
             opt.bots = std::string(a.substr(7));
+            continue;
+        }
+        if (a.starts_with("--script=")) {
+            opt.script = std::string(a.substr(9));
             continue;
         }
         long long v = 0;
@@ -367,16 +375,34 @@ int main(int argc, char** argv) {
     RosterConfig rc;
     if (opt.maker_reaction_ns >= 0) rc.maker_reaction_ns = opt.maker_reaction_ns;
 
+    // The script's orders must outlive the session that plays them.
+    std::vector<bots::ScriptedOrder> script_orders;
+
     Session sess;
     Session::StartError bad = Session::StartError::None;
-    if (opt.bots.empty()) {
+    if (opt.bots.empty() && opt.script.empty()) {
         bad = sess.start(sc, rc);
     } else {
         Roster roster;
         std::string why;
-        if (!roster_from_spec(opt.bots, rc, roster, why)) {
+        // A spec if one was given, otherwise the default line-up, so --script
+        // alone puts you into the usual market rather than an empty one.
+        const bool built = opt.bots.empty() ? (roster = build_roster(rc), true)
+                                            : roster_from_spec(opt.bots, rc, roster, why);
+        if (!built) {
             std::fprintf(stderr, "--bots=%s: %s\n", opt.bots.c_str(), why.c_str());
             return 2;
+        }
+        if (!opt.script.empty()) {
+            if (!bots::load_script(opt.script.c_str(), sc.tick, script_orders, why)) {
+                std::fprintf(stderr, "%s\n", why.c_str());
+                return 2;
+            }
+            bots::Scripted you;
+            you.orders = &script_orders;
+            roster.bots.push_back(make_bot(you));
+            roster.informed.push_back(false);
+            std::fprintf(stderr, "playing %zu orders from %s\n", script_orders.size(), opt.script.c_str());
         }
         bad = sess.start(sc, std::move(roster));
     }

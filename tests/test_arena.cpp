@@ -26,6 +26,7 @@
 // its own delay, and an informed participant that has been switched off takes
 // nothing.
 #include "arena/book_mirror.hpp"
+#include "arena/bots/script.hpp"
 #include "arena/session.hpp"
 #include "arena/ui.hpp"
 #include "px/matching_engine.hpp"
@@ -730,6 +731,108 @@ void test_roster_from_spec() {
     PX_CHECK(over.start(small_session(), std::move(huge)) == Session::StartError::TooManyParticipants);
 }
 
+// The scripted participant: the replayable answer to trading by hand. Live
+// keystrokes cannot go into a session without reading a wall clock, which would
+// break replay; a file stamped in simulated time has none of that problem, and
+// these checks are what make that claim hold.
+void test_scripted_participant() {
+    std::string why;
+    std::vector<bots::ScriptedOrder> orders;
+    const Price tick = 100;
+
+    // The format, including comments, blank lines, units and the tick grid.
+    const char* good = "# a comment\n"
+                       "\n"
+                       "0      buy  50  99.95\n"
+                       "250us  sell 50 100.05\n"
+                       "2ms    buy  25  market   # pay the spread\n"
+                       "3ms    cancel 1\n"
+                       "4000000 sell 10 100.08\n";
+    PX_CHECK(parse_script(good, tick, orders, why));
+    std::printf("  script: %zu orders parsed\n", orders.size());
+    PX_CHECK(orders.size() == 5);
+    PX_CHECK(orders[0].at == 0);
+    PX_CHECK(orders[1].at == 250'000);   // us
+    PX_CHECK(orders[2].at == 2'000'000); // ms
+    PX_CHECK(orders[3].at == 3'000'000);
+    PX_CHECK(orders[4].at == 4'000'000); // bare ns
+    PX_CHECK(orders[0].action.kind == Action::Kind::Limit);
+    PX_CHECK(orders[0].action.side == Side::Buy);
+    PX_CHECK(orders[0].action.price == 99 * kPriceScale + 9500);
+    PX_CHECK(orders[0].action.qty == 50);
+    PX_CHECK(orders[2].action.kind == Action::Kind::Market);
+    PX_CHECK(orders[2].action.tif == Tif::IOC);
+    PX_CHECK(orders[3].action.kind == Action::Kind::Cancel);
+
+    // Every way of writing it wrong is a refusal naming the line, not a silently
+    // different session.
+    const char* bad[] = {
+        "0 buy 50 99.955\n",       // off the tick grid
+        "0 buy 50 99.000005\n",    // too many decimals
+        "0 buy 50 banana\n",       // not a price
+        "0 buy 0 99.95\n",         // zero quantity
+        "0 buy x 99.95\n",         // not a quantity
+        "0 hop 50 99.95\n",        // not a verb
+        "0 buy 50\n",              // no price
+        "later buy 50 99.95\n",    // not a timestamp
+        "0 cancel 0\n",            // order numbers start at 1
+        "0 cancel x\n",            // not an order number
+        "5ms buy 1 99.95\n1ms buy 1 99.95\n", // time runs backwards
+        "0 buy 50 0.00\n",         // non-positive price
+    };
+    std::size_t refused = 0;
+    for (const char* b : bad) {
+        std::vector<bots::ScriptedOrder> junk;
+        if (!parse_script(b, tick, junk, why)) {
+            ++refused;
+        } else {
+            std::printf("  accepted what it should not: %s", b);
+        }
+    }
+    PX_CHECK(refused == sizeof bad / sizeof bad[0]);
+    // A file of nothing but comments parses to nothing, which the loader treats
+    // as an error but the parser does not: parsing and meaning are separate.
+    std::vector<bots::ScriptedOrder> empty;
+    PX_CHECK(parse_script("# nothing here\n\n", tick, empty, why));
+    PX_CHECK(empty.empty());
+
+    // And it really trades, in a real market, without breaking anything.
+    Roster r = build_roster(RosterConfig{});
+    bots::Scripted you;
+    you.orders = &orders;
+    r.bots.push_back(make_bot(you));
+    r.informed.push_back(false);
+    const std::size_t which = r.bots.size() - 1;
+
+    SessionConfig sc = small_session();
+    sc.max_requests = 60'000;
+    Session s;
+    PX_CHECK(s.start(sc, std::move(r)) == Session::StartError::None);
+    s.run();
+    const Account& a = s.ledger().at(which);
+    std::printf("  scripted participant: %llu orders sent, %llu fills\n",
+                static_cast<unsigned long long>(a.orders_sent), static_cast<unsigned long long>(a.fills));
+    PX_CHECK(std::string(s.name_of(which)) == "you");
+    // Four of the five are new orders; the cancel may or may not find a live
+    // order to cancel, so the floor is what matters.
+    PX_CHECK(a.orders_sent >= 4);
+    PX_CHECK(a.fills > 0);
+    PX_CHECK(s.ledger().value_sum(s.fair_value().value()) == 0);
+
+    // Same script, same seed, same session: scripted trading is replayable,
+    // which is the entire reason it is a file and not a keyboard.
+    std::vector<bots::ScriptedOrder> again = orders;
+    Roster r2 = build_roster(RosterConfig{});
+    bots::Scripted you2;
+    you2.orders = &again;
+    r2.bots.push_back(make_bot(you2));
+    r2.informed.push_back(false);
+    Session s2;
+    PX_CHECK(s2.start(sc, std::move(r2)) == Session::StartError::None);
+    s2.run();
+    PX_CHECK(s2.hash() == s.hash());
+}
+
 } // namespace
 
 int main() {
@@ -743,6 +846,7 @@ int main() {
     test_param_names_are_real();
     test_third_party_bot();
     test_roster_from_spec();
+    test_scripted_participant();
     test_session_refuses_bad_configs();
     test_quiet_session_terminates();
     test_ui_grid();

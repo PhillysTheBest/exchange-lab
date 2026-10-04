@@ -474,6 +474,44 @@ struct MyBot {
 cancel-replacing both sides needs four and an API that forced it to spend four
 reaction windows doing so would be measuring itself.
 
+### Trading by hand
+
+Live keystrokes cannot go into a session: knowing *when* a key arrived means
+reading a wall clock, and a wall clock inside a session breaks the replay
+contract everything else here rests on. A file of orders stamped in **simulated**
+time has none of that problem, so that is what `--script=` plays, as an ordinary
+participant called `you`:
+
+```bash
+build/release/arena --script=tools/arena_script_demo.txt
+```
+
+```
+2ms    buy   50   99.95      # join the bid
+3ms    sell  50  100.05      # and the offer: now you are a two-sided quoter
+8ms    buy   25   market     # pay the spread to get long
+12ms   cancel 1              # pull your first still-live order
+```
+
+One order per line: `<at> buy|sell <qty> <price>`, `<at> buy|sell <qty> market`,
+or `<at> cancel <n>` for your own n-th live order. Times take `us` and `ms`;
+prices are currency units on the tick grid. Comments and blank lines are ignored,
+timestamps may not go backwards, and every malformed line is a refusal naming the
+line number rather than a silently different session.
+
+It is a participant like any other, which means its reaction delay applies: an
+order stamped at `t` is submitted when the bot wakes, and what it saw was the
+market as of `t - reaction_ns`. Writing a time down does not buy clairvoyance.
+One limitation worth knowing: the bot contract offers a periodic timer and not a
+"wake me at exactly T", so a scripted time is honoured at the first wake at or
+after it — 10 µs granularity by default, finer than anyone writes a script by
+hand.
+
+The point of the file over a keyboard is that the result is *reproducible*:
+`test_arena` plays the same script twice and checks the session hashes match, so
+a session you played by hand can be replayed by anyone who has the file. A
+recording of somebody playing could never offer that.
+
 ### Choosing who is in the market
 
 Once a strategy is registered, `--bots=` composes a line-up by name without
@@ -554,7 +592,8 @@ taste; evidence is owed where claims are made, and the renderer makes none.
 - More than one instrument on screen. The session supports one, deliberately: one
   legible ladder beats four grids of numbers, and the engine's multi-instrument
   support is already demonstrated by the benchmarks.
-- Live keyboard trading, for the determinism reason above. A scripted order file
-  on the simulated clock would be the replayable way to do it.
+- **Live** keyboard trading, for the determinism reason above. A scripted order
+  file is the replayable way to do it and that exists — see "Trading by hand"
+  below.
 - Any form of fee model beyond a flat per-unit fee, which defaults to zero and is
   reported when set.
