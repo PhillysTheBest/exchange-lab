@@ -80,6 +80,12 @@ struct RosterConfig {
     SimTime rival_reaction_ns = 1'000;
     std::int64_t rival_half_spread_ticks = 2;
     std::int64_t rival_quote_qty = 50;
+    // -1 means "whatever the swept maker uses", which is the default and keeps
+    // the two in step. Setting it separately is what makes a positive control
+    // possible: freeze the swept maker's learning while the rival keeps anchoring
+    // the book to the fundamental, so a stale quote can be picked off in a market
+    // that is still correctly priced.
+    std::int64_t rival_impact_centiticks = -1;
 
     // The informed trader: turn it off for the null run.
     bool informed_enabled = true;
@@ -146,7 +152,8 @@ struct Roster {
         rival.quote_qty = static_cast<Qty>(cfg.rival_quote_qty);
         rival.max_position = cfg.maker_max_position;
         rival.skew_ticks_at_limit = cfg.maker_skew_ticks_at_limit;
-        rival.impact_centiticks = cfg.maker_impact_centiticks;
+        rival.impact_centiticks = cfg.rival_impact_centiticks < 0 ? cfg.maker_impact_centiticks
+                                                                 : cfg.rival_impact_centiticks;
         r.rival_index = static_cast<int>(r.bots.size());
         r.bots.push_back(make_bot(rival));
         r.informed.push_back(false);
@@ -208,6 +215,7 @@ struct Roster {
     else if (key == "rival.reaction_ns") c.rival_reaction_ns = value;
     else if (key == "rival.half_spread_ticks") c.rival_half_spread_ticks = value;
     else if (key == "rival.quote_qty") c.rival_quote_qty = value;
+    else if (key == "rival.impact_centiticks") c.rival_impact_centiticks = value;
     else if (key == "informed.enabled") c.informed_enabled = value != 0;
     else if (key == "informed.reaction_ns") c.informed_reaction_ns = value;
     else if (key == "informed.edge_ticks") c.informed_edge_ticks = value;
@@ -235,8 +243,9 @@ struct Roster {
 inline constexpr const char* kRosterParamNames =
     "maker.reaction_ns maker.half_spread_ticks maker.quote_qty maker.max_position\n"
     "  maker.skew_ticks_at_limit maker.impact_centiticks rival.enabled rival.reaction_ns\n"
-    "  rival.half_spread_ticks rival.quote_qty informed.enabled informed.reaction_ns\n"
-    "  informed.edge_ticks informed.qty informed.max_position noise.count\n"
+    "  rival.half_spread_ticks rival.quote_qty rival.impact_centiticks informed.enabled\n"
+    "  informed.reaction_ns informed.edge_ticks informed.qty informed.max_position\n"
+    "  noise.count\n"
     "  noise.reaction_ns noise.timer_ns noise.qty noise.pct_market momentum.enabled\n"
     "  momentum.reaction_ns momentum.qty fader.enabled fader.reaction_ns fader.qty\n"
     "  fader.trigger_ticks";

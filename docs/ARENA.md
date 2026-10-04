@@ -234,6 +234,66 @@ paired standard error. At about six standard errors from zero, 100 µs *is* sepa
 tests are reported rather than whichever one flatters the result, and the distinction
 between "underpowered" and "nothing there" is now printed rather than implied.
 
+### The positive control, and the limitation it found
+
+A null run shows an effect disappears when its supposed cause is removed. It does
+not show the measure can see the effect at all — a column that is always zero
+passes a null run perfectly. So the second control goes the other way: it creates
+adverse selection **by construction** and asks whether the columns respond.
+
+A maker with `impact_centiticks=0` and `skew_ticks_at_limit=0` never moves its
+quotes at all: it learns nothing from the tape and leans nothing against
+inventory, so its prices sit where they started while the fundamental walks away.
+That is a stale quoter in the purest available form. The rival keeps learning, so
+the book stays anchored to the fundamental; freezing both makers instead simply
+misprices the market, and the health line catches it (the mean `|mid − V|` goes
+from 1.8 to 13.8 ticks).
+
+**The control does not work, and why it cannot is the finding.** Three designs
+were tried and all three fail the health line, which is the instrument's own
+admissibility test:
+
+| Design | Mean \|mid − V\| | Admissible? |
+|---|---|---|
+| Freeze both makers | 13.8 ticks | no — nothing prices the book |
+| Freeze the swept maker only | 25.0 ticks | no |
+| Freeze it and shrink it to a 5-lot | 14.8 ticks | no, and 4.7% one-sided |
+
+A market maker in this session is not a probe that can be inserted without
+perturbing what it measures: jointly with the rival, it *is* the price-discovery
+mechanism. Make it stale enough to be reliably picked off and the book it is
+being measured against stops tracking the fundamental, so the measure loses its
+reference. Shrinking it does not help — a 5-lot stale order still sets the touch,
+so the mid is then quoted by the very order under test.
+
+The consequence is worth stating plainly: **the post-fill column's sensitivity is
+not established.** No run in `results/` demonstrates that it can read a large
+value when a large value exists. The reading that it is near zero in the headline
+therefore rests on the argument below rather than on a calibration, and a reader
+should weigh it accordingly.
+
+The argument it rests on is analytic rather than empirical, and it is a strong
+one. The fundamental is a
+martingale, so E[V(t+H) - V(t)] = 0 *unconditionally* - for every participant,
+whatever it traded and whenever it traded. A post-fill markout can only be
+non-zero in expectation for a participant that **predicts** the fundamental, and
+no participant here does: the informed trader reacts to V's current value, it
+does not forecast the next move. So the post-fill column is close to zero by
+construction in this model, and it was never going to carry the result.
+
+Which makes the decomposition's naming the thing to be careful about. What the
+code calls `spread` contains what most readers would call adverse selection: a
+stale quote's loss is exactly "filled at a price the fundamental has already left
+behind". What the code calls `adverse` is the narrower post-fill drift. Both are
+defined precisely in `arena/accounting.hpp` and both are printed, so the
+arithmetic is checkable - but the labels alone would mislead, and the headline's
+"$7 of a $3,185 swing" is better read as *the post-fill channel is empty here, as
+the model requires*, rather than *nothing adverse happened*.
+
+`results/arena-windows/stale.*` holds the attempt, published because a control
+that failed is still evidence about the instrument.
+
+
 ### What this instrument cannot show
 
 The null is partly structural, and saying so is the difference between "my experiment
