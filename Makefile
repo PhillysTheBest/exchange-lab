@@ -57,10 +57,13 @@ BENCHES := bench_engine bench_ring bench_matching_latency
 TEST_BINS  := $(TESTS:%=$(DBG)/%$(EXE))
 BENCH_BINS := $(BENCHES:%=$(REL)/%$(EXE))
 REPL_BIN   := $(REL)/repl$(EXE)
+# The arena's headless experiment runner. Another consumer of the same
+# MatchingEngine the benchmarks measure, so it cannot affect a latency number.
+ARENA_BINS := $(REL)/sweep$(EXE)
 
-.PHONY: all test bench latency repl clean
+.PHONY: all test bench latency repl arena sweep clean
 
-all: test $(BENCH_BINS) $(REPL_BIN)
+all: test $(BENCH_BINS) $(REPL_BIN) $(ARENA_BINS)
 
 test: $(TEST_BINS)
 	@set -e; for t in $(TEST_BINS); do echo "== $$t"; ./$$t; done
@@ -72,6 +75,11 @@ latency: $(REL)/bench_matching_latency$(EXE)
 	./$<
 
 repl: $(REPL_BIN)
+
+arena: $(ARENA_BINS)
+
+sweep: $(REL)/sweep$(EXE)
+	./$<
 
 $(DBG)/%.o: %.cpp
 	@mkdir -p $(dir $@)
@@ -88,6 +96,9 @@ $(BENCH_BINS): $(REL)/%$(EXE): $(REL)/bench/%.o $(LIB_REL)
 	$(CXX) $(RELEASE_FLAGS) $^ -o $@ $(LDLIBS)
 
 $(REPL_BIN): $(REL)/tools/repl.o $(LIB_REL)
+	$(CXX) $(RELEASE_FLAGS) $^ -o $@ $(LDLIBS)
+
+$(ARENA_BINS): $(REL)/%$(EXE): $(REL)/arena/%.o $(LIB_REL)
 	$(CXX) $(RELEASE_FLAGS) $^ -o $@ $(LDLIBS)
 
 clean:
