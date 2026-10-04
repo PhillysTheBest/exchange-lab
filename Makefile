@@ -57,9 +57,10 @@ BENCHES := bench_engine bench_ring bench_matching_latency
 TEST_BINS  := $(TESTS:%=$(DBG)/%$(EXE))
 BENCH_BINS := $(BENCHES:%=$(REL)/%$(EXE))
 REPL_BIN   := $(REL)/repl$(EXE)
-# The arena's headless experiment runner. Another consumer of the same
-# MatchingEngine the benchmarks measure, so it cannot affect a latency number.
-ARENA_BINS := $(REL)/sweep$(EXE)
+# The arena: the headless experiment runner and the terminal viewer. Both are
+# consumers of the same MatchingEngine the benchmarks measure, so neither can
+# affect a latency number.
+ARENA_BINS := $(REL)/sweep$(EXE) $(REL)/arena$(EXE)
 
 .PHONY: all test bench latency repl arena sweep clean
 
