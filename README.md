@@ -472,6 +472,8 @@ mingw32-make arena      # the arena: the sweep runner and the viewer
 build/release/arena                    # watch a market happen
 build/release/sweep --seeds=24 --replay-check   # the reaction-delay sweep
 build/release/sweep --null             # the control: nobody informed
+build/release/sweep --bots=maker,rival,informed,noise:3   # compose the line-up
+build/release/arena --bots=maker,informed,noise:2         # and watch it
 ```
 
 A minimal REPL session:

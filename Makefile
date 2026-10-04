@@ -88,8 +88,16 @@ test-cli: $(REL)/sweep$(EXE)
 	    || fail "a session with no bound should be refused"; \
 	! ./$< --values=1000 --seeds=1 --requests=500 --set=noise.count=100 --quiet > /dev/null 2>&1 \
 	    || fail "a roster past the participant ceiling should be refused"; \
+	! ./$< --values=1000 --seeds=1 --requests=500 --bots=maker,nonsense --quiet > /dev/null 2>&1 \
+	    || fail "an unknown participant name should fail"; \
+	! ./$< --values=1000 --seeds=1 --requests=500 --bots=maker,noise:x --quiet > /dev/null 2>&1 \
+	    || fail "a non-numeric participant count should fail"; \
+	! ./$< --values=1000 --seeds=1 --requests=500 --bots=noise:2 --quiet > /dev/null 2>&1 \
+	    || fail "a line-up with no maker should fail"; \
+	./$< --values=1000 --seeds=1 --requests=2000 --bots=maker,rival,informed,noise:2 --quiet > /dev/null \
+	    || fail "a named line-up should succeed"; \
 	./$< --values=1000 --seeds=1 --requests=2000 --quiet > /dev/null || fail "a normal sweep should succeed"; \
-	echo "7/7 command-line checks passed"
+	echo "11/11 command-line checks passed"
 
 bench: $(BENCH_BINS)
 	@set -e; for b in $(BENCH_BINS); do echo "== $$b"; ./$$b; done
