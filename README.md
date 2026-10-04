@@ -295,19 +295,31 @@ sees no more than a real participant would.
 
 ### What is 10 microseconds worth?
 
-**In this market: nothing measurable.** Over 24 seeds of 200,000 requests each, with
-every point run on the same seeds so the difference can be taken seed by seed:
+**In this market, 10 µs costs less than 24 seeds can resolve; 100 µs and 1 ms both cost
+real money.** Over 24 seeds of 200,000 requests each, with every point run on the same
+seeds so the difference can be taken seed by seed:
 
-| Maker's reaction delay | Value vs the 1 µs maker (median, range over 24 seeds) | Separated from zero? |
-|---|---|---|
-| 10 µs | +73.55 (−749.35 … +331.65) | no |
-| 100 µs | −461.55 (−1868.10 … +72.95) | no |
-| 1 ms | **−3075.10** (−4217.20 … −2342.25) | **yes** |
+| Maker's reaction delay | Paired difference vs the 1 µs maker | Standard error | Smallest effect 24 seeds could resolve | Separated? |
+|---|---|---|---|---|
+| 10 µs | −39.96 | ±56.19 | ±157 | **no — underpowered** |
+| 100 µs | −601.83 | ±93.05 | ±261 | yes |
+| 1 ms | **−3117.13** | ±74.71 | ±209 | yes |
 
-Paired differences are reported because the level is unreadable: a maker's value is
+All figures are currency units of marked value over one 200,000-request session, and
+`bench/summarize_arena.py` prints this table from the committed CSVs.
+
+Paired differences are reported because the levels are unreadable: a maker's value is
 dominated by what its leftover inventory happened to be worth, and the spread of levels
-across seeds swamps the effect. The seed fixes the path of the fundamental, so the
-same-seed difference cancels most of it.
+across seeds swamps the effect. Every point runs on the same seeds and the seed fixes the
+path of the fundamental, so the same-seed difference cancels most of that noise.
+
+**The standard error matters, and reporting it changed one of these answers.** At 10 µs
+the effect is smaller than what 24 seeds can resolve, so the honest statement is *not
+established* — "underpowered" and "nothing there" are different claims and only one of
+them is earned here. At 100 µs the effect is about six standard errors from zero, so it
+*is* separated, even though the full min-to-max range across seeds still straddles zero.
+A range test over 24 draws is far more conservative than a paired standard error; this
+table reports both so a reader can see which test they are being shown.
 
 ### And the control says it is not adverse selection
 
@@ -339,6 +351,44 @@ established at all. Making the informed trader maximally aggressive
 
 That is the honest answer, and it is the one the evidence supports rather than the one
 the design was hoping for.
+
+### What this instrument cannot show
+
+The null result is partly a property of the model, not only of the market, and the limits
+are worth stating before someone mistakes them for findings. There is **one** informed
+trader with a one-tick threshold; the fundamental moves on a single timescale; there is no
+second venue, no quote fade, no cancel-replace race, and no queue position worth winning
+because the book is thin enough that priority rarely binds. Those are exactly the
+mechanisms through which ten microseconds pays for itself in a real market. So a reader
+should take "10 µs is not resolvable here" as a statement about this instrument at this
+seed count, not about trading.
+
+What the arena does establish is narrower and checkable: that the *uptime* cost of being
+slow dominates the *selection* cost by roughly three orders of magnitude in a market with
+one informed participant — and that an experiment can be built where the control is
+capable of overturning the headline, which this one did.
+
+### Known limits
+
+Found by testing the arena, fixed, and pinned by regression tests in
+[test_arena.cpp](tests/test_arena.cpp):
+
+- **At most 64 participants per session.** A session marks which bots an event concerned
+  in a fixed array. Past that bound the marks were silently dropped, so those bots never
+  got an own-event wake — with 104 identical noise traders, the first 64 took 151.9 fills
+  each and the rest took 55.9: wrong numbers that looked entirely plausible. Rosters above
+  the ceiling are now refused at construction. The ceiling is a hard limit rather than a
+  resizable buffer on purpose: changing how wakes are marked would change wake *ordering*,
+  which moves every session hash and would invalidate the committed evidence.
+- **A session that goes quiet now ends and says so.** A roster with nothing but a market
+  maker used to hang: once its quotes are where it wants them it submits nothing further,
+  so the request count stalls while the fundamental keeps rescheduling itself. A session
+  now ends after `stall_limit_ns` of *simulated* time with no request — simulated, so it
+  triggers identically on every machine and every replay — and reports `stalled`, which
+  the sweep surfaces as a warning rather than averaging the run in silently.
+- **The renderer makes no measured claim.** `ui.hpp` is covered for its invariants (one
+  cell per code point, clipping at every edge, a deterministic composed frame pinned by
+  hash) rather than for how it looks, which is a matter of taste and not of evidence.
 
 ### What else is in `results/arena-windows/`
 

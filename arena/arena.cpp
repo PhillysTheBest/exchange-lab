@@ -361,7 +361,11 @@ int main(int argc, char** argv) {
     if (opt.maker_reaction_ns >= 0) rc.maker_reaction_ns = opt.maker_reaction_ns;
 
     Session sess;
-    sess.start(sc, rc);
+    const Session::StartError bad = sess.start(sc, rc);
+    if (bad != Session::StartError::None) {
+        std::fprintf(stderr, "cannot run this configuration: %s\n", Session::explain(bad));
+        return 2;
+    }
 
     // --still: no terminal setup, no input, no pacing. One frame from a seed,
     // which is what makes a screenshot in the documentation reproducible.

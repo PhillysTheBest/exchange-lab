@@ -67,6 +67,12 @@ struct SessionConfig {
     SimTime fair_step_mean_ns = 100'000;    // mean time between fundamental jumps
     std::int64_t fair_band_ticks = 2'000;
 
+    // How much simulated time may pass with no request reaching the engine
+    // before the session is declared over. A backstop, not a knob: a session
+    // with flow sees a request every few microseconds. 0 disables it, which
+    // Session::check() then refuses unless max_time_ns bounds the session.
+    SimTime stall_limit_ns = 100'000'000; // 100 ms of simulated time
+
     SimTime markout_horizon_ns = 1'000'000; // 1 ms; see arena/accounting.hpp
     std::int64_t fee_per_qty = 0;
 
@@ -95,6 +101,10 @@ struct SessionStats {
     std::uint64_t sink_growths = 0;   // times the event buffer had to grow
     std::uint64_t fair_steps = 0;
     std::uint64_t wall_hits = 0; // times the fundamental hit its reflecting wall
+    // True when the session ended because no request arrived for
+    // stall_limit_ns of simulated time, rather than because it finished. Its
+    // numbers are not comparable with a session that ran to completion.
+    bool stalled = false;
     SimTime elapsed_ns = 0;
 
     // Does the book track the fundamental? Sampled at every fundamental jump:
@@ -117,25 +127,105 @@ class Session {
 public:
     static constexpr std::size_t kMaxMyOrders = 32;
     static constexpr std::size_t kEventBufferReserve = 4096;
+    // The most participants one session can hold. Part of the contract rather
+    // than an implementation detail: see check() for why it is a hard ceiling
+    // and not a resizable buffer.
+    static constexpr std::size_t kMaxParticipants = 64;
 
     Session() { buf_.reserve(kEventBufferReserve); }
 
     Session(const Session&) = delete;
     Session& operator=(const Session&) = delete;
 
+    // Why a session can be refused, rather than silently misbehaving. Both of
+    // these were found by testing the arena rather than reasoning about it, and
+    // both are rejected at construction on purpose: see the note on each.
+    enum class StartError : std::uint8_t {
+        None = 0,
+        TooManyParticipants, // roster larger than kMaxParticipants
+        NoStallBound,        // nothing would ever stop a session that goes quiet
+    };
+
+    [[nodiscard]] static const char* explain(StartError e) noexcept {
+        switch (e) {
+            case StartError::None:
+                return "ok";
+            case StartError::TooManyParticipants:
+                static_assert(kMaxParticipants == 64, "update this message with the limit");
+                return "too many participants: the session supports at most 64";
+            case StartError::NoStallBound:
+                return "session.max_time_ns and session.stall_limit_ns are both 0, so a session "
+                       "that goes quiet would never end: set one of them";
+        }
+        return "?";
+    }
+
+    // Checks a roster and config without building anything, so a caller can
+    // refuse before it starts rather than hang or mis-trade.
+    //
+    // TOO MANY PARTICIPANTS. deliver_order() marks which bots an event concerned
+    // in a fixed `bool own[kMaxParticipants]` array. Past that bound the marks
+    // were silently dropped, so those bots never got an own-event wake: measured
+    // with 104 identical noise traders, participants 0-63 took 151.9 fills each
+    // and the rest took 55.9. Rejecting is deliberately chosen over widening the
+    // array into a dynamic bitset, because the bound is not the real cost —
+    // changing how wakes are marked would change wake *ordering* for large
+    // rosters, which moves every session hash and invalidates the committed
+    // 24-seed evidence. Refusing at the boundary is provably no behavioural
+    // change at or below 64. Raising the ceiling is a separate change with its
+    // own re-measurement.
+    //
+    // A SESSION THAT GOES QUIET. A session ends on max_requests or max_time_ns.
+    // If the roster stops submitting orders, max_requests is unreachable, and
+    // the fundamental-value step always reschedules itself, so the scheduler
+    // never empties and run() never returns. Confirmed by testing: a roster of
+    // nothing but the market maker hangs, because once its quotes are where it
+    // wants them it has nothing left to do.
+    //
+    // A static check cannot catch this, and the first attempt at one was wrong.
+    // Whether a participant ever submits an order is a property of its code, not
+    // of its configuration — the lone maker in that hang *has* a heartbeat
+    // timer, it simply returns an empty batch every time it fires. So the bound
+    // is `stall_limit_ns`: if that much *simulated* time passes with no request
+    // reaching the engine, the session is over and says so in `stats().stalled`.
+    //
+    // That is a quiescence detector, and it is deterministic, which is the only
+    // reason it is allowed here. It compares two simulated timestamps, so it
+    // triggers at exactly the same point on every machine and every replay; a
+    // wall-clock timeout would not, and would have broken the replay contract.
+    // A session that does generate flow never approaches it: requests arrive
+    // every few microseconds against a default limit of 100 ms.
+    [[nodiscard]] static StartError check(const SessionConfig& scfg, const Roster& roster) {
+        if (roster.size() > kMaxParticipants) return StartError::TooManyParticipants;
+        if (scfg.max_time_ns <= 0 && scfg.stall_limit_ns <= 0) return StartError::NoStallBound;
+        return StartError::None;
+    }
+
     // The usual way in: build the registry's roster from its config.
-    void start(const SessionConfig& scfg, const RosterConfig& rcfg) {
+    StartError start(const SessionConfig& scfg, const RosterConfig& rcfg) {
         RosterConfig r = rcfg;
         r.anchor = scfg.start_price;
         r.tick = scfg.tick;
-        start(scfg, build_roster(r));
+        return start(scfg, build_roster(r));
     }
 
     // The same session with a roster assembled by the caller. This is how
     // test_arena puts a probe participant in the market, and it is the proof
     // that the bot contract is genuinely open: nothing in here knows which
     // strategies it is running.
-    void start(const SessionConfig& scfg, Roster roster) {
+    //
+    // Returns the reason it refused, or StartError::None. A refused session is
+    // left done() and empty, so a caller that ignores the result gets an
+    // immediately-finished session rather than a hang or wrong numbers.
+    StartError start(const SessionConfig& scfg, Roster roster) {
+        const StartError bad = check(scfg, roster);
+        if (bad != StartError::None) {
+            parts_.clear();
+            roster_ = Roster{};
+            stats_ = SessionStats{};
+            done_ = true;
+            return bad;
+        }
         cfg_ = scfg;
 
         EngineConfig ec;
@@ -182,6 +272,7 @@ public:
         time_hash_ = 0xcbf29ce484222325ULL;
         stats_ = SessionStats{};
         next_order_id_ = 1;
+        last_request_at_ = 0;
         done_ = false;
 
         // The first fundamental jump, each bot's heartbeat, and one opening look
@@ -198,6 +289,7 @@ public:
             p.pending_event = p.reaction;
             sched_.push(p.pending_event, WakeKind::BotEvent, who);
         }
+        return StartError::None;
     }
 
     // Advances the session by one scheduled item. Returns false once the session
@@ -209,6 +301,13 @@ public:
             return false;
         }
         if (cfg_.max_time_ns > 0 && sched_.next_time() > cfg_.max_time_ns) {
+            done_ = true;
+            return false;
+        }
+        // Quiet for long enough that nothing more is going to happen. Compared
+        // in simulated time, so it fires at the same instant on every replay.
+        if (cfg_.stall_limit_ns > 0 && sched_.next_time() - last_request_at_ > cfg_.stall_limit_ns) {
+            stats_.stalled = true;
             done_ = true;
             return false;
         }
@@ -288,6 +387,7 @@ public:
         else if (key == "session.max_requests") c.max_requests = static_cast<std::size_t>(value);
         else if (key == "session.max_time_ns") c.max_time_ns = value;
         else if (key == "session.markout_horizon_ns") c.markout_horizon_ns = value;
+        else if (key == "session.stall_limit_ns") c.stall_limit_ns = value;
         else if (key == "session.fee_per_qty") c.fee_per_qty = value;
         else if (key == "fair.step_mean_ns") c.fair_step_mean_ns = value;
         else if (key == "fair.band_ticks") c.fair_band_ticks = value;
@@ -296,8 +396,8 @@ public:
     }
 
     static constexpr const char* kSessionParamNames =
-        "session.seed session.max_requests session.max_time_ns session.markout_horizon_ns\n"
-        "  session.fee_per_qty fair.step_mean_ns fair.band_ticks";
+        "session.seed session.max_requests session.max_time_ns session.stall_limit_ns\n"
+        "  session.markout_horizon_ns session.fee_per_qty fair.step_mean_ns fair.band_ticks";
 
 private:
     struct Delivery {
@@ -467,6 +567,7 @@ private:
         buf_.clear();
         engine_->process(req, EventSink(this, &sink_fn));
         ++stats_.requests;
+        last_request_at_ = now;
 
         bool own[kMaxParticipants] = {};
         for (const ExecEvent& e : buf_) {
@@ -565,8 +666,6 @@ private:
                                   static_cast<std::uint16_t>(maker)});
     }
 
-    static constexpr std::size_t kMaxParticipants = 64;
-
     SessionConfig cfg_{};
     std::unique_ptr<MatchingEngine> engine_;
     InstrumentId instr_ = 0;
@@ -583,6 +682,7 @@ private:
     std::uint64_t time_hash_ = 0xcbf29ce484222325ULL;
     SessionStats stats_{};
     OrderId next_order_id_ = 1;
+    SimTime last_request_at_ = 0;
     bool done_ = false;
 };
 

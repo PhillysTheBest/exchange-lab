@@ -216,6 +216,35 @@ earns 8.8× less spread — and adverse selection accounts for about $7 of a $3,
 swing, in the *helpful* direction, with a paired range that straddles zero at
 every point. Making the informed trader maximally aggressive does not change it.
 
+### Power, and one claim this corrected
+
+A negative result needs a standard error or it is not a result. `summarize_arena.py`
+prints the paired standard error and the smallest effect a given seed count could
+resolve, and adding it changed one answer:
+
+| Maker's delay | Paired mean | Std error | Resolvable at 24 seeds | Verdict |
+|---|---|---|---|---|
+| 10 µs | −39.96 | ±56.19 | ±157 | underpowered, not null |
+| 100 µs | −601.83 | ±93.05 | ±261 | separated |
+| 1 ms | −3117.13 | ±74.71 | ±209 | separated |
+
+The sweep's own table calls 100 µs "not separated", because it tests whether the full
+min-to-max range over 24 seeds straddles zero — a far more conservative criterion than a
+paired standard error. At about six standard errors from zero, 100 µs *is* separated. Both
+tests are reported rather than whichever one flatters the result, and the distinction
+between "underpowered" and "nothing there" is now printed rather than implied.
+
+### What this instrument cannot show
+
+The null is partly structural, and saying so is the difference between "my experiment
+found nothing" and "I know the limits of my own instrument". There is one informed trader
+with a one-tick threshold; the fundamental moves on a single timescale; there is no second
+venue, no quote fade, no cancel-replace race, and no queue position worth winning, because
+the book is thin enough that time priority rarely binds. Those are the mechanisms by which
+ten microseconds pays for itself in a real market, and none of them is in the model. A
+market where the *selection* cost dominates the *uptime* cost would need a faster
+fundamental, a maker that does not withdraw, or far more seeds.
+
 That is worth saying plainly because it is the opposite of what this was built to
 show. The design went to some trouble to give latency a mechanism, and the
 mechanism turns out not to be what moves the number at the delays a laptop
@@ -352,6 +381,45 @@ four reaction windows doing so would be measuring itself.
 What a bot cannot see: the fundamental value (unless the roster marks it
 informed), the clock, other participants' positions, the engine's internals, or
 its queue position except by having tracked the feed itself.
+
+## Known limits, found by testing
+
+Two configurations used to go wrong, both found by probing the finished arena rather
+than by reasoning about it. Both are now refused or bounded at construction, and both
+are pinned by regression tests — a bug that is found and not pinned gets found again by
+a reader.
+
+**A session holds at most 64 participants.** `deliver_order()` marks which bots an event
+concerned in a fixed array; past that bound the marks were silently dropped, so those
+bots never received an own-event wake. Measured with 104 identical noise traders: the
+first 64 took 151.9 fills each, the rest took 55.9. Nothing crashed and nothing looked
+wrong. Rosters above the ceiling are now refused.
+
+The ceiling is deliberately a hard limit rather than a resizable buffer. The bound is not
+the real cost — changing how wakes are marked would change wake *ordering* for large
+rosters, which moves every session hash and invalidates the committed evidence. Refusing
+at the boundary is provably no behavioural change at or below 64, which the unchanged
+hashes confirm. Raising it is a separate change with its own re-measurement.
+
+**A session that stops generating orders now ends.** A roster of nothing but the market
+maker used to hang forever: once its quotes are where it wants them it submits nothing
+further, so `max_requests` stayed unreachable while the fundamental kept rescheduling
+itself. The first attempted fix was a static check for "can this roster generate flow",
+and it was wrong — that lone maker *has* a heartbeat timer, it simply returns an empty
+batch every time it fires. Whether a participant ever submits an order is a property of
+its code, not its configuration, so no static check can decide it.
+
+The bound is `stall_limit_ns`: if that much *simulated* time passes with no request
+reaching the engine, the session ends and sets `stats().stalled`, which the sweep reports
+as a warning rather than averaging the run in. It is a quiescence detector, and it is
+allowed here only because it compares two simulated timestamps, so it triggers at exactly
+the same instant on every machine and every replay. A wall-clock timeout would not have,
+and would have broken the replay contract.
+
+**The renderer is covered for its invariants, not its appearance.** `ui.hpp` is tested
+for one cell per code point (the bug that tore every block glyph across three cells),
+clipping at every edge, and a composed frame pinned by hash. How it looks is a matter of
+taste; evidence is owed where claims are made, and the renderer makes none.
 
 ## What is not built
 

@@ -64,10 +64,32 @@ ARENA_BINS := $(REL)/sweep$(EXE) $(REL)/arena$(EXE)
 
 .PHONY: all test bench latency repl arena sweep clean
 
-all: test $(BENCH_BINS) $(REPL_BIN) $(ARENA_BINS)
+all: test test-cli $(BENCH_BINS) $(REPL_BIN) $(ARENA_BINS)
 
 test: $(TEST_BINS)
 	@set -e; for t in $(TEST_BINS); do echo "== $$t"; ./$$t; done
+
+# The sweep runner's command line, checked the only way a command line can be:
+# by running it. A bad field, flag or value must fail loudly (exit 2) and a
+# configuration that could never terminate must be refused, not hang. These were
+# all verified by hand once; this target is so they stay verified.
+.PHONY: test-cli
+test-cli: $(REL)/sweep$(EXE)
+	@set -e; \
+	fail() { echo "FAIL: $$1"; exit 1; }; \
+	echo "== sweep command line"; \
+	./$< --help > /dev/null || fail "--help should succeed"; \
+	! ./$< --bogus > /dev/null 2>&1 || fail "unknown flag should fail"; \
+	! ./$< --values=abc > /dev/null 2>&1 || fail "unparseable --values should fail"; \
+	! ./$< --param=nonsense.field --values=1 --seeds=1 --requests=500 --quiet > /dev/null 2>&1 \
+	    || fail "unknown field should fail"; \
+	! ./$< --values=1000 --seeds=1 --requests=500 --set=session.stall_limit_ns=0 \
+	    --set=session.max_time_ns=0 --quiet > /dev/null 2>&1 \
+	    || fail "a session with no bound should be refused"; \
+	! ./$< --values=1000 --seeds=1 --requests=500 --set=noise.count=100 --quiet > /dev/null 2>&1 \
+	    || fail "a roster past the participant ceiling should be refused"; \
+	./$< --values=1000 --seeds=1 --requests=2000 --quiet > /dev/null || fail "a normal sweep should succeed"; \
+	echo "7/7 command-line checks passed"
 
 bench: $(BENCH_BINS)
 	@set -e; for b in $(BENCH_BINS); do echo "== $$b"; ./$$b; done

@@ -39,7 +39,8 @@ mingw32-make bench      # release (-O3 -march=native -flto): builds and runs all
 mingw32-make latency    # only the 1M-order matching-latency benchmark
 mingw32-make repl       # then: build/release/repl.exe < tools/repl_demo.txt
 mingw32-make arena      # the arena: build/release/sweep.exe and build/release/arena.exe
-mingw32-make all        # tests, benchmarks, REPL, arena
+mingw32-make test-cli   # the sweep runner's command line: bad flags fail, bad configs refused
+mingw32-make all        # tests, command-line checks, benchmarks, REPL, arena
 mingw32-make clean
 ```
 
@@ -60,6 +61,10 @@ mingw32-make build/debug/test_engine.exe && ./build/debug/test_engine.exe
 - `bench/run_evidence.sh <label>` regenerates `results/<label>/` — machine state plus
   every run the README quotes. `python bench/summarize_results.py results/<label>`
   prints the README's tables. Never hand-edit numbers in `results/` or README.
+- `python bench/summarize_arena.py results/arena-<label>` prints the arena tables that
+  README and `docs/ARENA.md` quote, including the paired standard errors and the smallest
+  effect a given seed count could resolve. Same rule as the engine's: a number in the
+  documentation that this script does not print has no evidence behind it.
 - `bench/run_arena_evidence.sh <label>` does the same for `results/arena-<label>/`:
   the headline sweep, the null run, the degenerate single-maker market and four
   robustness sweeps. Unlike the engine's benchmarks these do not depend on the
@@ -190,6 +195,18 @@ loose from the fundamental is not a market and nothing read off one counts.
   position limit, the maker's inventory limit, the learning rate, the inventory skew).
   Changing one and reading only the P&L will produce a confident wrong answer; read
   the book-to-fundamental gap too. `docs/ARENA.md` records what each one cost.
+- **A session holds at most 64 participants and refuses more.** The ceiling is hard, not
+  a resizable buffer: changing how own-event wakes are marked would change wake *ordering*
+  and move every session hash, invalidating the committed evidence. Raising it is a
+  separate change with its own re-measurement. Past the old silent bound, participants got
+  2.7x fewer fills — plausible-looking wrong numbers.
+- **A session that stops generating orders ends on `stall_limit_ns` of simulated time**
+  and sets `stats().stalled`. Simulated, so it fires identically on every replay; a
+  wall-clock timeout here would have broken the replay contract. Before the bound, a
+  roster of nothing but a maker hung forever.
+- Report a negative arena result with its standard error. `summarize_arena.py` prints the
+  smallest effect a seed count could resolve, because "underpowered" and "nothing there"
+  are different claims and only one of them is usually earned.
 
 ## Conventions
 
