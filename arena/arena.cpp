@@ -191,14 +191,15 @@ void draw_reaction(ui::Screen& s, const Rect& r, const Session& sess, int focus)
     for (std::size_t i = 0; i < sess.participants() && static_cast<int>(i) + 2 < in.h; ++i) {
         const int y = in.y + 2 + static_cast<int>(i);
         const SimTime d = sess.reaction_of(i);
-        // 1 us at the left, 1 ms at the right, log scaled.
+        // 1 us at the left, 1 ms at the right, log scaled: the interesting range
+        // spans three decades, so a linear slider would put every bot worth
+        // comparing in the leftmost column.
         double frac = 0;
         if (d > 0) {
-            const double lo = 3.0, hi = 6.0; // log10 ns
-            double l = 0;
-            for (SimTime v = d; v >= 10; v /= 10) l += 1.0;
-            l += static_cast<double>(d) / 1e18; // keeps equal decades distinct
-            frac = (l - lo) / (hi - lo);
+            constexpr double lo = 3.0, hi = 6.0; // log10 of the end points, in ns
+            double decades = 0;
+            for (SimTime v = d; v >= 10; v /= 10) decades += 1.0;
+            frac = (decades - lo) / (hi - lo);
         }
         const Rgb knob = static_cast<int>(i) == focus ? pal::orange : pal::dim;
         s.text(in.x, y, sess.name_of(i), static_cast<int>(i) == focus ? pal::ink : pal::dim, pal::panel, 10);

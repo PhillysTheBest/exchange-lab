@@ -3,7 +3,9 @@
 A single-threaded exchange matching core fed by a lock-free single-producer/
 single-consumer ring, with **no heap allocation after start-up**, int64 fixed-point
 prices and a price-ordered level index. It comes with the measurement and test
-machinery that backs every number below.
+machinery that backs every number below — and with [the arena](#the-arena), a seeded
+market of bots trading inside the engine so you can watch it work and ask what a
+participant's reaction delay is worth.
 
 **Headline.** Measured on a laptop (i5-12450H, Windows 11, on battery, Balanced power
 plan) over five 1M-order streams per profile. Matching latency here means the time from
@@ -249,6 +251,114 @@ g++ 13.3, same commands; raw output in [results/wsl2/](results/wsl2/).
 - **Containers and ring.** The pool, hash map and level index are checked against
   standard-library models over millions of random operations. The SPSC ring is checked
   with 10M sequenced messages across two pinned threads.
+- **The arena** ([test_arena.cpp](tests/test_arena.cpp)): 66 checks. A participant's
+  book, rebuilt from the event stream alone, is held against the engine's own ladder
+  after every one of 200,000 requests — the same differential shape as the fuzzer, with
+  the engine as oracle. Plus the scheduler's total order under heavy timestamp
+  collision, queue position by hand through a cancel and a partial fill, bit-identical
+  replay from a seed, and the closed-world identity: cash, position and marked value
+  each sum to **exactly zero** across participants, in integers.
+
+## The arena
+
+A seeded market of bots trading inside the engine, each with a reaction delay you
+control, rendered live in the terminal. Design, and the four modelling mistakes it took
+to get there, in [docs/ARENA.md](docs/ARENA.md).
+
+> **Every number in this section is simulated.** A session invents its own nanoseconds
+> so that a participant's reaction delay can be a controlled variable rather than a
+> property of the machine. The latency tables above are *measured*, on hardware. These
+> are not, and the two must not be read together. Nothing in `arena/` is even called
+> latency: a bot has a `reaction_ns`.
+
+Six participants, each a distinct owner to the engine. A **maker** quotes both sides and
+infers price from order flow; a **rival** maker does the same at a fixed fast delay; an
+**informed** trader can see a fundamental value nobody else can and takes quotes that are
+on the wrong side of it; two **noise** traders and a **momentum** bot supply the rest of
+the flow. That is Glosten and Milgrom's setting: the maker earns the spread from
+uninformed flow and pays it back to the informed trader.
+
+Queue position is not an engine feature. The engine exposes no per-order query and none
+was added — `arena/book_mirror.hpp` reconstructs every level and every FIFO from the
+`ExecEvent` stream, which is the only thing a real venue sends out. So a bot provably
+sees no more than a real participant would.
+
+```
+ ORDER BOOK                       ■■■    PARTICIPANTS                              ■■■
+│                                    │  │   participant  delay    pos     value        │
+│ 100.06          25  ███▎           │  │ 1 maker       10us   -195    +16.50     │██  │
+│ 100.04         100  █████████████  │  │ 2 rival        1us   -150    +21.55     │███ │
+│  value 100.03 ──────────────────── │  │ 3 informed     1us    175     -0.80     │    │
+│ 100.01          25  ███▎           │  │ 4 noise       50us    250    -15.00   ██│    │
+│ 100.00         100  █████████████  │  │ 5 noise       50us   -100    -22.25  ███│    │
+```
+
+### What is 10 microseconds worth?
+
+**In this market: nothing measurable.** Over 24 seeds of 200,000 requests each, with
+every point run on the same seeds so the difference can be taken seed by seed:
+
+| Maker's reaction delay | Value vs the 1 µs maker (median, range over 24 seeds) | Separated from zero? |
+|---|---|---|
+| 10 µs | +73.55 (−749.35 … +331.65) | no |
+| 100 µs | −461.55 (−1868.10 … +72.95) | no |
+| 1 ms | **−3075.10** (−4217.20 … −2342.25) | **yes** |
+
+Paired differences are reported because the level is unreadable: a maker's value is
+dominated by what its leftover inventory happened to be worth, and the spread of levels
+across seeds swamps the effect. The seed fixes the path of the fundamental, so the
+same-seed difference cancels most of it.
+
+### And the control says it is not adverse selection
+
+The obvious story — the slow maker's stale quotes get picked off — is **wrong here**, and
+the null run is what catches it. `sweep --null` removes the informed trader, so there is
+no information in the session and speed should be worth nothing. It is worth almost
+exactly the same:
+
+| Run | 1 µs → 1 ms, paired |
+|---|---|
+| With an informed trader | −3075.10 |
+| **Nobody informed** | **−2948.30** |
+
+96% of the effect survives with nothing to be adversely selected by. Splitting each fill
+into the spread it earned and the price move afterwards (`edge = spread + adverse`, in
+integers) shows where the money actually went:
+
+| Maker's delay | Fills | Spread earned | Adverse selection | Value |
+|---|---|---|---|---|
+| 1 µs | 10,342 | +3,457 | +3.25 | +3,945 |
+| 1 ms | 1,874 | +392 | +10.46 | +760 |
+
+The cost of being slow is a **liquidity-provision** effect, not an information one. A
+1 ms maker cannot keep a quote standing: it gets 5.5× fewer fills and earns 8.8× less
+spread. Adverse selection moves by about **$7 out of a $3,185 swing** — and in the
+*helpful* direction — and its paired range straddles zero at every point, so it is not
+established at all. Making the informed trader maximally aggressive
+(`results/arena-windows/edge.*`) does not change that.
+
+That is the honest answer, and it is the one the evidence supports rather than the one
+the design was hoping for.
+
+### What else is in `results/arena-windows/`
+
+- **Market health**, printed above every result: the mean `|mid − fundamental|` in ticks.
+  8–12 ticks in the headline runs against a 4-tick spread, so the book tracks a value no
+  participant can see. In the null run it is 41–47 ticks, because without the informed
+  trader nothing anchors price to value at all — which is itself the mechanism showing up.
+- **`no-rival`**: the degenerate market the design notes warn about. With one maker and no
+  competition, its spread *per fill* **rises** with delay (+3,665 → +5,985), because a lone
+  stale quote is the price and the uninformed flow keeps paying it. Published so the
+  warning is checkable rather than a story.
+- **Four robustness sweeps** — informed aggression, maker spread, arrival rate and
+  learning rate — published whatever they say. A shape that only exists at one set of
+  parameters is not a finding.
+- **Replay**: every session in the headline and null runs was executed twice and the
+  session hashes compared. All identical.
+
+Regenerate the whole directory with `bash bench/run_arena_evidence.sh windows`. Unlike
+the engine's benchmarks these results do not depend on the machine, the power plan or the
+load: the same seed gives the same answer anywhere.
 
 ## Build and run
 
@@ -262,6 +372,10 @@ mingw32-make bench      # every benchmark
 build/release/bench_matching_latency --profile=deep --repeat=5
 build/release/bench_matching_latency --rate=50000 --outliers=slow.csv
 mingw32-make repl && build/release/repl < tools/repl_demo.txt
+mingw32-make arena      # the arena: the sweep runner and the viewer
+build/release/arena                    # watch a market happen
+build/release/sweep --seeds=24 --replay-check   # the reaction-delay sweep
+build/release/sweep --null             # the control: nobody informed
 ```
 
 A minimal REPL session:
@@ -277,8 +391,10 @@ A minimal REPL session:
 
 ## Scope
 
-**Built:** matching, the event protocol, SPSC rings, the threaded pipeline, and the
-measurement and test tooling.
+**Built:** matching, the event protocol, SPSC rings, the threaded pipeline, the
+measurement and test tooling, and the arena — a seeded simulated market with a
+reaction-delay model, participant-side book reconstruction, marked P&L and a terminal
+renderer.
 
 **Not built (out of scope):**
 - order modify or amend (cancel and re-enter instead);
@@ -286,7 +402,8 @@ measurement and test tooling.
 - a network gateway or FIX/ITCH/OUCH encoding;
 - journaling and recovery;
 - the full LMAX multi-consumer graph (one SPSC ring into one core, by design);
-- per-participant risk limits.
+- per-participant risk limits;
+- anything in the arena that would need a network, a package manager or a browser.
 
 ## Layout
 
@@ -295,7 +412,9 @@ measurement and test tooling.
 | `include/px/` | the engine: types, messages, pools, hash map, level index, matching engine, ring, TSC clock, stats, platform |
 | `src/` | engine and platform implementations (Windows and Linux) |
 | `sim/` | seeded order-stream generator, three-thread pipeline and timing, allocation counter |
-| `tests/` | unit, scenario, fuzz (with the reference engine), allocation and determinism tests |
+| `arena/` | the simulated market: clock and scheduler, fundamental value, book mirror, accounting, the bot contract, `bots/`, the sweep runner, the renderer and the viewer |
+| `tests/` | unit, scenario, fuzz (with the reference engine), allocation, determinism and arena tests |
 | `bench/` | `bench_matching_latency`, `bench_engine`, `bench_ring`, and the evidence scripts |
-| `results/` | raw benchmark evidence with the machine state it was captured on |
+| `results/` | raw benchmark evidence with the machine state it was captured on, and the arena's sweeps |
 | `tools/` | the interactive REPL and a demo script |
+| `docs/` | [`ARENA.md`](docs/ARENA.md): the arena's design, and the four modelling mistakes it took to get there |

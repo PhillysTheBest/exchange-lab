@@ -127,7 +127,14 @@ public:
 
     // Resolves every pending markout whose horizon has passed. `v_now` must be
     // the fundamental value at `now`; the session calls this whenever V moves or
-    // the clock advances past a horizon.
+    // an order arrives.
+    //
+    // The horizon is therefore honoured to within one scheduler step, not
+    // exactly: a markout due at t is settled at the first event at or after t,
+    // against V then. With the fundamental moving every ~100 us and a 1 ms
+    // horizon that is a jitter of a few per cent, it is the same in both
+    // directions, and it is stated here rather than implied because the adverse
+    // selection number depends on this horizon.
     void resolve_due(SimTime now, Price v_now) {
         while (!pending_.empty() && pending_.front().due <= now) {
             settle(pending_.front(), v_now, false);

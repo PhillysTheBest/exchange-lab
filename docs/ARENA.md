@@ -1,20 +1,28 @@
-# Arena — plan
+# The arena
 
-A sandbox where bots trade against each other inside this matching engine, rendered
-live in the terminal as a retro desktop. Built on the existing engine; nothing here
-changes the hot path.
+Bots trading against each other inside the matching engine, with a controllable
+reaction delay each, rendered live in the terminal as a retro desktop.
 
-## Why
+This file is the design and the reasoning. The result is in
+[README.md](../README.md); the evidence is in `results/arena-windows/`.
 
-The engine is finished and proven, but a reader cannot *see* anything: the repo is
-numbers and tests. The arena makes the exchange watchable and playable, and turns the
-project from "a matching engine" into "an exchange and the lab where strategies and
-speed compete". It also brings back the market-making work from the old project, which
-is still in git history (`git show 07b3be0^:strategy/passive_market_maker.hpp`), onto a
-venue where fills are exact instead of estimated — the flaw that stopped that work
-before.
+**Everything here is simulated.** A session invents its own nanoseconds so that a
+participant's reaction delay can be a controlled variable instead of a property
+of the machine. The engine's latency numbers are *measured*, on hardware, and
+they are a different kind of number entirely. The code keeps the two apart in its
+vocabulary too: a bot has a `reaction_ns`, the engine has a latency, and nothing
+in `arena/` is called latency.
 
-## The boundary: quant, not full stack
+## Why it exists
+
+The engine was finished, measured and correct, and a reader could not *see*
+anything: the repository was numbers and tests. The arena makes it watchable, and
+more importantly it turns the project from "a matching engine" into "an exchange
+and the lab where strategies and speed compete" — on a venue where fills are
+exact rather than estimated, which is the flaw that stopped the market-making
+work in this repository's earlier life.
+
+## The boundary
 
 Everything compiles into one binary. Nothing talks over a network.
 
@@ -22,139 +30,335 @@ Everything compiles into one binary. Nothing talks over a network.
 |---|---|
 | Bots as C++ headers, registered at compile time | Web server, REST, JSON, sockets |
 | Deterministic, seeded, replayable sessions | Database, accounts, auth |
-| P&L, inventory, adverse selection, queue position | npm, bundlers, a browser |
+| Value marked to a fundamental, adverse selection, queue position | npm, bundlers, a browser |
 | One dependency-free terminal renderer | Plugin DLLs, an embedded scripting language |
-| Per-bot latency, scheduled in simulated time | Live market data, broker APIs |
+| Per-bot reaction delay, scheduled in simulated time | Live market data, broker APIs |
 
-"Adding your own bot" means: write a header in `arena/bots/`, add one line to the
-registry, rebuild. That is how trading research platforms link strategies internally,
-and it keeps the project a systems-and-strategy project rather than a web project.
+Adding a bot means: write a header in `arena/bots/`, add a line to
+`registry.hpp`, rebuild. That is how research platforms link strategies
+internally, and it keeps this a systems-and-strategy project rather than a web
+project.
 
-## What it looks like
+## The rules, and which of them stop at the arena's edge
 
-A purple grid desktop of chunky windows with magenta/teal/orange title bars, hard drop
-shadows and block-character meters, drawn with 24-bit ANSI colour — the attached mock,
-rendered in a terminal. No curses, no libraries: one `ui.hpp` that owns a grid of
-coloured cells and writes each frame in a single call.
+The engine's rules in [CLAUDE.md](../CLAUDE.md) are about `process()`. Two of
+them do **not** extend up here, and saying so explicitly is the point:
 
-Windows on the desktop, each mapping to real engine state:
+- **Zero allocation does not apply to arena code.** `arena/` uses maps, deques
+  and vectors freely. The guarantee belongs to `MatchingEngine`, where
+  `test_alloc_audit` still holds it at zero; extending it to a renderer would
+  cost a great deal and buy nothing. The session's event buffer is pre-reserved
+  anyway and counts the times it had to grow, so the arena does not allocate
+  *inside* a `process()` call.
+- **No C-runtime calls on the hot path does not apply either.** There is no hot
+  path here. Nothing in `arena/` is timed, and the benchmarks do not link it.
 
-| Window | Shows |
-|---|---|
-| **ORDER BOOK** (teal) | The depth ladder: asks above, bids below, size as horizontal bars, best prices meeting in the middle |
-| **TAPE** (magenta) | Trades as they print: price, size, aggressor side |
-| **PARTICIPANTS** (violet) | One row per bot: position, realised P&L as a signed bar, fill count |
-| **LATENCY** (orange) | Each bot's reaction time as one of the mock's sliders — this is the dial the experiment turns |
-| **SESSION** (teal) | Seed, orders processed, a progress bar, speed control |
-| **ALERT** (magenta dialog) | Pops up on notable events: a sweep that clears several levels, a bot hitting an inventory limit. Styled like the mock's WARNING box |
+Three of them apply with full force, and one is added:
 
-Keys: `space` pause, `+`/`-` speed, `1-9` focus a bot, `q` quit.
+- **The matching core stays single-threaded and untouched.** The arena is another
+  caller of `process()`, the way `sim/pipeline.hpp` and `tools/repl.cpp` are. It
+  adds no engine API — see queue position below — so it cannot affect a measured
+  number.
+- **Determinism is a contract.** A seed and a roster reproduce a session bit for
+  bit, and `Session::hash()` makes that one number.
+- **Claims must be reproducible from `results/`.**
+- **New: no floating point inside a session.** Prices, P&L, intervals and
+  decisions are all integer. A `std::log` or a `std::exponential_distribution`
+  would be free to differ between library versions and would quietly break
+  cross-platform replay. Floating point appears only in reporting, after the
+  session is over.
 
 ## Architecture
 
 ```
-arena/ui.hpp         retro-desktop renderer: cells, windows, bars, sliders, dialogs.
-                     Knows nothing about trading.
-arena/arena.hpp      the session: owns the MatchingEngine, the clock, the scheduler,
-                     the bots and the accounting. No rendering.
-arena/bots/*.hpp     one header per bot.
-arena/bots/registry.hpp   the single list of bots in play.
-arena/arena.cpp      main(): wires session to renderer, handles keys.
+arena/clock.hpp        the simulated clock and the scheduler. Where determinism
+                       lives or dies.
+arena/fair_value.hpp   the fundamental value: the only exogenous information.
+arena/book_mirror.hpp  a participant's own view of the book, rebuilt from the
+                       event stream alone.
+arena/accounting.hpp   positions, marked value, and the spread/adverse split.
+arena/bot.hpp          the bot contract: MarketView in, ActionBatch out.
+arena/bots/*.hpp       one header per strategy.
+arena/bots/registry.hpp  the single list of who is in the market.
+arena/session.hpp      the session: engine + clock + roster + accounting. No
+                       rendering.
+arena/sweep.cpp        the experiment, headless. Writes CSV.
+arena/ui.hpp           the retro-desktop renderer. Knows nothing about trading.
+arena/term.hpp         the four things the viewer needs from a terminal.
+arena/arena.cpp        the viewer: the only place the renderer meets the market.
 ```
 
-The engine, `sim/` and the benchmarks are untouched. The arena is a new consumer of
-the same `MatchingEngine`, so the latency numbers in the README stay valid and the
-arena can never slow the measured path.
+The engine, `sim/` and the benchmarks are unchanged.
 
-## The bot API
+## The reaction model
 
-A bot sees a view of the market and returns actions. It never touches the engine.
+The one genuinely new mechanism. A bot with reaction delay `d`, woken by
+something that happened at time `t`:
+
+- **acts at `t + d`** — that is `now` in its `MarketView`, and the timestamp its
+  orders carry into the engine;
+- **sees the world as of `t`** — its book mirror is advanced only to `now - d`.
+
+One knob therefore buys both halves of being slow: the view is stale *and* the
+order is late. A fast bot sees fresher prices and lands sooner, which is exactly
+the advantage the experiment prices. `test_arena` puts a watching participant in
+a real session and asserts `now_ns - as_of_ns == reaction_ns` on every wake.
+
+Each participant has its own delayed feed, so "what a bot knows" is a single
+concept with a single implementation. At most one wake is outstanding per bot, so
+a burst of events inside one reaction window collapses into one decision — which
+is what a real system does, and what keeps a slow bot slow: with a 1 ms delay a
+bot cannot look at the market more than a thousand times a second.
+
+**Determinism.** Every scheduled item carries a monotonic sequence number and the
+ordering is `(time, sequence)`, which is a *total* order, so no tie is ever broken
+by heap internals or insertion luck. That plus the no-floating-point rule is the
+whole replay contract.
+
+## Queue position, without touching the engine
+
+The engine exposes no per-order query and none was added. `arena/book_mirror.hpp`
+reconstructs the whole book — every level, every FIFO, every order's queue
+position — from the `ExecEvent` stream alone, which is the only thing a real venue
+sends out. So a bot here provably sees no more than a real participant would, and
+queue position is earned by tracking the feed rather than handed over by the
+exchange.
+
+It also buys a test. The mirror is compared against the engine's own ladder after
+every one of 200,000 requests of a seeded stream — the same differential shape as
+`fuzz_vs_reference`, with the engine as the oracle. That reconciliation is a real
+exchange-systems artefact, and it would consume a live venue's feed unchanged.
+
+## The market
+
+Six participants, each a distinct `OwnerId`.
+
+| Participant | What it does | Informed? |
+|---|---|---|
+| **maker** | Quotes both sides, learns from its own fills, leans against inventory. The one the sweep moves. | no |
+| **rival** | The same strategy at a fixed fast delay. The competition. | no |
+| **informed** | Can see the fundamental value. Takes quotes that are on the wrong side of it. | **yes** |
+| **noise** ×2 | Trades on its own heartbeat for reasons the session does not model. | no |
+| **momentum** | Takes after a run of same-direction prints. Second-hand information. | no |
+
+Distinct owners matter more than they look. Self-trade prevention *cancels* a
+resting order instead of trading it, so sharing one owner between bots would
+silently delete the maker's quotes rather than filling them, and the experiment
+would be measuring an artefact.
+
+## The experiment
+
+**What is 10 microseconds worth?** Run the same seeded market, change only the
+maker's reaction delay, and read off what happened.
+
+Three things make the answer worth reading, and all three are in
+`bench/run_arena_evidence.sh`:
+
+1. **A mechanism, not a correlation.** The informed trader can see a fundamental
+   value that nobody else can, and the maker must infer price from its own fills.
+   That is Glosten and Milgrom's setting: the maker collects the spread from
+   uninformed flow and pays it back to the informed trader, and its reaction
+   delay decides how much of the second it suffers. The qualitative shape is
+   therefore predicted in advance rather than discovered afterwards.
+2. **A null run.** `--null` switches the informed participant off. With no
+   information in the session there is nothing for speed to be worth, so the
+   curve should go flat. The control runs before the result is believed — and
+   here it did not go flat, which is the single most useful thing the arena has
+   produced. See "What the evidence actually says" below.
+3. **Paired differences across shared seeds.** A maker's value is dominated by
+   what its leftover inventory happened to be worth, which is a random walk, and
+   the spread of *levels* across seeds swamps the effect. Every point runs on the
+   same seeds, and the seed fixes the path of the fundamental, so the difference
+   between two points *at the same seed* cancels most of that noise. The runner
+   reports both, and says in plain words when a paired range straddles zero.
+
+Plus a sanity check printed above every result: the mean `|mid − fundamental|` in
+ticks. A book that has come loose from the fundamental is not a market, and
+nothing read off one would count.
+
+### Defining adverse selection
+
+"Adverse selection" is quoted loosely often enough that a number labelled with it
+means little, so each fill is split into two parts that add up exactly. With `H`
+the horizon, `V` the fundamental, and `q` positive when the account bought:
+
+```
+edge    = (V(t+H) - fill_price) * q     what the fill was worth in the end
+spread  = (V(t)   - fill_price) * q     what it earned for providing liquidity
+adverse = (V(t+H) - V(t))      * q     what the price did to it afterwards
+
+edge = spread + adverse,  identically, in integers
+```
+
+`adverse` contains no spread, so it is the number the experiment turns, and it is
+per fill, so it does not depend on how much a participant traded. All three go to
+the CSV so the arithmetic can be checked rather than taken on trust.
+
+## What the evidence actually says
+
+The headline sweep separates a 1 ms maker from a 1 µs one and nothing else: 10 µs
+and 100 µs both have paired ranges that straddle zero over 24 seeds. So the answer
+to "what is 10 microseconds worth?" in this market is **nothing measurable**, and
+that is a real answer rather than a failure to get one.
+
+Then the null run refused to go flat. Removing the informed trader entirely leaves
+96% of the 1 ms effect in place (−2948 against −3075). Splitting each fill into
+spread and adverse selection shows why:
+
+| Maker's delay | Fills | Spread earned | Adverse selection | Value |
+|---|---|---|---|---|
+| 1 µs | 10,342 | +3,457 | +3.25 | +3,945 |
+| 1 ms | 1,874 | +392 | +10.46 | +760 |
+
+**The cost of being slow here is a liquidity-provision effect, not an information
+one.** A 1 ms maker cannot keep a quote standing — it gets 5.5× fewer fills and
+earns 8.8× less spread — and adverse selection accounts for about $7 of a $3,185
+swing, in the *helpful* direction, with a paired range that straddles zero at
+every point. Making the informed trader maximally aggressive does not change it.
+
+That is worth saying plainly because it is the opposite of what this was built to
+show. The design went to some trouble to give latency a mechanism, and the
+mechanism turns out not to be what moves the number at the delays a laptop
+simulation can resolve. The honest reading is that the *uptime* cost of being slow
+dominates the *selection* cost by three orders of magnitude in this market, and
+that a market where the selection cost dominates would need either a much faster
+fundamental, a much more patient maker that does not withdraw, or far more seeds.
+The null run is what made that visible, and it is why it runs before the result is
+believed rather than after.
+
+## Four things that were wrong first, and what they cost
+
+Each of these produced a confident, plausible, wrong result. They are written
+down because the mistakes are more instructive than the design, and because a
+reader is entitled to know which way the evidence had to be dragged.
+
+**1. The markout measured the spread, not adverse selection.** Markout against a
+later fundamental includes the half-spread the maker earned, so it is positive
+almost by construction — and a *staler* quote sits further from fair value and
+captures more spread on every fill it does get. The first sweep therefore showed
+markouts rising with delay, which reads as "slower is better". Fixed by the
+decomposition above.
+
+**2. The fundamental was mean-reverting.** A pull back toward the opening price
+bounds the walk and looks harmless. It also pays a market maker for holding
+inventory: price deviates, the maker's skew leaves it leaning the right way, and
+the drift hands it the move back. That swamped adverse selection completely. The
+walk is now a martingale with a far-off reflecting wall, and the wall is counted
+so that a session which touches it says so.
+
+**3. The maker learned price from the tape.** "Follow the last trade" sounds
+sensible and is catastrophic when the maker *is* the market: the last trade is its
+own quote, so the estimate was a function of itself — a random walk with nothing
+anchoring it. The book wandered thousands of ticks from fair value, the informed
+trader ran out of position limit trying to drag it back and then stopped
+correcting, and every number downstream became a measurement of that drift. The
+update is now Glosten–Milgrom and about *direction*: if somebody lifts my ask,
+value is probably higher. What that reads — which side got filled — is the one
+thing a maker cannot manufacture by quoting.
+
+**4. There was one maker, so slowing it down measured the wrong thing.** A lone
+stale maker *is* the price, so the uninformed flow keeps trading against its stale
+quotes and hands it money. Slowing it down did not measure what its delay was
+worth; it measured how much the market depended on it. The `rival` maker fixes
+that, and `--set=rival.enabled=0` reproduces the degenerate market on demand —
+`results/arena-windows/no-rival.*` keeps that claim checkable.
+
+Two parameters also turned out to be load-bearing, and both were found by
+sweeping rather than by thinking:
+
+- **The informed trader's position limit.** At 1,000 it ran out of room
+  correcting the book and stopped trading, and the mean `|mid − V|` was 26 ticks
+  against a 4-tick spread. At 5,000 it is about 1 tick. Starving the informed
+  trader of capacity breaks price discovery rather than making it conservative.
+- **The maker's inventory limit.** At 500 it withdrew a side after ten net fills,
+  so 42% of the session had no two-way market. At 2,000 that is 0.3%. The skew is
+  now parameterised by how far the quotes lean *at the limit*, so the two knobs
+  no longer multiply.
+
+## The viewer
+
+A purple grid desktop of chunky windows with magenta, teal, orange and violet
+title bars, hard drop shadows and block-character meters, in 24-bit ANSI. No
+curses and no libraries: `arena/ui.hpp` owns a grid of coloured cells and writes
+each frame in one call, emitting a colour escape only where a colour changes.
+
+| Window | Shows |
+|---|---|
+| **ORDER BOOK** (teal) | The ladder: asks above, bids below, size as bars, the fundamental on the middle line |
+| **PARTICIPANTS** (violet) | One row per bot: reaction delay, position, marked value as a signed bar |
+| **REACTION DELAY** (orange) | Each bot's delay as a log slider — the dial the experiment turns |
+| **SESSION** (teal) | Seed, simulated clock, orders, trades, the book-to-value gap |
+| **TAPE** (magenta) | Prints as they happen: price, size, aggressor |
+| **! NOTABLE** (magenta dialog) | Interrupts on a print that moved the mid several ticks |
+
+Keys: `space` pause, `+`/`-` speed, `1`–`9` focus a participant, `q` quit.
+
+**The viewer cannot change what it watches.** It paces a session by calling
+`run_until()` with a simulated timestamp, and the keyboard only changes how fast
+it asks for the next one. A session watched at a hundred times speed, paused and
+resumed, has the same hash as the same seed run headless. That settles the
+question of trading by hand, too: live keystrokes would be a wall-clock read
+inside a session and would break replay, so the human gets the controls and the
+market gets none of them.
+
+`--still=NS` runs a session headless to one simulated instant and prints a single
+frame, which is how the picture in the documentation stays reproducible from a
+seed.
+
+## Running it
+
+```bash
+mingw32-make arena                      # builds the sweep runner and the viewer
+build/release/arena                     # watch a session
+build/release/arena --maker-reaction=1000000   # watch a slow maker get run over
+build/release/sweep --help              # every sweepable field
+build/release/sweep --seeds=24 --replay-check  # the headline curve
+build/release/sweep --null              # the control
+bash bench/run_arena_evidence.sh windows       # regenerate results/arena-windows/
+```
+
+`mingw32-make test` includes `test_arena`, which holds the mirror against the
+engine, the scheduler's total order, the replay hash, the closed-world accounting
+identity, and the reaction model.
+
+## Writing a bot
+
+A bot is a plain struct. It does not inherit from anything, never touches the
+engine, and cannot read a clock.
 
 ```cpp
-struct MarketView {
-    Price best_bid, best_ask;      // 0 if that side is empty
-    Qty   bid_size, ask_size;
-    Price last_trade;
-    std::int64_t now_ns;           // simulated clock
-    Position position;             // this bot's inventory
-    Cash   realised;               // this bot's realised P&L
-    std::span<const OrderRef> my_orders;   // live orders, with queue position
-};
+struct Fader {
+    const char* name = "fader";
+    SimTime reaction_ns = 10'000;
+    SimTime timer_ns = 0;             // 0, or a periodic self-wake
 
-struct Action {                    // what the bot wants to do
-    enum class Kind { None, Limit, Market, Cancel } kind;
-    Side side; Price price; Qty qty; OrderId cancel_id;
-};
+    void reset(std::uint64_t seed) {}
 
-struct MarketMaker {
-    static constexpr const char* name = "market maker";
-    std::int64_t latency_ns = 1'000;      // its reaction time
-    Action on_event(const MarketView& v); // called when the book changes
+    ActionBatch on_event(const MarketView& v) {
+        ActionBatch out;
+        if (v.in_flight != 0) return out;
+        const Price bid = v.best(Side::Buy);
+        if (bid != 0 && v.position < 100) out.push(Action::limit(Side::Buy, bid, 10));
+        return out;
+    }
 };
 ```
 
-Registering one is a single line in `registry.hpp`. A first bot in ~20 lines is the
-acceptance test for the API.
+Add the header to `arena/bots/`, include it in `registry.hpp`, and add a line to
+`build_roster()`. `ActionBatch` carries up to six actions per reaction, because a
+maker cancel-replacing both sides needs four and an API that forced it to spend
+four reaction windows doing so would be measuring itself.
 
-**Starting line-up:** market maker (quotes both sides, manages inventory), momentum
-(buys strength), noise (random, provides flow), sniper (only takes quotes that are
-stale relative to the last trade), and *you* (orders typed in at the keyboard).
+What a bot cannot see: the fundamental value (unless the roster marks it
+informed), the clock, other participants' positions, the engine's internals, or
+its queue position except by having tracked the feed itself.
 
-## The latency mechanism
+## What is not built
 
-The one genuinely new piece. Bots cannot submit instantly, or latency means nothing:
-
-1. The session keeps a simulated clock in nanoseconds.
-2. A bot reacting at time `t` to an event has its order stamped `t + latency_ns`.
-3. Orders wait in a scheduler (a small time-ordered queue) and enter the engine in
-   timestamp order.
-
-That is what makes "the fast bot eats the slow bot's edge" a measured result rather
-than a claim, and it keeps sessions deterministic: same seed and same latencies give
-the same session every time, which the existing event hash can verify.
-
-## The headline experiment
-
-**What is 10 microseconds worth?**
-
-Run the same seeded session repeatedly, changing only one market maker's reaction time
-(1µs, 10µs, 100µs, 1ms). Plot its P&L and its adverse-selection rate — how often it
-gets filled right before the price moves against it — against latency. The answer is a
-curve, in P&L per million orders, measured on a venue you built.
-
-That is the quant result the whole project points at, and it is only possible because
-the engine, the clock and the fills are all yours.
-
-## Phases
-
-Each phase ends with something runnable.
-
-| Phase | Work | Done when |
-|---|---|---|
-| **P0 — look** | `ui.hpp`, static frame of the full desktop with fake numbers | A screenshot that matches the mock |
-| **P1 — live book** | Feed the existing generated order stream through the engine into the view, paced for human eyes | You can watch a real book move, pause, change speed |
-| **P2 — bots** | Session, scheduler, accounting, the first two bots, PARTICIPANTS window | Two bots trade each other and P&L moves |
-| **P3 — sandbox** | Bot API frozen, registry, a 20-line example bot, a short "write your own bot" section in the README | Someone else can add a bot without reading the engine |
-| **P4 — experiment** | Latency sweep, the P&L-vs-latency curve, written up with evidence in `results/` | The curve exists and the README leads with it |
-
-A session hash means every phase is verifiable: same seed, same bots, same latencies →
-identical trades. Test it like the engine, not like a UI.
-
-## Risks and guards
-
-- **Scope creep into a platform.** The guard is the table at the top. If a feature
-  needs a server or a package manager, it is out.
-- **The renderer eating the project.** Timebox P0 to one day. If the look is not right
-  by then, simplify the look, not the engine.
-- **Bots becoming the point.** They are the demo, not the research. Three good bots
-  beat ten mediocre ones.
-- **Determinism slipping.** Any wall-clock read inside a session breaks replay. The
-  clock comes from the session, never from the OS.
-
-## Open questions
-
-1. **Keyboard trading:** worth it, or do bots alone make the point?
-2. **How many instruments on screen at once?** One is clearer; four shows the engine
-   is multi-instrument.
-3. **Does the arena ship in this repo, or its own?** Same repo keeps the story
-   together; a separate repo keeps this one strictly about the engine.
+- More than one instrument on screen. The session supports one, deliberately: one
+  legible ladder beats four grids of numbers, and the engine's multi-instrument
+  support is already demonstrated by the benchmarks.
+- Live keyboard trading, for the determinism reason above. A scripted order file
+  on the simulated clock would be the replayable way to do it.
+- Any form of fee model beyond a flat per-unit fee, which defaults to zero and is
+  reported when set.
