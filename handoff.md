@@ -6,7 +6,7 @@ explained before touching anything. `CLAUDE.md` is the working rulebook,
 mistakes behind it. This file is the narrative that ties them together.
 
 **State:** all work is on the branch `arena`, open as pull request
-[#1](https://github.com/PhillysTheBest/prediction-markets/pull/1) against `main`,
+[#1](https://github.com/PhillysTheBest/exchange-lab/pull/1) against `main`,
 twelve commits, nothing uncommitted. The suite is 450 checks across seven tests
 plus eleven command-line checks, green on Windows and under ASan/UBSan on Linux.
 
@@ -236,15 +236,17 @@ would not survive contact with the evidence in `results/`.
 
 **Not done, and yours to do:**
 
-- **Rename the repository to `exchange-lab`** on GitHub, set the description
-  (the text is in `CLAUDE.md`), then rename the local checkout and update the WSL
-  path in `CLAUDE.md`'s sanitizer command.
+- **Rename the local checkout.** The GitHub rename to `exchange-lab` is done, the
+  description is set, and the remote points at the new URL. Only the local folder is
+  still `prediction-markets`, because renaming it pulls the directory out from under a
+  running session. When it moves, the WSL path in `CLAUDE.md`'s sanitizer command moves
+  with it — it is the only path in the tree that names the folder.
 - **Scrub the Claude co-author trailers from the 17 old commits.** Approved but
   blocked by a permission guard on destructive git. The command and the five
   files holding commit SHAs that would need remapping are known; backup branches
   `backup-main-pre-scrub` and `backup-arena-pre-scrub` are in place. New commits
   already carry no attribution, enforced by the checked-in `.claude/settings.json`.
-- **Merge [PR #1](https://github.com/PhillysTheBest/prediction-markets/pull/1).**
+- **Merge [PR #1](https://github.com/PhillysTheBest/exchange-lab/pull/1).**
 
 **Deliberately not built,** so the list is bounded: runtime bot loading of any
 kind (no plugin DLL, no scripting language, nothing a running session accepts

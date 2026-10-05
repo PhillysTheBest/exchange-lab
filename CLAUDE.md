@@ -38,8 +38,8 @@ post-fill column, because a maker stale enough to be reliably picked off also st
 book tracking the fundamental. When writing about this project, do not restore the tidy
 version: the controls changed the answer twice and that is the interesting part.
 
-**The name.** The repository is being renamed to `exchange-lab`, from
-`prediction-markets`, which describes something this tree no longer contains. Not
+**The name.** The repository is `exchange-lab`, renamed from `prediction-markets`,
+which described something this tree no longer contains. Not
 `matching-engine`, which was the earlier plan: the arena is now larger than the engine
 and holds the project's actual result, so that name undersells it and is also shared
 with several hundred other repositories. `exchange-lab` is the tree's own description
@@ -59,9 +59,14 @@ and it is indexed where the name alone is not. Set it to:
 > allocation, bit-identical cross-OS replay — and the deterministic market simulator
 > built on it.
 
-Until the rename happens, paths in this file still say `prediction-markets`; after it,
-the local checkout directory and the WSL path in the sanitizer command below both change
-with it.
+That description is set. GitHub keeps redirects from the old URL, so an old clone keeps
+working, but the remote here already points at
+`https://github.com/PhillysTheBest/exchange-lab.git`.
+
+**The local checkout is still `prediction-markets`,** and that is the one part not done:
+renaming the folder pulls the directory out from under any running session. When it
+moves, the WSL path in the sanitizer command below moves with it, and that is the only
+path in this file that needs changing.
 
 ## Build and test
 
