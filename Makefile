@@ -45,10 +45,17 @@ endif
 BUILD ?= build
 DBG := $(BUILD)/debug
 REL := $(BUILD)/release
+# Objects go in their own subtree, binaries at the top of DBG/REL. They have to
+# be separated: object paths mirror the source tree, so without this the arena
+# viewer's binary ($(REL)/arena) and its objects ($(REL)/arena/*.o) are the same
+# path. On Windows the .exe suffix hides the clash; on Linux the directory wins
+# and the viewer cannot be linked at all.
+DOBJ := $(DBG)/obj
+ROBJ := $(REL)/obj
 
 LIB_SRC := src/matching_engine.cpp $(PLATFORM_SRC)
-LIB_DBG := $(LIB_SRC:%.cpp=$(DBG)/%.o)
-LIB_REL := $(LIB_SRC:%.cpp=$(REL)/%.o)
+LIB_DBG := $(LIB_SRC:%.cpp=$(DOBJ)/%.o)
+LIB_REL := $(LIB_SRC:%.cpp=$(ROBJ)/%.o)
 
 TESTS   := test_containers test_spsc_ring test_engine fuzz_vs_reference test_alloc_audit test_determinism \
            test_arena
@@ -112,27 +119,27 @@ arena: $(ARENA_BINS)
 sweep: $(REL)/sweep$(EXE)
 	./$<
 
-$(DBG)/%.o: %.cpp
+$(DOBJ)/%.o: %.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(DEBUG_FLAGS) $(DEPFLAGS) -c $< -o $@
 
-$(REL)/%.o: %.cpp
+$(ROBJ)/%.o: %.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) $(DEPFLAGS) -c $< -o $@
 
-$(TEST_BINS): $(DBG)/%$(EXE): $(DBG)/tests/%.o $(LIB_DBG)
+$(TEST_BINS): $(DBG)/%$(EXE): $(DOBJ)/tests/%.o $(LIB_DBG)
 	$(CXX) $(DEBUG_FLAGS) $^ -o $@ $(LDLIBS)
 
-$(BENCH_BINS): $(REL)/%$(EXE): $(REL)/bench/%.o $(LIB_REL)
+$(BENCH_BINS): $(REL)/%$(EXE): $(ROBJ)/bench/%.o $(LIB_REL)
 	$(CXX) $(RELEASE_FLAGS) $^ -o $@ $(LDLIBS)
 
-$(REPL_BIN): $(REL)/tools/repl.o $(LIB_REL)
+$(REPL_BIN): $(ROBJ)/tools/repl.o $(LIB_REL)
 	$(CXX) $(RELEASE_FLAGS) $^ -o $@ $(LDLIBS)
 
-$(ARENA_BINS): $(REL)/%$(EXE): $(REL)/arena/%.o $(LIB_REL)
+$(ARENA_BINS): $(REL)/%$(EXE): $(ROBJ)/arena/%.o $(LIB_REL)
 	$(CXX) $(RELEASE_FLAGS) $^ -o $@ $(LDLIBS)
 
 clean:
 	rm -rf $(BUILD)
 
--include $(wildcard $(DBG)/*/*.d $(REL)/*/*.d $(DBG)/*/*/*.d $(REL)/*/*/*.d)
+-include $(wildcard $(DOBJ)/*/*.d $(ROBJ)/*/*.d $(DOBJ)/*/*/*.d $(ROBJ)/*/*/*.d)
