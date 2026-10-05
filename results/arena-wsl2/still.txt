@@ -1,1 +1,33 @@
-bench/run_arena_evidence.sh: line 120: build-linux/release/arena: Is a directory
+·  ARENA │ bots trading inside the matching engine  ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   
+                                                                                                
+·  ORDER BOOK                       ■■■ ·  PARTICIPANTS                                  ■■■    
+  │                                    │  │   participant  delay    pos     value           │   
+· │                                    │  │ 1 maker       10us    920   +268.75        │███ │   
+  │                                    │  │ 2 rival        1us    890   +263.40        │███ │   
+· │                                    │  │ 3 informed     1us    235   -200.70      ██│    │   
+  │                                    │  │ 4 noise       50us  -1635    -99.55       █│    │   
+· │                                    │  │ 5 noise       50us   -350   -229.10     ███│    │   
+  │ 99.86           75  ██████▌        │  │ 6 momentum    20us    -60     -2.80        │    │   
+· │ 99.85          150  █████████████  │  │                                                 │   
+  │  value 99.80 ───────────────────── │  ───────────────────────────────────────────────────   
+· │ 99.81          100  ████████▋      │                                                        
+  │ 99.80           25  ██▏            │   REACTION DELAY                                ■■■    
+· │ 99.78           25  ██▏            │  │ simulated, not measured                         │   
+  │                                    │  │                                                 │   
+· │                                    │  │ maker     ─────────█────────────────── 10us     │   
+  │                                    │  │ rival     █─────────────────────────── 1us      │   
+· │                                    │  │ informed  █─────────────────────────── 1us      │   
+  │                                    │  │ noise     ─────────█────────────────── 50us     │   
+· │                                    │  │ noise     ─────────█────────────────── 50us     │   
+  ──────────────────────────────────────  │ momentum  ─────────█────────────────── 20us     │   
+·                                         │                                                 │   
+   SESSION                          ■■■   ───────────────────────────────────────────────────   
+· │ seed 42   clock 60ms   PAUSED      │                                                        
+  │ 17611 orders, 2928 trades          │   TAPE                                          ■■■    
+· │ book-value gap 1.5 tk (max 5)      │  │ ▼ 99.81       25 noise                          │   
+  │                                    │  │ ▼ 99.82       20 informed                       │   
+· │                                    │  ───────────────────────────────────────────────────   
+  ──────────────────────────────────────                                                        
+·                                           ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   
+  space pause   + - speed   1-9 focus   f reload script   q quit                                
+still at 60ms, seed 42, session hash 207af9614ae8f2f4

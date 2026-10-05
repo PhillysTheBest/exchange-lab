@@ -9,8 +9,9 @@ core fed by lock-free SPSC rings, no heap allocation after start-up, int64 fixed
 prices, plus the test and measurement machinery that backs its latency claims — and
 `arena/`, a seeded simulated market of bots trading inside that engine, with a
 controllable reaction delay each and a terminal renderer. README.md holds the design
-and the published results, `docs/ARENA.md` the arena's design and reasoning; this file
-covers how to work in the repo.
+and the published results, `docs/ARENA.md` the arena's design and reasoning, and
+`handoff.md` the narrative of what was built, how the terminal viewer works and what is
+left; this file covers how to work in the repo.
 
 **History, because the repo name and old commits mislead.** This was a Kalshi
 prediction-market trading system. The whole live stack (WebSocket/REST client,
@@ -22,10 +23,20 @@ trading strategy into the engine. Strategies live in `arena/bots/`, never in
 (`git show 07b3be0^:strategy/passive_market_maker.hpp`).
 
 **Status.** The engine is finished, measured and committed. The arena is built,
-measured and committed: see `docs/ARENA.md` for its design, the four modelling
-mistakes that produced confidently wrong results on the way, and the two parameters
-that turned out to be load-bearing. Its scope boundary is binding — everything
-compiles into one binary and nothing talks over a network.
+measured and committed: see `docs/ARENA.md` for its design, the modelling mistakes that
+produced confidently wrong results on the way, and the parameters that turned out to be
+load-bearing. Its scope boundary is binding — everything compiles into one binary and
+nothing talks over a network. All of it sits on the branch `arena`, open as pull request
+#1 against `main`.
+
+**The result is a negative one and the documentation leads with it.** "What is 10
+microseconds worth?" answers *less than 24 seeds can resolve*; 1 ms costs real money,
+but the null run (no informed participant at all) retains 96% of that effect, so the
+cost is competition for uninformed flow rather than adverse selection. A second,
+positive control then failed outright — no admissible way exists to calibrate the
+post-fill column, because a maker stale enough to be reliably picked off also stops the
+book tracking the fundamental. When writing about this project, do not restore the tidy
+version: the controls changed the answer twice and that is the interesting part.
 
 **The name.** The repository is being renamed to `exchange-lab`, from
 `prediction-markets`, which describes something this tree no longer contains. Not
@@ -68,6 +79,23 @@ mingw32-make all        # tests, command-line checks, benchmarks, REPL, arena
 mingw32-make clean
 ```
 
+Running the arena:
+
+```bash
+build/release/arena                                  # watch the default market
+build/release/arena --bots=maker,informed,noise:2    # compose the line-up by name
+build/release/arena --script=tools/arena_script_demo.txt   # play orders as a participant
+build/release/arena --still=60000000 --seed=42       # one reproducible frame, then exit
+build/release/sweep --help                           # every sweepable field
+build/release/sweep --seeds=24 --replay-check        # the headline sweep
+build/release/sweep --null                           # the control: nobody informed
+```
+
+Viewer keys: `space` pause, `+`/`-` speed, `1`-`9` focus a participant, `f` re-read the
+`--script` file and restart, `q` quit. No mouse support, by decision. No key can change
+what happens — the viewer only reads the session, which is why `f` restarts rather than
+injecting a participant into a running one.
+
 Run one test, or one benchmark with flags:
 
 ```bash
@@ -90,10 +118,17 @@ mingw32-make build/debug/test_engine.exe && ./build/debug/test_engine.exe
   effect a given seed count could resolve. Same rule as the engine's: a number in the
   documentation that this script does not print has no evidence behind it.
 - `bench/run_arena_evidence.sh <label>` does the same for `results/arena-<label>/`:
-  the headline sweep, the null run, the degenerate single-maker market and four
-  robustness sweeps. Unlike the engine's benchmarks these do not depend on the
-  machine, so there is no machine state to record — the same seed gives the same
-  answer anywhere.
+  the headline sweep, the null run, the failed positive control, the degenerate
+  single-maker market and four robustness sweeps. It takes `BUILD=` like the Makefile,
+  and **must** be given it on Linux: WSL runs Windows `.exe` files on `/mnt/c` through
+  interop, so a run that found `build/release/sweep.exe` would silently measure the
+  Windows binary and write the output into `results/arena-wsl2/`.
+- Unlike the engine's benchmarks, arena results do not depend on the machine. Both
+  `results/arena-windows/` and `results/arena-wsl2/` are committed and **every published
+  number and session hash in them is identical**, down to the rendered still frame.
+- `bench/frame_to_svg.py` turns an `arena --still` capture into the SVG README.md shows.
+  The picture is generated from a seed rather than screenshotted, so it can be
+  regenerated and diffed.
 
 ## Architecture
 
@@ -141,6 +176,18 @@ stream in `arena/book_mirror.hpp`. Read `docs/ARENA.md` before changing anything
 there — several of its parameters are load-bearing in ways that are not obvious, and
 the document records which and why.
 
+**Bots** are plain structs in `arena/bots/`, compiled in and never loaded at runtime.
+Adding one is a header plus one line in `add_named_bot()` and its name in `kBotNames`,
+which `test_arena` holds together so the two cannot drift. `arena/bots/fader.hpp` is the
+worked example, written against `arena/bot.hpp` alone. `--bots=maker,rival,noise:3`
+composes a line-up by name; without it the registry's default line-up is used, which is
+what every published number came from.
+
+**`arena/ui.hpp`** owns a grid of coloured cells and knows nothing about trading;
+`arena/arena.cpp` is the only place the renderer and the market meet. A frame composes
+into the grid and goes out in one `fwrite`, emitting a colour escape only where a colour
+changes. `handoff.md` explains the viewer and its purpose at length.
+
 ## Rules the code depends on
 
 These are rules about the **engine**. Two of them stop at `arena/`'s edge, and that
@@ -159,7 +206,7 @@ to differ between library versions and would silently break cross-platform repla
   shift versus 0.6µs for a plain loop. `-fno-tree-loop-distribute-patterns` (in both
   flag sets, because LTO generates code at link time) stops GCC turning them back into
   `memmove`. Verify with
-  `objdump -d build/debug/src/matching_engine.o | grep -c memmove`, which must be 0.
+  `objdump -d build/debug/obj/src/matching_engine.o | grep -c memmove`, which must be 0.
 - **Admission is decided before matching**, so an order is never partly executed and
   then rejected. Change this and `tests/reference_engine.hpp` must change identically.
 - **Determinism is a contract.** Same input, bit-identical event stream, on every OS.
@@ -231,6 +278,17 @@ loose from the fundamental is not a market and nothing read off one counts.
 - Report a negative arena result with its standard error. `summarize_arena.py` prints the
   smallest effect a seed count could resolve, because "underpowered" and "nothing there"
   are different claims and only one of them is usually earned.
+- **Binaries and objects live in separate subtrees**: `$(REL)/name` and `$(REL)/obj/...`.
+  They have to. Object paths mirror the source tree, so without the split the viewer's
+  binary (`$(REL)/arena`) and its object directory (`$(REL)/arena/`) are the same path:
+  Windows hides the clash behind `.exe`, and on Linux the directory wins and the viewer
+  cannot be linked at all. Anything that hard-codes an object path — the `memmove` check
+  above, for one — goes through `obj/`.
+- The post-fill ("adverse") column is near zero for everyone by construction, because the
+  fundamental is a martingale and no participant predicts it. A stale quote's loss lands
+  in the contemporaneous column, which the code calls `spread`. Do not describe `adverse`
+  reading zero as evidence that nothing adverse happened; `docs/ARENA.md` works through
+  it, and the failed calibration is published in `results/arena-*/stale.*`.
 
 ## Conventions
 
