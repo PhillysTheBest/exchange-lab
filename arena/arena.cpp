@@ -18,7 +18,8 @@
 // the controls and the market gets none of them.
 //
 //   space   pause and resume            1-9  focus a participant
-//   + -     faster, slower              q    quit
+//   + -     faster, slower              f    reload the script file and restart
+//                                       q    quit
 //
 // --still runs a session headless to one simulated instant and prints a single
 // frame, which makes a screenshot reproducible from a seed.
@@ -274,7 +275,7 @@ void compose(ui::Screen& s, const Session& sess, const ViewOptions& opt, int foc
     const int tape_h = h - tape_y - 3;
     if (tape_h > 3) draw_tape(s, Rect{right_x, tape_y, right_w, tape_h}, sess);
 
-    s.text(2, h - 1, "space pause   + - speed   1-9 focus   q quit", pal::dim, pal::desktop, w - 4);
+    s.text(2, h - 1, "space pause   + - speed   1-9 focus   f reload script   q quit", pal::dim, pal::desktop, w - 4);
 
     if (alert.live(sess.now())) {
         const int dw = 46, dh = 5;
@@ -316,6 +317,55 @@ Alert detect_alert(const Session& sess, std::size_t& seen_trades, Price& last_mi
     return a;
 }
 
+// The line-up the options describe, around a set of scripted orders that has
+// already been loaded. Split from the loading on purpose: the `f` key must be
+// able to validate a freshly edited file *before* it replaces the one the
+// running session's scripted participant is pointing into, or a typo would
+// empty the market you were watching.
+[[nodiscard]] bool make_roster(const RosterConfig& rc, const ViewOptions& opt,
+                               std::vector<bots::ScriptedOrder>& orders, Roster& out, std::string& error) {
+    error.clear();
+    Roster roster;
+    // A spec if one was given, otherwise the default line-up, so --script alone
+    // puts you into the usual market rather than an empty one.
+    if (opt.bots.empty()) {
+        roster = build_roster(rc);
+    } else if (!roster_from_spec(opt.bots, rc, roster, error)) {
+        error = "--bots=" + opt.bots + ": " + error;
+        return false;
+    }
+    if (!opt.script.empty()) {
+        bots::Scripted you;
+        you.orders = &orders;
+        roster.bots.push_back(make_bot(you));
+        roster.informed.push_back(false);
+    }
+    out = std::move(roster);
+    return true;
+}
+
+// Builds the session the options describe, from scratch. Called once at startup
+// and again whenever `f` reloads a script, which is why it is a function: the
+// reload has to produce exactly the session that `--script=PATH --seed=N` gives
+// headless, and the surest way to guarantee that is for both paths to run the
+// same code.
+//
+// `script_orders` is filled here and must outlive the session, because the
+// scripted participant holds a pointer into it.
+[[nodiscard]] Session::StartError start_session(Session& sess, const SessionConfig& sc, const RosterConfig& rc,
+                                                const ViewOptions& opt,
+                                                std::vector<bots::ScriptedOrder>& script_orders,
+                                                std::string& error) {
+    error.clear();
+    if (opt.bots.empty() && opt.script.empty()) return sess.start(sc, rc);
+    if (!opt.script.empty() && !bots::load_script(opt.script.c_str(), sc.tick, script_orders, error)) {
+        return Session::StartError::None;
+    }
+    Roster roster;
+    if (!make_roster(rc, opt, script_orders, roster, error)) return Session::StartError::None;
+    return sess.start(sc, std::move(roster));
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -333,7 +383,9 @@ int main(int argc, char** argv) {
                         "  --script=PATH        play a file of orders as a participant, in\n"
                         "                       simulated time; see tools/arena_script_demo.txt\n"
                         "  --still=NS           render one frame at that simulated instant and exit\n\n"
-                        "keys: space pause, + - speed, 1-9 focus, q quit\n\n"
+                        "keys: space pause, + - speed, 1-9 focus, q quit\n"
+                        "      f re-reads the --script file from disk and restarts the session,\n"
+                        "      so you can edit your orders in another window and watch again\n\n"
                         "The viewer only reads the session. Pausing, speeding up and focusing cannot\n"
                         "change what happens, so a watched session has the same hash as a headless one.\n"
                         "Reaction delays are simulated inputs; the engine's measured latency is in README.md.\n");
@@ -379,32 +431,11 @@ int main(int argc, char** argv) {
     std::vector<bots::ScriptedOrder> script_orders;
 
     Session sess;
-    Session::StartError bad = Session::StartError::None;
-    if (opt.bots.empty() && opt.script.empty()) {
-        bad = sess.start(sc, rc);
-    } else {
-        Roster roster;
-        std::string why;
-        // A spec if one was given, otherwise the default line-up, so --script
-        // alone puts you into the usual market rather than an empty one.
-        const bool built = opt.bots.empty() ? (roster = build_roster(rc), true)
-                                            : roster_from_spec(opt.bots, rc, roster, why);
-        if (!built) {
-            std::fprintf(stderr, "--bots=%s: %s\n", opt.bots.c_str(), why.c_str());
-            return 2;
-        }
-        if (!opt.script.empty()) {
-            if (!bots::load_script(opt.script.c_str(), sc.tick, script_orders, why)) {
-                std::fprintf(stderr, "%s\n", why.c_str());
-                return 2;
-            }
-            bots::Scripted you;
-            you.orders = &script_orders;
-            roster.bots.push_back(make_bot(you));
-            roster.informed.push_back(false);
-            std::fprintf(stderr, "playing %zu orders from %s\n", script_orders.size(), opt.script.c_str());
-        }
-        bad = sess.start(sc, std::move(roster));
+    std::string why;
+    Session::StartError bad = start_session(sess, sc, rc, opt, script_orders, why);
+    if (!why.empty()) {
+        std::fprintf(stderr, "%s\n", why.c_str());
+        return 2;
     }
     if (bad != Session::StartError::None) {
         std::fprintf(stderr, "cannot run this configuration: %s\n", Session::explain(bad));
@@ -460,6 +491,55 @@ int main(int argc, char** argv) {
         if (key >= '1' && key <= '9') {
             const int want = key - '1';
             if (static_cast<std::size_t>(want) < sess.participants()) focus = want;
+        }
+        if (key == 'f' || key == 'F') {
+            // Re-read the script from disk and start the session again with it.
+            //
+            // Deliberately a restart and not an injection. Adding a participant
+            // to a running session would mean the market changed at the instant
+            // a human pressed a key, which is a wall-clock event: the session
+            // could never be reproduced, and replay is the one property
+            // everything else here is built on. Restarting keeps the viewer a
+            // reader — what you end up watching is exactly the session that
+            // `--script=PATH --seed=N` produces headless, same hash and all.
+            if (opt.script.empty()) {
+                alert.line1 = "no script file to reload";
+                alert.line2 = "start with --script=PATH, then f re-reads it";
+                alert.until = sess.now() + 2'000'000;
+            } else {
+                // Parse the edited file into a scratch vector first. Only if it
+                // is good does it replace the one the running session points at,
+                // so a typo leaves the market you were watching untouched.
+                std::vector<bots::ScriptedOrder> probe;
+                std::string reload_error;
+                Roster roster;
+                if (!bots::load_script(opt.script.c_str(), sc.tick, probe, reload_error)) {
+                    alert.line1 = reload_error;
+                    alert.line2 = "keeping the session that was already running";
+                    alert.until = sess.now() + 4'000'000;
+                } else {
+                    const std::size_t loaded = probe.size();
+                    script_orders = std::move(probe);
+                    Session::StartError e = Session::StartError::None;
+                    if (!make_roster(rc, opt, script_orders, roster, reload_error)) {
+                        alert.line1 = reload_error;
+                        alert.line2 = "keeping the session that was already running";
+                        alert.until = sess.now() + 4'000'000;
+                    } else if ((e = sess.start(sc, std::move(roster))) != Session::StartError::None) {
+                        alert.line1 = Session::explain(e);
+                        alert.line2 = "the session has stopped; fix it and press f again";
+                        alert.until = sess.now() + 6'000'000;
+                    } else {
+                        seen_trades = 0;
+                        last_mid = 0;
+                        paused = false;
+                        if (focus >= static_cast<int>(sess.participants())) focus = 0;
+                        alert.line1 = "reloaded " + std::to_string(loaded) + " orders from " + opt.script;
+                        alert.line2 = "restarted from seed " + std::to_string(opt.seed) + "; same as headless";
+                        alert.until = sess.now() + 3'000'000;
+                    }
+                }
+            }
         }
 
         const auto now = std::chrono::steady_clock::now();

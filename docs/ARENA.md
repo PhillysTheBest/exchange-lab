@@ -507,6 +507,17 @@ One limitation worth knowing: the bot contract offers a periodic timer and not a
 after it — 10 µs granularity by default, finer than anyone writes a script by
 hand.
 
+**`f` re-reads the file and restarts the session.** Edit your orders in another
+window, press `f`, watch the whole thing again from the same seed. That is a
+restart and deliberately not an injection: adding a participant to a *running*
+session would mean the market changed at the instant a human pressed a key, which
+is a wall-clock event, and the session could never be reproduced afterwards.
+Restarting keeps the viewer a reader, so what you end up watching is exactly the
+session `--script=PATH --seed=N` produces headless — `test_arena` asserts the two
+hashes match. A file that fails to parse leaves the running session untouched and
+says why in the dialog, because a typo should not cost you the market you were
+watching.
+
 The point of the file over a keyboard is that the result is *reproducible*:
 `test_arena` plays the same script twice and checks the session hashes match, so
 a session you played by hand can be replayed by anyone who has the file. A
