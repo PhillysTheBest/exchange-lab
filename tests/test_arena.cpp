@@ -819,6 +819,24 @@ void test_scripted_participant() {
     PX_CHECK(a.fills > 0);
     PX_CHECK(s.ledger().value_sum(s.fair_value().value()) == 0);
 
+    // What the viewer's `f` key does: start the same session again over a
+    // freshly loaded copy of the orders. It must land on exactly the session a
+    // headless run would produce, because a restart that drifted would make the
+    // viewer a participant rather than a reader.
+    {
+        std::vector<bots::ScriptedOrder> reloaded;
+        PX_CHECK(parse_script(good, tick, reloaded, why));
+        Roster again = build_roster(RosterConfig{});
+        bots::Scripted you_again;
+        you_again.orders = &reloaded;
+        again.bots.push_back(make_bot(you_again));
+        again.informed.push_back(false);
+        Session restarted;
+        PX_CHECK(restarted.start(sc, std::move(again)) == Session::StartError::None);
+        restarted.run();
+        PX_CHECK(restarted.hash() == s.hash());
+    }
+
     // Same script, same seed, same session: scripted trading is replayable,
     // which is the entire reason it is a file and not a keyboard.
     std::vector<bots::ScriptedOrder> again = orders;

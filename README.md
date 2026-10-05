@@ -290,6 +290,14 @@ session headless to one simulated instant and prints the frame, and
 `bench/frame_to_svg.py` turns it into the SVG above. Regenerate it and diff it — a
 screenshot is a thing somebody took once and nobody can check.
 
+Keys: `space` pause, `+`/`-` speed, `1`–`9` focus a participant, `q` quit, and `f` to
+re-read your `--script` file from disk and restart. **None of them can change what
+happens.** The viewer only ever reads the session, so a run watched at 512×, paused
+halfway and resumed has the same session hash as the same seed run headless — and `f`
+restarts rather than injecting, for the same reason: a participant appearing at the
+instant a human pressed a key would be a wall-clock event, and the session could never
+be reproduced again.
+
 ### What is 10 microseconds worth?
 
 **In this market, 10 µs costs less than 24 seeds can resolve; 100 µs and 1 ms both cost
