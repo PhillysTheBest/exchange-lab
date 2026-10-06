@@ -27,7 +27,9 @@ measured and committed: see `docs/ARENA.md` for its design, the modelling mistak
 produced confidently wrong results on the way, and the parameters that turned out to be
 load-bearing. Its scope boundary is binding — everything compiles into one binary and
 nothing talks over a network. All of it sits on the branch `arena`, open as pull request
-#1 against `main`.
+#1 against `main`. The next piece of work is the strategy lab, designed and not built:
+see "The strategy lab" below, and `docs/LAB_PLAN.md` for the task-by-task plan. It
+leaves that scope boundary intact, which an earlier draft of it did not.
 
 **The result is a negative one and the documentation leads with it.** "What is 10
 microseconds worth?" answers *less than 24 seeds can resolve*; 1 ms costs real money,
@@ -186,12 +188,88 @@ Adding one is a header plus one line in `add_named_bot()` and its name in `kBotN
 which `test_arena` holds together so the two cannot drift. `arena/bots/fader.hpp` is the
 worked example, written against `arena/bot.hpp` alone. `--bots=maker,rival,noise:3`
 composes a line-up by name; without it the registry's default line-up is used, which is
-what every published number came from.
+what every published number came from. The strategy lab, designed below, turns those
+two steps into one make target for a bot of your own; it does not change what a bot is.
 
 **`arena/ui.hpp`** owns a grid of coloured cells and knows nothing about trading;
 `arena/arena.cpp` is the only place the renderer and the market meet. A frame composes
 into the grid and goes out in one `fwrite`, emitting a colour escape only where a colour
 changes. `handoff.md` explains the viewer and its purpose at length.
+
+## The strategy lab (designed, not built)
+
+The next piece of work: anyone with the repo and a compiler adds their own bot to the
+baseline market and gets a reproducible, honestly-qualified score for it. **None of it
+exists in the tree yet.** The design is settled and the task-by-task plan is
+`docs/LAB_PLAN.md`; this section is the specification, and the parenthesis in its
+heading comes off when it lands.
+
+**What it is.** `make bot BOT=path/to/mybot.hpp` validates the header, copies it into
+`arena/bots/user/`, regenerates a manifest, and prints the two commands to run it:
+`arena_lab --bots=...,mybot` to watch it, `sweep_lab --score=mybot` to score it.
+
+**It is not runtime loading, and `docs/ARENA.md`'s boundary prose stays true as
+written.** A strategy still links into the binary: no plugin DLL, no embedded scripting
+language, no ABI, no sandbox, nothing a running session accepts from outside itself.
+Installing a bot is a build step, not something the viewer does — the viewer is not
+modified by this work at all. An earlier version of the design had it accept a dragged
+file, rebuild itself and respawn; that was cut after review, and "What was cut" below
+says why, because that is the part worth reading.
+
+**A user bot cannot reach the published evidence, by construction,** and this is the
+decision everything else rests on. The manifest is included only under
+`-DPX_ARENA_USER_BOTS`, and the only targets setting it are two new binaries,
+`$(REL)/arena_lab` and `$(REL)/sweep_lab`. `arena`, `sweep`, every test and `test-cli`
+are compiled without it, so a user bot is not in their translation units at all. The
+reason is specific rather than cautious: `arena/session.hpp` includes
+`arena/bots/registry.hpp`, `tests/test_arena.cpp` includes the session, and `test-cli`
+builds and runs the *release* `sweep`. An unguarded delegation would therefore have put
+a stranger's header into the binaries that assert the pinned hashes, and a header with
+a typo would have broken `mingw32-make test`. Lab objects need their own object subtree,
+because their flags differ from `$(ROBJ)/arena/*.o` and make would otherwise reuse an
+object built without the define.
+
+**The manifest is generated into the build tree and never committed** —
+`$(BUILD)/generated/px_user_bots.hpp`, already covered by `.gitignore`'s `build*/`.
+Committing a generated file that the installer rewrites would leave it permanently
+dirty and conflict on every pull. Only `arena/bots/user/*.hpp` is ignored; the directory
+keeps a `.gitkeep` so a clean clone has it.
+
+**Scoring is paired against a placebo seat, not against the bot's absence.** Adding a
+participant adds wake events, and changed wake ordering moves the session hash, so a
+bare with-and-without comparison would conflate a bot's market impact with a
+re-interleaved session. Both arms carry the same extra seat instead: one holds the
+user's bot, the other holds `placebo`, an inert participant that never acts. The scoring
+baseline is consequently the default line-up *plus one inert seat*, which is not
+identical to the published market, and the output says so. Report the gap first, then
+the paired value with its standard error and the smallest effect the seed count can
+resolve, then the shift in each baseline participant's value.
+
+**A scored run containing a user bot prints no session hash, and says why.** No floating
+point inside a session is what makes replay bit-identical across platforms, and a user's
+C++ bot is free to use a `double`. That cannot be detected: a same-machine
+`--replay-check` cannot see it, because the divergence is between library versions on
+different platforms, and a source scan for `double` misses `n/2.0`, `std::sqrt` and a
+`0.5` in a template. An 80%-accurate warning is the kind of overclaim the rest of this
+project refuses, so the hash is withheld instead. The arena's own numbers do not depend
+on this, because no user bot is in the default line-up or in `sweep` at all.
+
+**What was cut, and why.** The first design had a visitor drag a bot header onto the
+running viewer, which would install it, shell out to the compiler, link a second binary,
+hand over the terminal and respawn into it. A council review rejected it unanimously and
+two facts settled it. The audience is empty: `g++` and `mingw32-make` exist only inside
+the MSYS2 UCRT64 shell, so a visitor who could drag a file out of Explorer has no
+compiler, and one who has a compiler already has a shell where `make bot` is better. And
+it is too slow: one arena translation unit plus its LTO link measures **27 seconds** on
+this laptop, and a manifest change invalidates both `arena.o` and `sweep.o`, so a drop
+costs about 50-60 seconds rather than the 20 the earlier draft claimed. The same review
+found the include chain above. `docs/LAB_PLAN.md` keeps the whole record, including the
+measurements.
+
+**One claim not to make.** Scoring does *not* redeem the positive control that failed in
+`docs/ARENA.md`. That control failed because a maker stale enough to be reliably picked
+off also stops tracking the fundamental; a paired design measures a perturbation, it
+does not make a stale probe admissible.
 
 ## Rules the code depends on
 
