@@ -27,7 +27,10 @@ that engine, each with a reaction delay the experimenter sets, plus a terminal
 renderer to watch it and a headless runner to sweep it. About 4,300 lines.
 
 The project's centre of gravity moved as a result. The engine is now the
-instrument; the experiment is the result. That is why the repository is being
+instrument; the experiment is the result. The strategy lab, designed but not
+built (§6), moves it once more: it makes the instrument something other people
+can submit a strategy to, so "add your own bot" becomes part of what the project
+is rather than a paragraph about what it would permit. That is why the repository is being
 renamed to `exchange-lab` rather than `matching-engine` — see the name section in
 `CLAUDE.md` for the reasoning and the two names that must be avoided.
 
@@ -97,6 +100,9 @@ panes. The layout is computed from the terminal size each frame, so it reflows
 when you resize the window, but the panes are not movable. That was a scope
 decision: dragging panes would mean parsing mouse escape sequences, hit-testing,
 z-order and a focus model — a window manager, to make six fixed panes movable.
+The planned strategy lab does not change that either: it was going to accept a
+dragged file, and that was cut on review, so installing a bot is a make target
+and the viewer is not involved at all.
 
 **No control can change what happens.** The viewer paces a session by asking it
 to advance to a simulated timestamp; the keyboard only changes how fast it asks.
@@ -233,6 +239,36 @@ would not survive contact with the evidence in `results/`.
 ---
 
 ## 6. What is left
+
+**Next, and designed:** the strategy lab — `make bot BOT=path/to/mybot.hpp`
+installs a bot of your own, `arena_lab --bots=...,mybot` watches it trade, and
+`sweep_lab --score=mybot` scores it against the baseline market. The design is
+settled and written up in `CLAUDE.md` under "The strategy lab", with the
+task-by-task plan in `docs/LAB_PLAN.md`; **none of it is built.** Three things
+about it are worth carrying into the work:
+
+- **It is not runtime loading, and the boundary below stays true as written.** A
+  strategy still links into the binary, and installing one is a build step
+  rather than anything a running session does. An earlier draft had the viewer
+  accept a dragged file, rebuild itself and respawn; a council review cut it
+  unanimously, because the audience was empty — `g++` and `mingw32-make` live
+  only in the MSYS2 shell, so a visitor who can drag a file out of Explorer has
+  no compiler — and because one arena translation unit plus its LTO link
+  measures 27 seconds, making a drop cost nearer a minute than the 20 seconds
+  that draft assumed.
+- **A user bot cannot reach the published evidence.** The manifest compiles only
+  under `-DPX_ARENA_USER_BOTS`, which only the two lab binaries set, so `arena`,
+  `sweep` and every test cannot see one. Without that guard a stranger's header
+  would have sat inside the binaries that assert the pinned hashes, because the
+  session includes the registry and the tests include the session — and a
+  header with a typo would have broken `mingw32-make test`.
+- **The built-in roster is a baseline, not an opponent,** and a score is paired
+  against an inert placebo holding the same seat rather than against the bot's
+  absence: adding a participant adds wake events, so a bare with-and-without
+  comparison would conflate market impact with a re-interleaved session. A score
+  ships with the book-to-fundamental gap first, a standard error, and the shift
+  it caused in everyone else's value — a participant that perturbs the market
+  grading it is the exact thing that killed the positive control in §4.
 
 **Not done, and yours to do:**
 
