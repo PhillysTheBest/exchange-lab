@@ -22,14 +22,14 @@ part was finished before this work started and **has not been touched since** �
 `git diff` over `include/ src/ sim/` is empty across all twelve commits, and the
 pinned determinism hash is still `77a560d8ffb4fa43`.
 
-What was added is `arena/`: a seeded simulated market of bots trading *inside*
+What was added is `arena/`: a seeded simulated market of strategies trading *inside*
 that engine, each with a reaction delay the experimenter sets, plus a terminal
 renderer to watch it and a headless runner to sweep it. About 4,300 lines.
 
 The project's centre of gravity moved as a result. The engine is now the
 instrument; the experiment is the result. The strategy lab, designed but not
 built (§6), moves it once more: it makes the instrument something other people
-can submit a strategy to, so "add your own bot" becomes part of what the project
+can submit a strategy to, so "add your own strategy" becomes part of what the project
 is rather than a paragraph about what it would permit. That is why the repository is being
 renamed to `exchange-lab` rather than `matching-engine` — see the name section in
 `CLAUDE.md` for the reasoning and the two names that must be avoided.
@@ -61,8 +61,8 @@ of glyphs and one write syscall.
 | Window | Colour | Shows |
 |---|---|---|
 | ORDER BOOK | teal | The ladder. Asks above, bids below, size as bars, with the fundamental value printed on the dividing line so you can see how far the book has drifted from a truth no participant can observe. Drawn from the engine itself, so it is the exchange's view rather than any participant's. |
-| PARTICIPANTS | violet | One row per bot: reaction delay, position, marked value as a bar running both ways from zero. The informed trader's row is orange. |
-| REACTION DELAY | orange | Each bot's delay on a log slider spanning 1 µs to 1 ms. The dial the experiment turns, labelled *simulated, not measured* on the window itself. |
+| PARTICIPANTS | violet | One row per strategy: reaction delay, position, marked value as a bar running both ways from zero. The informed trader's row is orange. |
+| REACTION DELAY | orange | Each strategy's delay on a log slider spanning 1 µs to 1 ms. The dial the experiment turns, labelled *simulated, not measured* on the window itself. |
 | SESSION | teal | Seed, simulated clock, orders, trades, and the book-to-fundamental gap — the number that says whether what you are watching is a market at all. |
 | TAPE | magenta | Prints as they happen: direction, price, size, which participant was the aggressor. |
 | ! NOTABLE | magenta | A modal dialog, on a print that moved the mid several ticks, and on anything the `f` key has to tell you. |
@@ -101,7 +101,7 @@ when you resize the window, but the panes are not movable. That was a scope
 decision: dragging panes would mean parsing mouse escape sequences, hit-testing,
 z-order and a focus model — a window manager, to make six fixed panes movable.
 The planned strategy lab does not change that either: it was going to accept a
-dragged file, and that was cut on review, so installing a bot is a make target
+dragged file, and that was cut on review, so installing a strategy is a make target
 and the viewer is not involved at all.
 
 **No control can change what happens.** The viewer paces a session by asking it
@@ -117,7 +117,7 @@ event, and the session could never be reproduced again.
 mingw32-make arena
 build/release/arena                                   # watch the default market
 build/release/arena --maker-reaction=1000000          # watch a slow maker get left behind
-build/release/arena --bots=maker,informed,noise:2     # choose the line-up
+build/release/arena --strategies=maker,informed,noise:2     # choose the line-up
 build/release/arena --script=tools/arena_script_demo.txt   # put yourself in it
 build/release/arena --still=60000000 --seed=42        # one reproducible frame, then exit
 ```
@@ -133,12 +133,12 @@ rather than drawing garbage if either is missing.
 Twelve commits on `arena`. The themes, not the diffs:
 
 **The core** (`a1d22f2`). A session owns a `MatchingEngine`, a simulated
-nanosecond clock, a roster of bots and the accounting. The reaction model is the
-new mechanism: a bot with delay *d*, woken by something at time *t*, acts at
+nanosecond clock, a roster of strategies and the accounting. The reaction model is the
+new mechanism: a strategy with delay *d*, woken by something at time *t*, acts at
 *t + d* and sees the world as of *t* — one knob buys both halves of being slow,
 because its view is stale and its order is late. Queue position is reconstructed
 from the `ExecEvent` stream alone in `arena/book_mirror.hpp`, so **no engine API
-was added** and a bot provably sees no more than a real participant would.
+was added** and a strategy provably sees no more than a real participant would.
 
 **The experiment** (`368e6c1`). A sweep *runner* rather than one hard-coded
 sweep: any roster or session field can be the swept variable, several seeds per
@@ -155,14 +155,14 @@ stopped generating orders ran forever. Both are now refused or bounded at
 construction and pinned by regression tests. Both fixes are provably no
 behavioural change in the measured range, which the unchanged hashes confirm.
 
-**The worked example** (`639e917`). `arena/bots/fader.hpp`, written against the
-bot contract alone, so "anyone can add a strategy" is tested rather than claimed.
+**The worked example** (`639e917`). `arena/strategies/fader.hpp`, written against the
+strategy contract alone, so "anyone can add a strategy" is tested rather than claimed.
 
 **The name** (`83f676d`). Settled on `exchange-lab`, with the reasoning.
 
 **The ledger and a failed control** (`318dc83`). See §4.
 
-**Composing a line-up** (`75b566d`). `--bots=maker,rival,informed,noise:3`.
+**Composing a line-up** (`75b566d`). `--strategies=maker,rival,informed,noise:3`.
 
 **Linux evidence, scripted trading, and a picture** (`ae02f92`).
 
@@ -240,35 +240,12 @@ would not survive contact with the evidence in `results/`.
 
 ## 6. What is left
 
-**Next, and designed:** the strategy lab — `make bot BOT=path/to/mybot.hpp`
-installs a bot of your own, `arena_lab --bots=...,mybot` watches it trade, and
-`sweep_lab --score=mybot` scores it against the baseline market. The design is
-settled and written up in `CLAUDE.md` under "The strategy lab", with the
-task-by-task plan in `docs/LAB_PLAN.md`; **none of it is built.** Three things
-about it are worth carrying into the work:
-
-- **It is not runtime loading, and the boundary below stays true as written.** A
-  strategy still links into the binary, and installing one is a build step
-  rather than anything a running session does. An earlier draft had the viewer
-  accept a dragged file, rebuild itself and respawn; a council review cut it
-  unanimously, because the audience was empty — `g++` and `mingw32-make` live
-  only in the MSYS2 shell, so a visitor who can drag a file out of Explorer has
-  no compiler — and because one arena translation unit plus its LTO link
-  measures 27 seconds, making a drop cost nearer a minute than the 20 seconds
-  that draft assumed.
-- **A user bot cannot reach the published evidence.** The manifest compiles only
-  under `-DPX_ARENA_USER_BOTS`, which only the two lab binaries set, so `arena`,
-  `sweep` and every test cannot see one. Without that guard a stranger's header
-  would have sat inside the binaries that assert the pinned hashes, because the
-  session includes the registry and the tests include the session — and a
-  header with a typo would have broken `mingw32-make test`.
-- **The built-in roster is a baseline, not an opponent,** and a score is paired
-  against an inert placebo holding the same seat rather than against the bot's
-  absence: adding a participant adds wake events, so a bare with-and-without
-  comparison would conflate market impact with a re-interleaved session. A score
-  ships with the book-to-fundamental gap first, a standard error, and the shift
-  it caused in everyone else's value — a participant that perturbs the market
-  grading it is the exact thing that killed the positive control in §4.
+**Next:** turning the arena into a strategy research platform, in five steps
+(strategy interface, standard experiment runner, evaluation report, validating the
+evaluator, one-command reproducibility). Step 1 is built: `make strategy
+STRATEGY=path/to/name.hpp` installs a strategy of your own and builds `sweep_lab` and
+`arena_lab`, which are the only binaries that can see it. See "Strategies of your own"
+in `CLAUDE.md`.
 
 **Not done, and yours to do:**
 
@@ -284,7 +261,7 @@ about it are worth carrying into the work:
   already carry no attribution, enforced by the checked-in `.claude/settings.json`.
 - **Merge [PR #1](https://github.com/PhillysTheBest/exchange-lab/pull/1).**
 
-**Deliberately not built,** so the list is bounded: runtime bot loading of any
+**Deliberately not built,** so the list is bounded: runtime strategy loading of any
 kind (no plugin DLL, no scripting language, nothing a running session accepts
 from outside itself), mouse support, more than one instrument on screen, live
 keyboard trading, and fee models beyond a flat per-unit fee. On the engine side:

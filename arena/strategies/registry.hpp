@@ -1,6 +1,6 @@
-// arena/bots/registry.hpp — the single list of participants in play.
+// arena/strategies/registry.hpp — the single list of participants in play.
 //
-// ADDING A BOT: write a header beside this one, include it, and add one line to
+// ADDING A STRATEGY: write a header beside this one, include it, and add one line to
 // build_roster(). If it has anything worth sweeping, add its fields to
 // RosterConfig and one line each to set_roster_param(). That is the whole
 // extension mechanism — no registration macro, no static initialiser ordering,
@@ -18,7 +18,7 @@
 // somebody, and the rival is the somebody.
 //
 // WHO IS INFORMED. Exactly one entry may be marked informed, and build_roster()
-// is the only place that decides. Marking it here rather than inside the bot
+// is the only place that decides. Marking it here rather than inside the strategy
 // keeps the information asymmetry visible in one file: a reader can see, without
 // reading any strategy, that precisely one participant is given the fundamental
 // value and the rest must infer price from the book.
@@ -26,18 +26,18 @@
 // OWNER IDS are assigned by the session as (roster index + 1), so every
 // participant is a distinct owner to the engine. That matters more than it
 // looks: self-trade prevention *cancels* a resting order rather than trading it,
-// so sharing one owner between bots would silently delete the maker's quotes
+// so sharing one owner between strategies would silently delete the maker's quotes
 // instead of filling them, and the whole experiment would be measuring an
-// artefact. Distinct owners confine self-trade prevention to a bot crossing
+// artefact. Distinct owners confine self-trade prevention to a strategy crossing
 // itself, which the maker's spread makes impossible.
 #pragma once
 
-#include "arena/bot.hpp"
-#include "arena/bots/fader.hpp"
-#include "arena/bots/informed.hpp"
-#include "arena/bots/market_maker.hpp"
-#include "arena/bots/momentum.hpp"
-#include "arena/bots/noise.hpp"
+#include "arena/strategy.hpp"
+#include "arena/strategies/fader.hpp"
+#include "arena/strategies/informed.hpp"
+#include "arena/strategies/market_maker.hpp"
+#include "arena/strategies/momentum.hpp"
+#include "arena/strategies/noise.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -121,18 +121,18 @@ struct RosterConfig {
 };
 
 struct Roster {
-    std::vector<std::unique_ptr<BotHandle>> bots;
-    std::vector<bool> informed; // parallel to `bots`; at most one is true
+    std::vector<std::unique_ptr<StrategyHandle>> strategies;
+    std::vector<bool> informed; // parallel to `strategies`; at most one is true
     int maker_index = -1;       // the participant the sweep is usually about
     int rival_index = -1;       // its competition, held fixed
 
-    [[nodiscard]] std::size_t size() const noexcept { return bots.size(); }
+    [[nodiscard]] std::size_t size() const noexcept { return strategies.size(); }
 };
 
 [[nodiscard]] inline Roster build_roster(const RosterConfig& cfg) {
     Roster r;
 
-    bots::MarketMaker maker;
+    strategies::MarketMaker maker;
     maker.reaction_ns = cfg.maker_reaction_ns;
     maker.anchor = cfg.anchor;
     maker.half_spread_ticks = cfg.maker_half_spread_ticks;
@@ -140,12 +140,12 @@ struct Roster {
     maker.max_position = cfg.maker_max_position;
     maker.skew_ticks_at_limit = cfg.maker_skew_ticks_at_limit;
     maker.impact_centiticks = cfg.maker_impact_centiticks;
-    r.maker_index = static_cast<int>(r.bots.size());
-    r.bots.push_back(make_bot(maker));
+    r.maker_index = static_cast<int>(r.strategies.size());
+    r.strategies.push_back(make_strategy(maker));
     r.informed.push_back(false);
 
     if (cfg.rival_enabled) {
-        bots::MarketMaker rival;
+        strategies::MarketMaker rival;
         rival.name = "rival";
         rival.reaction_ns = cfg.rival_reaction_ns;
         rival.anchor = cfg.anchor;
@@ -155,47 +155,47 @@ struct Roster {
         rival.skew_ticks_at_limit = cfg.maker_skew_ticks_at_limit;
         rival.impact_centiticks = cfg.rival_impact_centiticks < 0 ? cfg.maker_impact_centiticks
                                                                  : cfg.rival_impact_centiticks;
-        r.rival_index = static_cast<int>(r.bots.size());
-        r.bots.push_back(make_bot(rival));
+        r.rival_index = static_cast<int>(r.strategies.size());
+        r.strategies.push_back(make_strategy(rival));
         r.informed.push_back(false);
     }
 
     if (cfg.informed_enabled) {
-        bots::Informed informed;
+        strategies::Informed informed;
         informed.reaction_ns = cfg.informed_reaction_ns;
         informed.edge_ticks = cfg.informed_edge_ticks;
         informed.qty = static_cast<Qty>(cfg.informed_qty);
         informed.max_position = cfg.informed_max_position;
-        r.bots.push_back(make_bot(informed));
+        r.strategies.push_back(make_strategy(informed));
         r.informed.push_back(true);
     }
 
     for (int i = 0; i < cfg.noise_count; ++i) {
-        bots::Noise noise;
+        strategies::Noise noise;
         noise.reaction_ns = cfg.noise_reaction_ns;
         // Stagger the heartbeats so the traders do not all arrive in lockstep.
         noise.timer_ns = cfg.noise_timer_ns + i * (cfg.noise_timer_ns / 8 + 1);
         noise.anchor = cfg.anchor;
         noise.qty = static_cast<Qty>(cfg.noise_qty);
         noise.pct_market = static_cast<unsigned>(cfg.noise_pct_market);
-        r.bots.push_back(make_bot(noise));
+        r.strategies.push_back(make_strategy(noise));
         r.informed.push_back(false);
     }
 
     if (cfg.fader_enabled) {
-        bots::Fader fader;
+        strategies::Fader fader;
         fader.reaction_ns = cfg.fader_reaction_ns;
         fader.qty = static_cast<Qty>(cfg.fader_qty);
         fader.trigger_ticks = cfg.fader_trigger_ticks;
-        r.bots.push_back(make_bot(fader));
+        r.strategies.push_back(make_strategy(fader));
         r.informed.push_back(false);
     }
 
     if (cfg.momentum_enabled) {
-        bots::Momentum momentum;
+        strategies::Momentum momentum;
         momentum.reaction_ns = cfg.momentum_reaction_ns;
         momentum.qty = static_cast<Qty>(cfg.momentum_qty);
-        r.bots.push_back(make_bot(momentum));
+        r.strategies.push_back(make_strategy(momentum));
         r.informed.push_back(false);
     }
 
@@ -240,7 +240,7 @@ struct Roster {
 
 // Every name set_roster_param() accepts, for --help. Kept in step with the
 // function above by test_arena, which asserts that each name listed here is
-// actually settable — otherwise this comment rots the first time a bot changes.
+// actually settable — otherwise this comment rots the first time a strategy changes.
 // ---- composing a roster by name ------------------------------------------
 //
 // build_roster() above assembles the default line-up from the enable flags, and
@@ -249,13 +249,29 @@ struct Roster {
 // registered by one line — nothing is loaded at runtime — but a compiled-in
 // strategy is no longer reachable only by editing build_roster().
 //
-// ADDING A BOT HERE is the same one line as everywhere else: a branch in
-// add_named_bot() and its name in kBotNames. test_arena checks the two agree,
+// ADDING A STRATEGY HERE is the same one line as everywhere else: a branch in
+// add_named_strategy() and its name in kStrategyNames. test_arena checks the two agree,
 // so a strategy that is addable by name but missing from the list, or listed but
 // not addable, fails the suite rather than confusing somebody later.
-[[nodiscard]] inline bool add_named_bot(std::string_view name, const RosterConfig& cfg, Roster& r) {
+} // namespace px::arena
+
+// STRATEGIES OF YOUR OWN. `make strategy STRATEGY=path` copies a header into
+// arena/strategies/user/ and generates $(BUILD)/generated/px_user_strategies.hpp,
+// which includes each one and defines add_user_strategy() and
+// kUserStrategyNames. Only the lab binaries (sweep_lab, arena_lab) are compiled
+// with PX_ARENA_USER_STRATEGIES, so `sweep`, `arena` and every test - the
+// binaries that produce and pin the published evidence - never contain a
+// strategy from outside the tree, and a header that does not compile cannot
+// break them.
+#if defined(PX_ARENA_USER_STRATEGIES)
+#include "px_user_strategies.hpp"
+#endif
+
+namespace px::arena {
+
+[[nodiscard]] inline bool add_named_strategy(std::string_view name, const RosterConfig& cfg, Roster& r) {
     if (name == "maker") {
-        bots::MarketMaker maker;
+        strategies::MarketMaker maker;
         maker.reaction_ns = cfg.maker_reaction_ns;
         maker.anchor = cfg.anchor;
         maker.half_spread_ticks = cfg.maker_half_spread_ticks;
@@ -264,11 +280,11 @@ struct Roster {
         maker.skew_ticks_at_limit = cfg.maker_skew_ticks_at_limit;
         maker.impact_centiticks = cfg.maker_impact_centiticks;
         // The first maker named is the one a sweep is about.
-        if (r.maker_index < 0) r.maker_index = static_cast<int>(r.bots.size());
-        r.bots.push_back(make_bot(maker));
+        if (r.maker_index < 0) r.maker_index = static_cast<int>(r.strategies.size());
+        r.strategies.push_back(make_strategy(maker));
         r.informed.push_back(false);
     } else if (name == "rival") {
-        bots::MarketMaker rival;
+        strategies::MarketMaker rival;
         rival.name = "rival";
         rival.reaction_ns = cfg.rival_reaction_ns;
         rival.anchor = cfg.anchor;
@@ -278,52 +294,56 @@ struct Roster {
         rival.skew_ticks_at_limit = cfg.maker_skew_ticks_at_limit;
         rival.impact_centiticks =
             cfg.rival_impact_centiticks < 0 ? cfg.maker_impact_centiticks : cfg.rival_impact_centiticks;
-        if (r.rival_index < 0) r.rival_index = static_cast<int>(r.bots.size());
-        r.bots.push_back(make_bot(rival));
+        if (r.rival_index < 0) r.rival_index = static_cast<int>(r.strategies.size());
+        r.strategies.push_back(make_strategy(rival));
         r.informed.push_back(false);
     } else if (name == "informed") {
-        bots::Informed informed;
+        strategies::Informed informed;
         informed.reaction_ns = cfg.informed_reaction_ns;
         informed.edge_ticks = cfg.informed_edge_ticks;
         informed.qty = static_cast<Qty>(cfg.informed_qty);
         informed.max_position = cfg.informed_max_position;
-        r.bots.push_back(make_bot(informed));
+        r.strategies.push_back(make_strategy(informed));
         // Naming it informed is what grants it the fundamental value, exactly as
         // in build_roster(): the roster decides, never the strategy.
         r.informed.push_back(true);
     } else if (name == "noise") {
-        bots::Noise noise;
+        strategies::Noise noise;
         noise.reaction_ns = cfg.noise_reaction_ns;
         // Stagger heartbeats by how many noise traders are already in, so that
         // naming three does not put them in lockstep.
         int already = 0;
-        for (const auto& b : r.bots) already += std::string_view(b->name()) == "noise" ? 1 : 0;
+        for (const auto& b : r.strategies) already += std::string_view(b->name()) == "noise" ? 1 : 0;
         noise.timer_ns = cfg.noise_timer_ns + already * (cfg.noise_timer_ns / 8 + 1);
         noise.anchor = cfg.anchor;
         noise.qty = static_cast<Qty>(cfg.noise_qty);
         noise.pct_market = static_cast<unsigned>(cfg.noise_pct_market);
-        r.bots.push_back(make_bot(noise));
+        r.strategies.push_back(make_strategy(noise));
         r.informed.push_back(false);
     } else if (name == "momentum") {
-        bots::Momentum momentum;
+        strategies::Momentum momentum;
         momentum.reaction_ns = cfg.momentum_reaction_ns;
         momentum.qty = static_cast<Qty>(cfg.momentum_qty);
-        r.bots.push_back(make_bot(momentum));
+        r.strategies.push_back(make_strategy(momentum));
         r.informed.push_back(false);
     } else if (name == "fader") {
-        bots::Fader fader;
+        strategies::Fader fader;
         fader.reaction_ns = cfg.fader_reaction_ns;
         fader.qty = static_cast<Qty>(cfg.fader_qty);
         fader.trigger_ticks = cfg.fader_trigger_ticks;
-        r.bots.push_back(make_bot(fader));
+        r.strategies.push_back(make_strategy(fader));
         r.informed.push_back(false);
     } else {
+#if defined(PX_ARENA_USER_STRATEGIES)
+        return add_user_strategy(name, r);
+#else
         return false;
+#endif
     }
     return true;
 }
 
-inline constexpr const char* kBotNames = "maker rival informed noise momentum fader";
+inline constexpr const char* kStrategyNames = "maker rival informed noise momentum fader";
 
 // Builds a roster from a spec like "maker,rival,informed,noise:2,momentum":
 // comma-separated names, each optionally followed by :count to repeat it. On a
@@ -362,13 +382,16 @@ inline constexpr const char* kBotNames = "maker rival informed noise momentum fa
             return false;
         }
         for (int i = 0; i < count; ++i) {
-            if (!add_named_bot(token, cfg, r)) {
-                error = "unknown participant '" + std::string(token) + "'; known: " + kBotNames;
+            if (!add_named_strategy(token, cfg, r)) {
+                error = "unknown participant '" + std::string(token) + "'; known: " + kStrategyNames;
+#if defined(PX_ARENA_USER_STRATEGIES)
+                error += std::string("; installed: ") + kUserStrategyNames;
+#endif
                 return false;
             }
         }
     }
-    if (r.bots.empty()) {
+    if (r.strategies.empty()) {
         error = "named no participants";
         return false;
     }

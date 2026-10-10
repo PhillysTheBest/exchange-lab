@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A price-time-priority exchange matching engine in C++20: a single-threaded matching
 core fed by lock-free SPSC rings, no heap allocation after start-up, int64 fixed-point
 prices, plus the test and measurement machinery that backs its latency claims — and
-`arena/`, a seeded simulated market of bots trading inside that engine, with a
+`arena/`, a seeded simulated market of strategies trading inside that engine, with a
 controllable reaction delay each and a terminal renderer. README.md holds the design
 and the published results, `docs/ARENA.md` the arena's design and reasoning, and
 `handoff.md` the narrative of what was built, how the terminal viewer works and what is
@@ -18,7 +18,7 @@ prediction-market trading system. The whole live stack (WebSocket/REST client,
 strategies, evaluation framework, telemetry, Rust dashboard) was deleted at `07b3be0`
 and is not coming back: the user cannot trade on Kalshi. Nothing in the tree depends on
 an exchange account, an API or a network. Do not reintroduce a market-data client or a
-trading strategy into the engine. Strategies live in `arena/bots/`, never in
+trading strategy into the engine. Strategies live in `arena/strategies/`, never in
 `include/px/` or `src/`. The old strategy code is still readable in history
 (`git show 07b3be0^:strategy/passive_market_maker.hpp`).
 
@@ -27,9 +27,8 @@ measured and committed: see `docs/ARENA.md` for its design, the modelling mistak
 produced confidently wrong results on the way, and the parameters that turned out to be
 load-bearing. Its scope boundary is binding — everything compiles into one binary and
 nothing talks over a network. All of it sits on the branch `arena`, open as pull request
-#1 against `main`. The next piece of work is the strategy lab, designed and not built:
-see "The strategy lab" below, and `docs/LAB_PLAN.md` for the task-by-task plan. It
-leaves that scope boundary intact, which an earlier draft of it did not.
+#1 against `main`. The next piece of work is turning the arena into a strategy research platform; see
+"Strategies of your own" below for the plan and what is built.
 
 **The result is a negative one and the documentation leads with it.** "What is 10
 microseconds worth?" answers *less than 24 seeds can resolve*; 1 ms costs real money,
@@ -49,7 +48,7 @@ of itself — an exchange, and the lab where strategies and speed compete.
 
 Two names to avoid, for reasons the code depends on. Anything containing **latency**
 would undo the one piece of vocabulary discipline this project keeps: the engine's
-latency is measured and a bot's `reaction_ns` is invented, nothing in `arena/` is called
+latency is measured and a strategy's `reaction_ns` is invented, nothing in `arena/` is called
 latency, and a repository named `latency-*` re-merges them before a reader opens a file.
 **tick-to-trade** would be a false claim, because the measurement is service time and
 README.md says so explicitly.
@@ -90,7 +89,7 @@ Running the arena:
 
 ```bash
 build/release/arena                                  # watch the default market
-build/release/arena --bots=maker,informed,noise:2    # compose the line-up by name
+build/release/arena --strategies=maker,informed,noise:2    # compose the line-up by name
 build/release/arena --script=tools/arena_script_demo.txt   # play orders as a participant
 build/release/arena --still=60000000 --seed=42       # one reproducible frame, then exit
 build/release/sweep --help                           # every sweepable field
@@ -176,100 +175,64 @@ engine as it goes, so cancels target orders that are really resting.
 
 **The arena** (`arena/`) is a fourth consumer of the same engine, alongside the
 pipeline, the benchmarks and the REPL. `arena/session.hpp` owns a `MatchingEngine`, a
-simulated clock, a roster of bots and the accounting; `arena/sweep.cpp` runs the
-experiment headless; `arena/arena.cpp` renders it. It adds no engine API: a bot's view
+simulated clock, a roster of strategies and the accounting; `arena/sweep.cpp` runs the
+experiment headless; `arena/arena.cpp` renders it. It adds no engine API: a strategy's view
 of the book, including its queue position, is reconstructed from the `ExecEvent`
 stream in `arena/book_mirror.hpp`. Read `docs/ARENA.md` before changing anything in
 there — several of its parameters are load-bearing in ways that are not obvious, and
 the document records which and why.
 
-**Bots** are plain structs in `arena/bots/`, compiled in and never loaded at runtime.
-Adding one is a header plus one line in `add_named_bot()` and its name in `kBotNames`,
-which `test_arena` holds together so the two cannot drift. `arena/bots/fader.hpp` is the
-worked example, written against `arena/bot.hpp` alone. `--bots=maker,rival,noise:3`
+**Strategies** are plain structs in `arena/strategies/`, compiled in and never loaded at runtime.
+Adding one is a header plus one line in `add_named_strategy()` and its name in `kStrategyNames`,
+which `test_arena` holds together so the two cannot drift. `arena/strategies/fader.hpp` is the
+worked example, written against `arena/strategy.hpp` alone. `--strategies=maker,rival,noise:3`
 composes a line-up by name; without it the registry's default line-up is used, which is
 what every published number came from. The strategy lab, designed below, turns those
-two steps into one make target for a bot of your own; it does not change what a bot is.
+two steps into one make target for a strategy of your own; it does not change what a strategy is.
 
 **`arena/ui.hpp`** owns a grid of coloured cells and knows nothing about trading;
 `arena/arena.cpp` is the only place the renderer and the market meet. A frame composes
 into the grid and goes out in one `fwrite`, emitting a colour escape only where a colour
 changes. `handoff.md` explains the viewer and its purpose at length.
 
-## The strategy lab (designed, not built)
+## Strategies of your own
 
-The next piece of work: anyone with the repo and a compiler adds their own bot to the
-baseline market and gets a reproducible, honestly-qualified score for it. **None of it
-exists in the tree yet.** The design is settled and the task-by-task plan is
-`docs/LAB_PLAN.md`; this section is the specification, and the parenthesis in its
-heading comes off when it lands.
+The project is becoming a strategy research platform: someone writes a strategy,
+runs it against the reference market on fixed seeds, and gets a reproducible
+result. The plan is in five steps (strategy interface, standard experiment runner,
+evaluation report, validating the evaluator, one-command reproducibility). **Step 1,
+the strategy interface, is built**; the rest is not. Everything participating in a
+session is called a *strategy*, never a bot: built-in ones are the reference market.
 
-**What it is.** `make bot BOT=path/to/mybot.hpp` validates the header, copies it into
-`arena/bots/user/`, regenerates a manifest, and prints the two commands to run it:
-`arena_lab --bots=...,mybot` to watch it, `sweep_lab --score=mybot` to score it.
+```bash
+make strategy STRATEGY=examples/strategies/imbalance.hpp   # validate, install, build the lab binaries
+build/release/sweep_lab --strategies=maker,rival,informed,noise:2,imbalance --seeds=8
+build/release/arena_lab --strategies=maker,rival,informed,noise:2,imbalance
+make test-lab                                              # the whole path, checked
+```
 
-**It is not runtime loading, and `docs/ARENA.md`'s boundary prose stays true as
-written.** A strategy still links into the binary: no plugin DLL, no embedded scripting
-language, no ABI, no sandbox, nothing a running session accepts from outside itself.
-Installing a bot is a build step, not something the viewer does — the viewer is not
-modified by this work at all. An earlier version of the design had it accept a dragged
-file, rebuild itself and respawn; that was cut after review, and "What was cut" below
-says why, because that is the part worth reading.
-
-**A user bot cannot reach the published evidence, by construction,** and this is the
-decision everything else rests on. The manifest is included only under
-`-DPX_ARENA_USER_BOTS`, and the only targets setting it are two new binaries,
-`$(REL)/arena_lab` and `$(REL)/sweep_lab`. `arena`, `sweep`, every test and `test-cli`
-are compiled without it, so a user bot is not in their translation units at all. The
-reason is specific rather than cautious: `arena/session.hpp` includes
-`arena/bots/registry.hpp`, `tests/test_arena.cpp` includes the session, and `test-cli`
-builds and runs the *release* `sweep`. An unguarded delegation would therefore have put
-a stranger's header into the binaries that assert the pinned hashes, and a header with
-a typo would have broken `mingw32-make test`. Lab objects need their own object subtree,
-because their flags differ from `$(ROBJ)/arena/*.o` and make would otherwise reuse an
-object built without the define.
-
-**The manifest is generated into the build tree and never committed** —
-`$(BUILD)/generated/px_user_bots.hpp`, already covered by `.gitignore`'s `build*/`.
-Committing a generated file that the installer rewrites would leave it permanently
-dirty and conflict on every pull. Only `arena/bots/user/*.hpp` is ignored; the directory
-keeps a `.gitkeep` so a clean clone has it.
-
-**Scoring is paired against a placebo seat, not against the bot's absence.** Adding a
-participant adds wake events, and changed wake ordering moves the session hash, so a
-bare with-and-without comparison would conflate a bot's market impact with a
-re-interleaved session. Both arms carry the same extra seat instead: one holds the
-user's bot, the other holds `placebo`, an inert participant that never acts. The scoring
-baseline is consequently the default line-up *plus one inert seat*, which is not
-identical to the published market, and the output says so. Report the gap first, then
-the paired value with its standard error and the smallest effect the seed count can
-resolve, then the shift in each baseline participant's value.
-
-**A scored run containing a user bot prints no session hash, and says why.** No floating
-point inside a session is what makes replay bit-identical across platforms, and a user's
-C++ bot is free to use a `double`. That cannot be detected: a same-machine
-`--replay-check` cannot see it, because the divergence is between library versions on
-different platforms, and a source scan for `double` misses `n/2.0`, `std::sqrt` and a
-`0.5` in a template. An 80%-accurate warning is the kind of overclaim the rest of this
-project refuses, so the hash is withheld instead. The arena's own numbers do not depend
-on this, because no user bot is in the default line-up or in `sweep` at all.
-
-**What was cut, and why.** The first design had a visitor drag a bot header onto the
-running viewer, which would install it, shell out to the compiler, link a second binary,
-hand over the terminal and respawn into it. A council review rejected it unanimously and
-two facts settled it. The audience is empty: `g++` and `mingw32-make` exist only inside
-the MSYS2 UCRT64 shell, so a visitor who could drag a file out of Explorer has no
-compiler, and one who has a compiler already has a shell where `make bot` is better. And
-it is too slow: one arena translation unit plus its LTO link measures **27 seconds** on
-this laptop, and a manifest change invalidates both `arena.o` and `sweep.o`, so a drop
-costs about 50-60 seconds rather than the 20 the earlier draft claimed. The same review
-found the include chain above. `docs/LAB_PLAN.md` keeps the whole record, including the
-measurements.
-
-**One claim not to make.** Scoring does *not* redeem the positive control that failed in
-`docs/ARENA.md`. That control failed because a maker stale enough to be reliably picked
-off also stops tracking the fundamental; a paired design measures a perturbation, it
-does not make a stale probe admissible.
+- **The convention** is in `examples/strategies/imbalance.hpp`: `<name>.hpp` defines
+  struct `<Name>` (CamelCase of the file name) in `px::arena::strategies`, with the
+  five members `arena/strategy.hpp` lists and no floating point. The name must not
+  collide with a built-in; the Makefile reads the built-in list from
+  `kStrategyNames` so the two cannot drift.
+- **An installed strategy cannot reach the published evidence, by construction.**
+  `make strategy` copies the header into `arena/strategies/user/` (git-ignored) and
+  generates `$(BUILD)/generated/px_user_strategies.hpp` (never committed). The
+  registry includes that manifest only under `-DPX_ARENA_USER_STRATEGIES`, which only
+  `sweep_lab` and `arena_lab` set, from their own object subtree `$(REL)/obj-lab`.
+  `sweep`, `arena` and every test are compiled without it, so a stranger's header is
+  not in the binaries that pin hashes, and one with a typo cannot break `make test`.
+  `test-lab` asserts that `sweep` refuses an installed name.
+- **It is not runtime loading.** A strategy links into the binary; installing is a
+  build step, and the viewer is unchanged.
+- **With `--strategies=`, `sweep` prints a row per participant** (value, orders,
+  fills, rejects), because the maker-centred tables say nothing about a strategy of
+  your own. `--replay-check` now replays the composed line-up; before step 1 it
+  silently replayed the default one.
+- **One claim not to make.** Nothing here redeems the positive control that failed in
+  `docs/ARENA.md`: that control failed because a maker stale enough to be reliably
+  picked off also stops tracking the fundamental.
 
 ## Rules the code depends on
 
@@ -297,7 +260,7 @@ to differ between library versions and would silently break cross-platform repla
   `test_determinism` hash `77a560d8ffb4fa43`. If a change moves a hash, it changed
   behaviour — verify that was intended and say so explicitly. The arena has its own
   hash over the event stream *and* every event's arrival time, printed by `sweep` and
-  asserted by `test_arena`; it moves whenever any bot or any default changes, which is
+  asserted by `test_arena`; it moves whenever any strategy or any default changes, which is
   expected, so it is not pinned here.
 - **Ring payloads stay trivially copyable and exactly 64 bytes** (`static_assert`ed).
 - **Sides hold at most `levels_per_side` (2048) levels**; beyond that a GTC order is
