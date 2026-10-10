@@ -385,3 +385,13 @@ loose from the fundamental is not a market and nothing read off one counts.
   thing is built, turn the plan into the design document rather than leaving a stale
   plan behind — `docs/ARENA.md` is what became of the arena's, and it keeps a record
   of the approaches that were wrong, because those are the part worth reading.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in this repo's GitHub Issues. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
