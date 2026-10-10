@@ -145,7 +145,7 @@ def transfer(sessions, rows, label):
     to the informed trader (adverse selection) or to its competitor (competition
     for uninformed flow).
 
-    Keyed on the participant INDEX, never the name: two bots are both called
+    Keyed on the participant INDEX, never the name: two strategies are both called
     `noise`, so grouping by name silently averages them into one participant and
     the ledger stops summing to zero.
     """

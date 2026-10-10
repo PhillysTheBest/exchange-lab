@@ -1,6 +1,6 @@
 # The arena
 
-Bots trading against each other inside the matching engine, with a controllable
+Strategies trading against each other inside the matching engine, with a controllable
 reaction delay each, rendered live in the terminal as a retro desktop.
 
 This file is the design and the reasoning. The result is in
@@ -10,7 +10,7 @@ This file is the design and the reasoning. The result is in
 participant's reaction delay can be a controlled variable instead of a property
 of the machine. The engine's latency numbers are *measured*, on hardware, and
 they are a different kind of number entirely. The code keeps the two apart in its
-vocabulary too: a bot has a `reaction_ns`, the engine has a latency, and nothing
+vocabulary too: a strategy has a `reaction_ns`, the engine has a latency, and nothing
 in `arena/` is called latency.
 
 ## Why it exists
@@ -28,13 +28,13 @@ Everything compiles into one binary. Nothing talks over a network.
 
 | In scope | Out of scope |
 |---|---|
-| Bots as C++ headers, registered at compile time | Web server, REST, JSON, sockets |
+| Strategies as C++ headers, registered at compile time | Web server, REST, JSON, sockets |
 | Deterministic, seeded, replayable sessions | Database, accounts, auth |
 | Value marked to a fundamental, adverse selection, queue position | npm, bundlers, a browser |
 | One dependency-free terminal renderer | Plugin DLLs, an embedded scripting language |
-| Per-bot reaction delay, scheduled in simulated time | Live market data, broker APIs |
+| Per-strategy reaction delay, scheduled in simulated time | Live market data, broker APIs |
 
-Adding a bot means: write a header in `arena/bots/`, add a line to
+Adding a strategy means: write a header in `arena/strategies/`, add a line to
 `registry.hpp`, rebuild. That is how research platforms link strategies
 internally, and it keeps this a systems-and-strategy project rather than a web
 project.
@@ -77,9 +77,9 @@ arena/fair_value.hpp   the fundamental value: the only exogenous information.
 arena/book_mirror.hpp  a participant's own view of the book, rebuilt from the
                        event stream alone.
 arena/accounting.hpp   positions, marked value, and the spread/adverse split.
-arena/bot.hpp          the bot contract: MarketView in, ActionBatch out.
-arena/bots/*.hpp       one header per strategy.
-arena/bots/registry.hpp  the single list of who is in the market.
+arena/strategy.hpp          the strategy contract: MarketView in, ActionBatch out.
+arena/strategies/*.hpp       one header per strategy.
+arena/strategies/registry.hpp  the single list of who is in the market.
 arena/session.hpp      the session: engine + clock + roster + accounting. No
                        rendering.
 arena/sweep.cpp        the experiment, headless. Writes CSV.
@@ -92,7 +92,7 @@ The engine, `sim/` and the benchmarks are unchanged.
 
 ## The reaction model
 
-The one genuinely new mechanism. A bot with reaction delay `d`, woken by
+The one genuinely new mechanism. A strategy with reaction delay `d`, woken by
 something that happened at time `t`:
 
 - **acts at `t + d`** — that is `now` in its `MarketView`, and the timestamp its
@@ -100,15 +100,15 @@ something that happened at time `t`:
 - **sees the world as of `t`** — its book mirror is advanced only to `now - d`.
 
 One knob therefore buys both halves of being slow: the view is stale *and* the
-order is late. A fast bot sees fresher prices and lands sooner, which is exactly
+order is late. A fast strategy sees fresher prices and lands sooner, which is exactly
 the advantage the experiment prices. `test_arena` puts a watching participant in
 a real session and asserts `now_ns - as_of_ns == reaction_ns` on every wake.
 
-Each participant has its own delayed feed, so "what a bot knows" is a single
-concept with a single implementation. At most one wake is outstanding per bot, so
+Each participant has its own delayed feed, so "what a strategy knows" is a single
+concept with a single implementation. At most one wake is outstanding per strategy, so
 a burst of events inside one reaction window collapses into one decision — which
-is what a real system does, and what keeps a slow bot slow: with a 1 ms delay a
-bot cannot look at the market more than a thousand times a second.
+is what a real system does, and what keeps a slow strategy slow: with a 1 ms delay a
+strategy cannot look at the market more than a thousand times a second.
 
 **Determinism.** Every scheduled item carries a monotonic sequence number and the
 ordering is `(time, sequence)`, which is a *total* order, so no tie is ever broken
@@ -120,7 +120,7 @@ whole replay contract.
 The engine exposes no per-order query and none was added. `arena/book_mirror.hpp`
 reconstructs the whole book — every level, every FIFO, every order's queue
 position — from the `ExecEvent` stream alone, which is the only thing a real venue
-sends out. So a bot here provably sees no more than a real participant would, and
+sends out. So a strategy here provably sees no more than a real participant would, and
 queue position is earned by tracking the feed rather than handed over by the
 exchange.
 
@@ -142,7 +142,7 @@ Six participants, each a distinct `OwnerId`.
 | **momentum** | Takes after a run of same-direction prints. Second-hand information. | no |
 
 Distinct owners matter more than they look. Self-trade prevention *cancels* a
-resting order instead of trading it, so sharing one owner between bots would
+resting order instead of trading it, so sharing one owner between strategies would
 silently delete the maker's quotes rather than filling them, and the experiment
 would be measuring an artefact.
 
@@ -374,8 +374,8 @@ each frame in one call, emitting a colour escape only where a colour changes.
 | Window | Shows |
 |---|---|
 | **ORDER BOOK** (teal) | The ladder: asks above, bids below, size as bars, the fundamental on the middle line |
-| **PARTICIPANTS** (violet) | One row per bot: reaction delay, position, marked value as a signed bar |
-| **REACTION DELAY** (orange) | Each bot's delay as a log slider — the dial the experiment turns |
+| **PARTICIPANTS** (violet) | One row per strategy: reaction delay, position, marked value as a signed bar |
+| **REACTION DELAY** (orange) | Each strategy's delay as a log slider — the dial the experiment turns |
 | **SESSION** (teal) | Seed, simulated clock, orders, trades, the book-to-value gap |
 | **TAPE** (magenta) | Prints as they happen: price, size, aggressor |
 | **! NOTABLE** (magenta dialog) | Interrupts on a print that moved the mid several ticks |
@@ -410,33 +410,33 @@ bash bench/run_arena_evidence.sh windows       # regenerate results/arena-window
 engine, the scheduler's total order, the replay hash, the closed-world accounting
 identity, and the reaction model.
 
-## Writing a bot
+## Writing a strategy
 
-A bot is a plain struct. It does not inherit from anything, never touches the
+A strategy is a plain struct. It does not inherit from anything, never touches the
 engine, and cannot read a clock.
 
-**Bots are compiled in, not loaded.** There is no way to hand the running
+**Strategies are compiled in, not loaded.** There is no way to hand the running
 program a strategy — no plugin DLL, no scripting language, no socket, nothing to
 type at the terminal. That is the scope boundary at the top of this file, not an
 omission. A strategy is a header that gets compiled into the binary, which is how
-research platforms actually link strategies, and it is what lets a bot be a plain
+research platforms actually link strategies, and it is what lets a strategy be a plain
 struct with no ABI, no sandbox and no marshalling. The cost is real and worth
 stating plainly: **a third party needs the source tree and a compiler, and has to
 rebuild.** On this machine that is about twenty seconds.
 
 What adding one actually takes, start to finish:
 
-1. Write the header in `arena/bots/`. The whole surface is in `arena/bot.hpp`:
+1. Write the header in `arena/strategies/`. The whole surface is in `arena/strategy.hpp`:
    `name`, `reaction_ns`, `timer_ns`, `reset(seed)`, `on_event(view)`.
-2. `#include` it in `arena/bots/registry.hpp` and push one instance in
+2. `#include` it in `arena/strategies/registry.hpp` and push one instance in
    `build_roster()`.
 3. Optionally add its fields to `RosterConfig` and one line each to
    `set_roster_param()`, which makes them settable with `--set=` and sweepable
    like every other parameter.
 4. `mingw32-make arena`.
 
-[`arena/bots/fader.hpp`](../arena/bots/fader.hpp) is that worked example, written
-against the contract alone — it includes `arena/bot.hpp` and nothing else, and it
+[`arena/strategies/fader.hpp`](../arena/strategies/fader.hpp) is that worked example, written
+against the contract alone — it includes `arena/strategy.hpp` and nothing else, and it
 could not reach the engine, the session or the scheduler if it tried. It fades
 the recent move: keeps a slow integer average of the traded price and takes the
 other side when the last print is far enough away. It loses money, which is the
@@ -445,7 +445,7 @@ honest outcome for uninformed flow crossing the spread.
 `test_arena` keeps the claim from being a claim: it asserts the example is absent
 by default, present when enabled, that it really trades (938 orders, 964 fills in
 a 60,000-request session), that it is never handed the fundamental value, that its
-registry parameters reach it, and — the part that matters for anyone else's bot —
+registry parameters reach it, and — the part that matters for anyone else's strategy —
 that an extra participant cannot break the closed-world accounting identity, the
 book's tracking of the fundamental, or the session's ability to end.
 
@@ -453,7 +453,7 @@ It is off by default, so adding it moved no published number: the session hashes
 `dc1ab7b9798723c0` and `4c05d629279645e9` are unchanged.
 
 ```cpp
-struct MyBot {
+struct MyStrategy {
     const char* name = "mine";
     SimTime reaction_ns = 10'000;
     SimTime timer_ns = 0;             // 0, or a periodic self-wake
@@ -500,9 +500,9 @@ timestamps may not go backwards, and every malformed line is a refusal naming th
 line number rather than a silently different session.
 
 It is a participant like any other, which means its reaction delay applies: an
-order stamped at `t` is submitted when the bot wakes, and what it saw was the
+order stamped at `t` is submitted when the strategy wakes, and what it saw was the
 market as of `t - reaction_ns`. Writing a time down does not buy clairvoyance.
-One limitation worth knowing: the bot contract offers a periodic timer and not a
+One limitation worth knowing: the strategy contract offers a periodic timer and not a
 "wake me at exactly T", so a scripted time is honoured at the first wake at or
 after it — 10 µs granularity by default, finer than anyone writes a script by
 hand.
@@ -525,12 +525,12 @@ recording of somebody playing could never offer that.
 
 ### Choosing who is in the market
 
-Once a strategy is registered, `--bots=` composes a line-up by name without
+Once a strategy is registered, `--strategies=` composes a line-up by name without
 editing anything:
 
 ```bash
-build/release/sweep --bots=maker,rival,informed,noise:3,fader
-build/release/arena --bots=maker,informed,noise:2
+build/release/sweep --strategies=maker,rival,informed,noise:3,fader
+build/release/arena --strategies=maker,informed,noise:2
 ```
 
 Comma-separated names, each optionally `:count` to repeat it. Repeated noise
@@ -546,11 +546,11 @@ produced a different market would be worse than a failure. A line-up with no
 `maker` is refused by the sweep runner, since every column it prints is about the
 swept maker.
 
-Without `--bots=`, the registry's default line-up is used — which is what every
+Without `--strategies=`, the registry's default line-up is used — which is what every
 published number was produced with, and the session hashes confirm it:
 `dc1ab7b9798723c0` and `4c05d629279645e9` are unchanged by any of this.
 
-What a bot cannot see: the fundamental value (unless the roster marks it
+What a strategy cannot see: the fundamental value (unless the roster marks it
 informed), the clock, other participants' positions, the engine's internals, or
 its queue position except by having tracked the feed itself.
 
@@ -561,9 +561,9 @@ than by reasoning about it. Both are now refused or bounded at construction, and
 are pinned by regression tests — a bug that is found and not pinned gets found again by
 a reader.
 
-**A session holds at most 64 participants.** `deliver_order()` marks which bots an event
+**A session holds at most 64 participants.** `deliver_order()` marks which strategies an event
 concerned in a fixed array; past that bound the marks were silently dropped, so those
-bots never received an own-event wake. Measured with 104 identical noise traders: the
+strategies never received an own-event wake. Measured with 104 identical noise traders: the
 first 64 took 151.9 fills each, the rest took 55.9. Nothing crashed and nothing looked
 wrong. Rosters above the ceiling are now refused.
 
@@ -595,9 +595,9 @@ taste; evidence is owed where claims are made, and the renderer makes none.
 
 ## What is not built
 
-- **Runtime bot loading of any kind.** No plugin DLL, no embedded scripting
+- **Runtime strategy loading of any kind.** No plugin DLL, no embedded scripting
   language, nothing a running session will accept from outside itself, and no way
-  to type a strategy into the terminal. A bot is compiled in; see "Writing a bot"
+  to type a strategy into the terminal. A strategy is compiled in; see "Writing a strategy"
   above for what that costs. This is the scope boundary, and it is the single
   thing most likely to be mistaken for a missing feature.
 - More than one instrument on screen. The session supports one, deliberately: one

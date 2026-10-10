@@ -8,7 +8,7 @@
 //     stream alone, is compared against the engine's own ladder after every one
 //     of 200,000 requests of a seeded stream. This is the same differential
 //     shape as fuzz_vs_reference: the engine is the oracle, the mirror is the
-//     thing under test, and if a bot's view of its queue position were wrong
+//     thing under test, and if a strategy's view of its queue position were wrong
 //     every number downstream would be wrong with it.
 //  2. QUEUE POSITION IS TIME PRIORITY. Checked by hand on a known FIFO,
 //     including after the order in front of it is cancelled.
@@ -22,11 +22,11 @@
 //     marked value must each sum to exactly zero across participants. The whole
 //     sweep is read off these numbers.
 //
-// Plus two properties of the reaction model: a bot's view is stale by exactly
+// Plus two properties of the reaction model: a strategy's view is stale by exactly
 // its own delay, and an informed participant that has been switched off takes
 // nothing.
 #include "arena/book_mirror.hpp"
-#include "arena/bots/script.hpp"
+#include "arena/strategies/script.hpp"
 #include "arena/session.hpp"
 #include "arena/ui.hpp"
 #include "px/matching_engine.hpp"
@@ -178,7 +178,7 @@ void test_scheduler_total_order() {
     std::vector<std::uint64_t> pushed_seq;
     for (int i = 0; i < 500; ++i) {
         const SimTime at = static_cast<SimTime>(rng.below(5) * 100);
-        pushed_seq.push_back(s.push(at, WakeKind::BotTimer, static_cast<std::uint16_t>(i % 8)));
+        pushed_seq.push_back(s.push(at, WakeKind::StrategyTimer, static_cast<std::uint16_t>(i % 8)));
     }
     PX_CHECK(s.size() == 500);
 
@@ -244,7 +244,7 @@ void test_session_replay_and_accounting() {
     PX_CHECK(c.hash() != a.hash());
 
     // The session must actually have been a market, or nothing above means
-    // anything: trades happened, the book never filled up, and no bot asked for
+    // anything: trades happened, the book never filled up, and no strategy asked for
     // more actions than a batch can carry.
     PX_CHECK(a.stats().trades > 100);
     PX_CHECK(a.stats().requests == 30'000);
@@ -340,7 +340,7 @@ void test_reaction_model() {
     Roster roster = build_roster(rc);
     Probe probe;
     probe.st = &st;
-    roster.bots.push_back(make_bot(probe));
+    roster.strategies.push_back(make_strategy(probe));
     roster.informed.push_back(false);
 
     Session s;
@@ -430,9 +430,9 @@ void test_session_refuses_bad_configs() {
     // took 55.9. Wrong numbers that looked entirely plausible.
     {
         Roster big = build_roster(RosterConfig{});
-        bots::Noise filler;
-        while (big.bots.size() <= Session::kMaxParticipants) {
-            big.bots.push_back(make_bot(filler));
+        strategies::Noise filler;
+        while (big.strategies.size() <= Session::kMaxParticipants) {
+            big.strategies.push_back(make_strategy(filler));
             big.informed.push_back(false);
         }
         Session s;
@@ -447,12 +447,12 @@ void test_session_refuses_bad_configs() {
     // Exactly at the ceiling is still allowed: the guard must bite at 65, not 64.
     {
         Roster full = build_roster(RosterConfig{});
-        bots::Noise filler;
-        while (full.bots.size() < Session::kMaxParticipants) {
-            full.bots.push_back(make_bot(filler));
+        strategies::Noise filler;
+        while (full.strategies.size() < Session::kMaxParticipants) {
+            full.strategies.push_back(make_strategy(filler));
             full.informed.push_back(false);
         }
-        PX_CHECK(full.bots.size() == Session::kMaxParticipants);
+        PX_CHECK(full.strategies.size() == Session::kMaxParticipants);
         Session s;
         PX_CHECK(s.start(small_session(), std::move(full)) == Session::StartError::None);
         PX_CHECK(s.participants() == Session::kMaxParticipants);
@@ -580,16 +580,16 @@ void test_ui_grid() {
 }
 
 // docs/ARENA.md says someone can add a strategy by writing a header and one
-// line in the registry, without reading the engine. arena/bots/fader.hpp is that
+// line in the registry, without reading the engine. arena/strategies/fader.hpp is that
 // worked example, and this is what keeps the claim honest: it checks that the
 // example is really registrable, really trades, and really cannot break anything
 // it does not own.
-void test_third_party_bot() {
+void test_third_party_strategy() {
     // Off by default, which is what let it be added without moving a single
     // published number.
     const Roster plain = build_roster(RosterConfig{});
     bool present = false;
-    for (const auto& b : plain.bots) present = present || std::string(b->name()) == "fader";
+    for (const auto& b : plain.strategies) present = present || std::string(b->name()) == "fader";
     PX_CHECK(!present);
 
     RosterConfig rc;
@@ -610,10 +610,10 @@ void test_third_party_bot() {
     PX_CHECK(s.participants() == plain.size() + 1);
 
     const Account& a = s.ledger().at(static_cast<std::size_t>(which));
-    std::printf("  third-party bot: %llu orders, %llu fills, %llu rejects\n",
+    std::printf("  third-party strategy: %llu orders, %llu fills, %llu rejects\n",
                 static_cast<unsigned long long>(a.orders_sent), static_cast<unsigned long long>(a.fills),
                 static_cast<unsigned long long>(a.rejects));
-    // It took part: a bot that is registered but never acts would make the
+    // It took part: a strategy that is registered but never acts would make the
     // worked example worthless as a worked example.
     PX_CHECK(a.orders_sent > 100);
     PX_CHECK(a.fills > 100);
@@ -621,7 +621,7 @@ void test_third_party_bot() {
     // mark it informed.
     PX_CHECK(!s.informed(static_cast<std::size_t>(which)));
 
-    // The contract holds an arbitrary bot harmlessly: an extra participant
+    // The contract holds an arbitrary strategy harmlessly: an extra participant
     // cannot break the closed-world identity, the book's tracking of the
     // fundamental, or the session's ability to end.
     PX_CHECK(s.ledger().cash_sum() == 0);
@@ -648,21 +648,21 @@ void test_roster_from_spec() {
     const RosterConfig rc;
     std::string why;
 
-    // Every name kBotNames advertises must actually be addable, and vice versa.
+    // Every name kStrategyNames advertises must actually be addable, and vice versa.
     // A list that drifts from the code is worse than no list.
     std::size_t listed = 0;
     {
         std::string tok;
-        for (const char* p = kBotNames;; ++p) {
+        for (const char* p = kStrategyNames;; ++p) {
             if (*p == ' ' || *p == '\0') {
                 if (!tok.empty()) {
                     ++listed;
                     Roster one;
-                    if (!add_named_bot(tok, rc, one)) {
+                    if (!add_named_strategy(tok, rc, one)) {
                         std::printf("  advertised but not addable: %s\n", tok.c_str());
                         PX_CHECK(false);
                     }
-                    PX_CHECK(one.bots.size() == 1);
+                    PX_CHECK(one.strategies.size() == 1);
                     PX_CHECK(one.informed.size() == 1);
                     tok.clear();
                 }
@@ -678,16 +678,16 @@ void test_roster_from_spec() {
     // Counts repeat a name, and the roster comes out in the order written.
     Roster r;
     PX_CHECK(roster_from_spec("maker,rival,informed,noise:3,fader", rc, r, why));
-    PX_CHECK(r.bots.size() == 7);
-    PX_CHECK(std::string(r.bots[0]->name()) == "maker");
-    PX_CHECK(std::string(r.bots[1]->name()) == "rival");
-    PX_CHECK(std::string(r.bots[3]->name()) == "noise");
-    PX_CHECK(std::string(r.bots[5]->name()) == "noise");
-    PX_CHECK(std::string(r.bots[6]->name()) == "fader");
+    PX_CHECK(r.strategies.size() == 7);
+    PX_CHECK(std::string(r.strategies[0]->name()) == "maker");
+    PX_CHECK(std::string(r.strategies[1]->name()) == "rival");
+    PX_CHECK(std::string(r.strategies[3]->name()) == "noise");
+    PX_CHECK(std::string(r.strategies[5]->name()) == "noise");
+    PX_CHECK(std::string(r.strategies[6]->name()) == "fader");
     PX_CHECK(r.maker_index == 0);
     PX_CHECK(r.rival_index == 1);
     // Only the one named informed is informed, and the roster decides it.
-    PX_CHECK(r.informed.size() == r.bots.size());
+    PX_CHECK(r.informed.size() == r.strategies.size());
     int informed_count = 0;
     for (std::size_t i = 0; i < r.informed.size(); ++i) informed_count += r.informed[i] ? 1 : 0;
     PX_CHECK(informed_count == 1);
@@ -695,8 +695,8 @@ void test_roster_from_spec() {
 
     // Repeated noise traders get staggered heartbeats, so naming three does not
     // put them in lockstep.
-    PX_CHECK(r.bots[3]->timer_ns() != r.bots[4]->timer_ns());
-    PX_CHECK(r.bots[4]->timer_ns() != r.bots[5]->timer_ns());
+    PX_CHECK(r.strategies[3]->timer_ns() != r.strategies[4]->timer_ns());
+    PX_CHECK(r.strategies[4]->timer_ns() != r.strategies[5]->timer_ns());
 
     // Every way of writing it wrong is a message, not a different market.
     Roster junk;
@@ -710,7 +710,7 @@ void test_roster_from_spec() {
     // Stray commas around real names are tolerated rather than fatal.
     Roster loose;
     PX_CHECK(roster_from_spec("maker,,noise,", rc, loose, why));
-    PX_CHECK(loose.bots.size() == 2);
+    PX_CHECK(loose.strategies.size() == 2);
 
     // A named line-up runs, and the closed-world identity holds for it just as
     // it does for the default one.
@@ -737,7 +737,7 @@ void test_roster_from_spec() {
 // these checks are what make that claim hold.
 void test_scripted_participant() {
     std::string why;
-    std::vector<bots::ScriptedOrder> orders;
+    std::vector<strategies::ScriptedOrder> orders;
     const Price tick = 100;
 
     // The format, including comments, blank lines, units and the tick grid.
@@ -782,7 +782,7 @@ void test_scripted_participant() {
     };
     std::size_t refused = 0;
     for (const char* b : bad) {
-        std::vector<bots::ScriptedOrder> junk;
+        std::vector<strategies::ScriptedOrder> junk;
         if (!parse_script(b, tick, junk, why)) {
             ++refused;
         } else {
@@ -792,17 +792,17 @@ void test_scripted_participant() {
     PX_CHECK(refused == sizeof bad / sizeof bad[0]);
     // A file of nothing but comments parses to nothing, which the loader treats
     // as an error but the parser does not: parsing and meaning are separate.
-    std::vector<bots::ScriptedOrder> empty;
+    std::vector<strategies::ScriptedOrder> empty;
     PX_CHECK(parse_script("# nothing here\n\n", tick, empty, why));
     PX_CHECK(empty.empty());
 
     // And it really trades, in a real market, without breaking anything.
     Roster r = build_roster(RosterConfig{});
-    bots::Scripted you;
+    strategies::Scripted you;
     you.orders = &orders;
-    r.bots.push_back(make_bot(you));
+    r.strategies.push_back(make_strategy(you));
     r.informed.push_back(false);
-    const std::size_t which = r.bots.size() - 1;
+    const std::size_t which = r.strategies.size() - 1;
 
     SessionConfig sc = small_session();
     sc.max_requests = 60'000;
@@ -824,12 +824,12 @@ void test_scripted_participant() {
     // headless run would produce, because a restart that drifted would make the
     // viewer a participant rather than a reader.
     {
-        std::vector<bots::ScriptedOrder> reloaded;
+        std::vector<strategies::ScriptedOrder> reloaded;
         PX_CHECK(parse_script(good, tick, reloaded, why));
         Roster again = build_roster(RosterConfig{});
-        bots::Scripted you_again;
+        strategies::Scripted you_again;
         you_again.orders = &reloaded;
-        again.bots.push_back(make_bot(you_again));
+        again.strategies.push_back(make_strategy(you_again));
         again.informed.push_back(false);
         Session restarted;
         PX_CHECK(restarted.start(sc, std::move(again)) == Session::StartError::None);
@@ -839,11 +839,11 @@ void test_scripted_participant() {
 
     // Same script, same seed, same session: scripted trading is replayable,
     // which is the entire reason it is a file and not a keyboard.
-    std::vector<bots::ScriptedOrder> again = orders;
+    std::vector<strategies::ScriptedOrder> again = orders;
     Roster r2 = build_roster(RosterConfig{});
-    bots::Scripted you2;
+    strategies::Scripted you2;
     you2.orders = &again;
-    r2.bots.push_back(make_bot(you2));
+    r2.strategies.push_back(make_strategy(you2));
     r2.informed.push_back(false);
     Session s2;
     PX_CHECK(s2.start(sc, std::move(r2)) == Session::StartError::None);
@@ -862,7 +862,7 @@ int main() {
     test_informed_switch();
     test_reaction_model();
     test_param_names_are_real();
-    test_third_party_bot();
+    test_third_party_strategy();
     test_roster_from_spec();
     test_scripted_participant();
     test_session_refuses_bad_configs();

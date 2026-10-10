@@ -1,11 +1,11 @@
-// arena/bot.hpp — the contract between a strategy and the session.
+// arena/strategy.hpp — the contract between a strategy and the session.
 //
-// A bot is a plain struct. It does not inherit from anything, it never touches
+// A strategy is a plain struct. It does not inherit from anything, it never touches
 // the MatchingEngine, and it cannot read the clock: it is handed a view of the
-// market and returns what it would like to do. That makes a bot testable on its
+// market and returns what it would like to do. That makes a strategy testable on its
 // own, and it makes the session the only thing that decides when anybody acts.
 //
-// THE SURFACE a bot must provide — nothing more, nothing less:
+// THE SURFACE a strategy must provide — nothing more, nothing less:
 //
 //     const char* name;                    // shown in PARTICIPANTS
 //     SimTime reaction_ns;                 // its round-trip reaction delay
@@ -18,12 +18,12 @@
 // experiment needs, because the swept maker is measured against a rival maker
 // that is not swept.
 //
-// Adding a bot is a header in arena/bots/ plus one line in registry.hpp. There
+// Adding a strategy is a header in arena/strategies/ plus one line in registry.hpp. There
 // is no plugin interface, no scripting language and no dynamic loading, by
 // decision: strategies link into the binary, which is how research platforms
 // actually do it and which keeps this a systems-and-strategy project.
 //
-// THE WAKE SET, fixed here so that the scheduler is implementable at all. A bot
+// THE WAKE SET, fixed here so that the scheduler is implementable at all. A strategy
 // is woken when, and only when:
 //   * Own — an event about one of its own orders arrives (ack, fill, cancel,
 //     reject). This is what a drop copy gives a real participant.
@@ -31,20 +31,20 @@
 //   * Timer — its own timer_ns elapsed since its last timer wake.
 //   * Signal — the information it has been given moved, for the one participant
 //     that has any (see `signal` below).
-// At most one wake is outstanding per bot. A burst of events inside one reaction
+// At most one wake is outstanding per strategy. A burst of events inside one reaction
 // window therefore collapses into a single decision, which is both what a real
-// system does and what keeps a slow bot slow: with a 1 ms delay a bot simply
+// system does and what keeps a slow strategy slow: with a 1 ms delay a strategy simply
 // cannot look at the market more than a thousand times a second.
 //
 // WHY ActionBatch AND NOT ONE Action. A market maker cancel-replacing both sides
 // needs four actions in one reaction — two cancels and two quotes — and if it
 // has to spend four reaction windows doing that, the experiment is measuring the
 // API rather than the strategy. The batch is a fixed-size array because
-// returning a vector from a bot would put an allocation in the session loop for
+// returning a vector from a strategy would put an allocation in the session loop for
 // no reason.
 //
-// WHAT A BOT CANNOT SEE. Not the fundamental value (unless it is the informed
-// participant and the roster says so), not the clock, not other bots' positions,
+// WHAT A STRATEGY CANNOT SEE. Not the fundamental value (unless it is the informed
+// participant and the roster says so), not the clock, not other strategies' positions,
 // not the engine's internals, and not its queue position except by having
 // tracked the feed itself (arena/book_mirror.hpp). Those are the asymmetries the
 // session exists to study, so they are enforced by what this struct contains.
@@ -61,8 +61,8 @@
 
 namespace px::arena {
 
-// Rounds a price down onto the instrument's tick grid. Bots quote through this,
-// because the engine rejects an off-tick price outright (InvalidPrice) and a bot
+// Rounds a price down onto the instrument's tick grid. Strategies quote through this,
+// because the engine rejects an off-tick price outright (InvalidPrice) and a strategy
 // whose every quote is rejected is a silent bug rather than a loud one.
 [[nodiscard]] inline constexpr Price snap_to_tick(Price p, Price tick) noexcept {
     if (tick <= 0) return p;
@@ -141,7 +141,7 @@ struct ActionBatch {
 // What a participant knows at the instant it decides. Built fresh by the session
 // for each wake; nothing in it outlives the on_event() call.
 struct MarketView {
-    // When the bot is acting. Its orders carry this timestamp into the engine.
+    // When the strategy is acting. Its orders carry this timestamp into the engine.
     SimTime now_ns = 0;
     // What it is looking at: the market as of now_ns - reaction_ns. Stale by
     // exactly its own delay, which is the whole point.
@@ -155,7 +155,7 @@ struct MarketView {
     // Its own live orders, with queue position, reconstructed from the feed.
     const BookMirror::OrderRef* my_orders = nullptr;
     std::size_t my_order_count = 0;
-    // Orders it has sent that it has not yet seen acknowledged. A bot that
+    // Orders it has sent that it has not yet seen acknowledged. A strategy that
     // ignores this will quote twice while its first quote is in flight.
     std::uint32_t in_flight = 0;
 
@@ -165,7 +165,7 @@ struct MarketView {
     std::uint64_t rejects = 0;
 
     // The information this participant has been given, in price units, or 0 if
-    // it has none. Exactly one bot in the roster is informed; every other bot
+    // it has none. Exactly one strategy in the roster is informed; every other strategy
     // sees 0 here and must form its own view from the book. This single field is
     // the information asymmetry the headline experiment prices.
     Price signal = 0;
@@ -178,13 +178,13 @@ struct MarketView {
 
 // ---- how the session holds a heterogeneous roster -------------------------
 //
-// Bots are plain structs, so the session wraps each one in this adapter. The
+// Strategies are plain structs, so the session wraps each one in this adapter. The
 // virtual call costs nothing that matters here: it happens once per reaction, in
 // simulated time, nowhere near anything the benchmarks measure.
 
-class BotHandle {
+class StrategyHandle {
 public:
-    virtual ~BotHandle() = default;
+    virtual ~StrategyHandle() = default;
     [[nodiscard]] virtual const char* name() const noexcept = 0;
     [[nodiscard]] virtual SimTime reaction_ns() const noexcept = 0;
     [[nodiscard]] virtual SimTime timer_ns() const noexcept = 0;
@@ -192,24 +192,24 @@ public:
     virtual ActionBatch on_event(const MarketView& v) = 0;
 };
 
-template <class Bot>
-class BotAdapter final : public BotHandle {
+template <class Strategy>
+class StrategyAdapter final : public StrategyHandle {
 public:
-    explicit BotAdapter(Bot bot) : bot_(bot) {}
-    [[nodiscard]] const char* name() const noexcept override { return bot_.name; }
-    [[nodiscard]] SimTime reaction_ns() const noexcept override { return bot_.reaction_ns; }
-    [[nodiscard]] SimTime timer_ns() const noexcept override { return bot_.timer_ns; }
-    void reset(std::uint64_t seed) override { bot_.reset(seed); }
-    ActionBatch on_event(const MarketView& v) override { return bot_.on_event(v); }
-    [[nodiscard]] Bot& get() noexcept { return bot_; }
+    explicit StrategyAdapter(Strategy strategy) : strategy_(strategy) {}
+    [[nodiscard]] const char* name() const noexcept override { return strategy_.name; }
+    [[nodiscard]] SimTime reaction_ns() const noexcept override { return strategy_.reaction_ns; }
+    [[nodiscard]] SimTime timer_ns() const noexcept override { return strategy_.timer_ns; }
+    void reset(std::uint64_t seed) override { strategy_.reset(seed); }
+    ActionBatch on_event(const MarketView& v) override { return strategy_.on_event(v); }
+    [[nodiscard]] Strategy& get() noexcept { return strategy_; }
 
 private:
-    Bot bot_;
+    Strategy strategy_;
 };
 
-template <class Bot>
-[[nodiscard]] std::unique_ptr<BotHandle> make_bot(Bot bot) {
-    return std::make_unique<BotAdapter<Bot>>(bot);
+template <class Strategy>
+[[nodiscard]] std::unique_ptr<StrategyHandle> make_strategy(Strategy strategy) {
+    return std::make_unique<StrategyAdapter<Strategy>>(strategy);
 }
 
 } // namespace px::arena

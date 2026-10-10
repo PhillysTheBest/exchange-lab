@@ -23,7 +23,7 @@
 //
 // --still runs a session headless to one simulated instant and prints a single
 // frame, which makes a screenshot reproducible from a seed.
-#include "arena/bots/script.hpp"
+#include "arena/strategies/script.hpp"
 #include "arena/session.hpp"
 #include "arena/term.hpp"
 #include "arena/ui.hpp"
@@ -54,7 +54,7 @@ struct ViewOptions {
     SimTime still_at_ns = 0;              // >0: render one frame and exit
     double sim_ns_per_second = 2'000'000; // 2 ms of market per real second
     SimTime maker_reaction_ns = -1;       // <0 = the registry's default
-    std::string bots;                     // empty = the registry's default line-up
+    std::string strategies;                     // empty = the registry's default line-up
     std::string script;                   // a file of orders to play, as a participant
 };
 
@@ -196,7 +196,7 @@ void draw_reaction(ui::Screen& s, const Rect& r, const Session& sess, int focus)
         const int y = in.y + 2 + static_cast<int>(i);
         const SimTime d = sess.reaction_of(i);
         // 1 us at the left, 1 ms at the right, log scaled: the interesting range
-        // spans three decades, so a linear slider would put every bot worth
+        // spans three decades, so a linear slider would put every strategy worth
         // comparing in the leftmost column.
         double frac = 0;
         if (d > 0) {
@@ -260,7 +260,7 @@ void compose(ui::Screen& s, const Session& sess, const ViewOptions& opt, int foc
     const int right_x = left_w + 4;
     const int right_w = w - right_x - 3;
 
-    s.text(2, 0, " ARENA \xe2\x94\x82 bots trading inside the matching engine ", pal::ink, pal::grid);
+    s.text(2, 0, " ARENA \xe2\x94\x82 strategies trading inside the matching engine ", pal::ink, pal::grid);
 
     const int book_h = h - 12;
     draw_book(s, Rect{2, 2, left_w, book_h}, sess);
@@ -323,21 +323,21 @@ Alert detect_alert(const Session& sess, std::size_t& seen_trades, Price& last_mi
 // running session's scripted participant is pointing into, or a typo would
 // empty the market you were watching.
 [[nodiscard]] bool make_roster(const RosterConfig& rc, const ViewOptions& opt,
-                               std::vector<bots::ScriptedOrder>& orders, Roster& out, std::string& error) {
+                               std::vector<strategies::ScriptedOrder>& orders, Roster& out, std::string& error) {
     error.clear();
     Roster roster;
     // A spec if one was given, otherwise the default line-up, so --script alone
     // puts you into the usual market rather than an empty one.
-    if (opt.bots.empty()) {
+    if (opt.strategies.empty()) {
         roster = build_roster(rc);
-    } else if (!roster_from_spec(opt.bots, rc, roster, error)) {
-        error = "--bots=" + opt.bots + ": " + error;
+    } else if (!roster_from_spec(opt.strategies, rc, roster, error)) {
+        error = "--strategies=" + opt.strategies + ": " + error;
         return false;
     }
     if (!opt.script.empty()) {
-        bots::Scripted you;
+        strategies::Scripted you;
         you.orders = &orders;
-        roster.bots.push_back(make_bot(you));
+        roster.strategies.push_back(make_strategy(you));
         roster.informed.push_back(false);
     }
     out = std::move(roster);
@@ -354,11 +354,11 @@ Alert detect_alert(const Session& sess, std::size_t& seen_trades, Price& last_mi
 // scripted participant holds a pointer into it.
 [[nodiscard]] Session::StartError start_session(Session& sess, const SessionConfig& sc, const RosterConfig& rc,
                                                 const ViewOptions& opt,
-                                                std::vector<bots::ScriptedOrder>& script_orders,
+                                                std::vector<strategies::ScriptedOrder>& script_orders,
                                                 std::string& error) {
     error.clear();
-    if (opt.bots.empty() && opt.script.empty()) return sess.start(sc, rc);
-    if (!opt.script.empty() && !bots::load_script(opt.script.c_str(), sc.tick, script_orders, error)) {
+    if (opt.strategies.empty() && opt.script.empty()) return sess.start(sc, rc);
+    if (!opt.script.empty() && !strategies::load_script(opt.script.c_str(), sc.tick, script_orders, error)) {
         return Session::StartError::None;
     }
     Roster roster;
@@ -378,7 +378,7 @@ int main(int argc, char** argv) {
                         "  --requests=N         stop after N engine requests (default: run on)\n"
                         "  --speed=NS           simulated ns per real second (default 2000000)\n"
                         "  --maker-reaction=NS  the swept maker's reaction delay\n"
-                        "  --bots=SPEC          compose the line-up by name, e.g.\n"
+                        "  --strategies=SPEC          compose the line-up by name, e.g.\n"
                         "                       maker,rival,informed,noise:2,momentum\n"
                         "  --script=PATH        play a file of orders as a participant, in\n"
                         "                       simulated time; see tools/arena_script_demo.txt\n"
@@ -396,8 +396,8 @@ int main(int argc, char** argv) {
             out = std::atoll(std::string(a.substr(pfx.size())).c_str());
             return true;
         };
-        if (a.starts_with("--bots=")) {
-            opt.bots = std::string(a.substr(7));
+        if (a.starts_with("--strategies=")) {
+            opt.strategies = std::string(a.substr(13));
             continue;
         }
         if (a.starts_with("--script=")) {
@@ -428,7 +428,7 @@ int main(int argc, char** argv) {
     if (opt.maker_reaction_ns >= 0) rc.maker_reaction_ns = opt.maker_reaction_ns;
 
     // The script's orders must outlive the session that plays them.
-    std::vector<bots::ScriptedOrder> script_orders;
+    std::vector<strategies::ScriptedOrder> script_orders;
 
     Session sess;
     std::string why;
@@ -510,10 +510,10 @@ int main(int argc, char** argv) {
                 // Parse the edited file into a scratch vector first. Only if it
                 // is good does it replace the one the running session points at,
                 // so a typo leaves the market you were watching untouched.
-                std::vector<bots::ScriptedOrder> probe;
+                std::vector<strategies::ScriptedOrder> probe;
                 std::string reload_error;
                 Roster roster;
-                if (!bots::load_script(opt.script.c_str(), sc.tick, probe, reload_error)) {
+                if (!strategies::load_script(opt.script.c_str(), sc.tick, probe, reload_error)) {
                     alert.line1 = reload_error;
                     alert.line2 = "keeping the session that was already running";
                     alert.until = sess.now() + 4'000'000;

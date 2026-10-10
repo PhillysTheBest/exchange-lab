@@ -3,7 +3,7 @@
 //
 // P&L IS MARKED, NOT REALISED. Realised P&L alone is not a measure of anything
 // in a session where a participant can end holding inventory: a market maker
-// that is losing can hide it by not closing, and the bot that happens to be flat
+// that is losing can hide it by not closing, and the strategy that happens to be flat
 // at the horn looks best. So every account is marked:
 //
 //     value = cash + position * mark - fees

@@ -4,7 +4,7 @@ A single-threaded exchange matching core fed by a lock-free single-producer/
 single-consumer ring, with **no heap allocation after start-up**, int64 fixed-point
 prices and a price-ordered level index. It comes with the measurement and test
 machinery that backs every number below — and with [the arena](#the-arena), a seeded
-market of bots trading inside the engine so you can watch it work and ask what a
+market of strategies trading inside the engine so you can watch it work and ask what a
 participant's reaction delay is worth.
 
 **Headline.** Measured on a laptop (i5-12450H, Windows 11, on battery, Balanced power
@@ -261,7 +261,7 @@ g++ 13.3, same commands; raw output in [results/wsl2/](results/wsl2/).
 
 ## The arena
 
-A seeded market of bots trading inside the engine, each with a reaction delay you
+A seeded market of strategies trading inside the engine, each with a reaction delay you
 control, rendered live in the terminal. Design, and the four modelling mistakes it took
 to get there, in [docs/ARENA.md](docs/ARENA.md).
 
@@ -269,18 +269,18 @@ to get there, in [docs/ARENA.md](docs/ARENA.md).
 > so that a participant's reaction delay can be a controlled variable rather than a
 > property of the machine. The latency tables above are *measured*, on hardware. These
 > are not, and the two must not be read together. Nothing in `arena/` is even called
-> latency: a bot has a `reaction_ns`.
+> latency: a strategy has a `reaction_ns`.
 
 Six participants, each a distinct owner to the engine. A **maker** quotes both sides and
 infers price from order flow; a **rival** maker does the same at a fixed fast delay; an
 **informed** trader can see a fundamental value nobody else can and takes quotes that are
-on the wrong side of it; two **noise** traders and a **momentum** bot supply the rest of
+on the wrong side of it; two **noise** traders and a **momentum** strategy supply the rest of
 the flow. That is Glosten and Milgrom's setting: the maker earns the spread from
 uninformed flow and pays it back to the informed trader.
 
 Queue position is not an engine feature. The engine exposes no per-order query and none
 was added — `arena/book_mirror.hpp` reconstructs every level and every FIFO from the
-`ExecEvent` stream, which is the only thing a real venue sends out. So a bot provably
+`ExecEvent` stream, which is the only thing a real venue sends out. So a strategy provably
 sees no more than a real participant would.
 
 <img src="docs/arena.svg" alt="The arena: order book, participants, reaction-delay sliders, session and tape, drawn in a terminal" width="100%">
@@ -400,7 +400,7 @@ information; it hands uninformed flow to the maker that is still quoting.
 
 The sums are the check on the attribution rather than decoration: they are exactly zero in
 integers, so nothing is unaccounted for. `summarize_arena.py` prints this table, and keys
-it on participant index rather than name — two of the bots are both called `noise`, and
+it on participant index rather than name — two of the strategies are both called `noise`, and
 grouping by name averages them into one participant and silently breaks the identity.
 
 ### What this instrument cannot show
@@ -424,8 +424,8 @@ capable of overturning the headline, which this one did.
 Found by testing the arena, fixed, and pinned by regression tests in
 [test_arena.cpp](tests/test_arena.cpp):
 
-- **At most 64 participants per session.** A session marks which bots an event concerned
-  in a fixed array. Past that bound the marks were silently dropped, so those bots never
+- **At most 64 participants per session.** A session marks which strategies an event concerned
+  in a fixed array. Past that bound the marks were silently dropped, so those strategies never
   got an own-event wake — with 104 identical noise traders, the first 64 took 151.9 fills
   each and the rest took 55.9: wrong numbers that looked entirely plausible. Rosters above
   the ceiling are now refused at construction. The ceiling is a hard limit rather than a
@@ -496,9 +496,27 @@ mingw32-make arena      # the arena: the sweep runner and the viewer
 build/release/arena                    # watch a market happen
 build/release/sweep --seeds=24 --replay-check   # the reaction-delay sweep
 build/release/sweep --null             # the control: nobody informed
-build/release/sweep --bots=maker,rival,informed,noise:3   # compose the line-up
-build/release/arena --bots=maker,informed,noise:2         # and watch it
+build/release/sweep --strategies=maker,rival,informed,noise:3   # compose the line-up
+build/release/arena --strategies=maker,informed,noise:2         # and watch it
 ```
+
+### Add your own strategy
+
+A strategy is one C++ header, written against `arena/strategy.hpp` only: a view of
+the market in, a batch of orders out. `examples/strategies/imbalance.hpp` is a
+complete one and states the convention. Installing it builds two lab binaries that
+can see it; `sweep`, `arena` and the tests cannot, so the published numbers above
+stay out of its reach.
+
+```bash
+make strategy STRATEGY=examples/strategies/imbalance.hpp
+build/release/sweep_lab --strategies=maker,rival,informed,noise:2,imbalance --seeds=8
+build/release/arena_lab --strategies=maker,rival,informed,noise:2,imbalance
+```
+
+The sweep prints a row per participant (value, orders, fills, rejects) across shared
+seeds. A standard benchmark, an evaluation report and validated controls are the
+next steps and are not built yet.
 
 A minimal REPL session:
 
@@ -534,7 +552,7 @@ renderer.
 | `include/px/` | the engine: types, messages, pools, hash map, level index, matching engine, ring, TSC clock, stats, platform |
 | `src/` | engine and platform implementations (Windows and Linux) |
 | `sim/` | seeded order-stream generator, three-thread pipeline and timing, allocation counter |
-| `arena/` | the simulated market: clock and scheduler, fundamental value, book mirror, accounting, the bot contract, `bots/`, the sweep runner, the renderer and the viewer |
+| `arena/` | the simulated market: clock and scheduler, fundamental value, book mirror, accounting, the strategy contract, `strategies/`, the sweep runner, the renderer and the viewer |
 | `tests/` | unit, scenario, fuzz (with the reference engine), allocation, determinism and arena tests |
 | `bench/` | `bench_matching_latency`, `bench_engine`, `bench_ring`, and the evidence scripts |
 | `results/` | raw benchmark evidence with the machine state it was captured on, and the arena's sweeps |
