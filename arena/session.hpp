@@ -395,6 +395,21 @@ public:
         return true;
     }
 
+    // Reads one session field by name, the counterpart of set_param(), so a run
+    // can record every field it ran with under the names --set= takes.
+    [[nodiscard]] static bool get_param(const SessionConfig& c, std::string_view key, std::int64_t& out) {
+        if (key == "session.seed") out = static_cast<std::int64_t>(c.seed);
+        else if (key == "session.max_requests") out = static_cast<std::int64_t>(c.max_requests);
+        else if (key == "session.max_time_ns") out = c.max_time_ns;
+        else if (key == "session.markout_horizon_ns") out = c.markout_horizon_ns;
+        else if (key == "session.stall_limit_ns") out = c.stall_limit_ns;
+        else if (key == "session.fee_per_qty") out = c.fee_per_qty;
+        else if (key == "fair.step_mean_ns") out = c.fair_step_mean_ns;
+        else if (key == "fair.band_ticks") out = c.fair_band_ticks;
+        else return false;
+        return true;
+    }
+
     static constexpr const char* kSessionParamNames =
         "session.seed session.max_requests session.max_time_ns session.stall_limit_ns\n"
         "  session.markout_horizon_ns session.fee_per_qty fair.step_mean_ns fair.band_ticks";

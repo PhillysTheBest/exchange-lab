@@ -28,12 +28,16 @@
 #include "arena/book_mirror.hpp"
 #include "arena/strategies/script.hpp"
 #include "arena/session.hpp"
+#include "arena/suite.hpp"
+#include "arena/suite_report.hpp"
 #include "arena/ui.hpp"
 #include "px/matching_engine.hpp"
 #include "sim/order_stream.hpp"
 #include "test_harness.hpp"
 
+#include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <vector>
@@ -47,6 +51,12 @@ namespace {
 // accidental change to the palette, a drawing primitive or the escape-emitting
 // fails here; a deliberate visual change updates this number along with it.
 constexpr std::uint64_t kPinnedFrameHash = 0xddfa48c44bff4de8ULL;
+
+// The standard suite's fingerprint over the smoke block: its conditions plus
+// every placebo session hash. Pinned so that a change to the engine, the
+// session, a reference strategy, a default or the suite's own settings fails
+// here and forces a deliberate suite version bump (docs/RUNNER.md).
+constexpr std::uint64_t kPinnedSmokeFingerprint = 0xd461c30ab2446acfULL;
 
 // ---- 1. the mirror against the engine ------------------------------------
 
@@ -673,7 +683,7 @@ void test_roster_from_spec() {
         }
     }
     std::printf("  spec: %zu named participants, all addable\n", listed);
-    PX_CHECK(listed == 6);
+    PX_CHECK(listed == 7);
 
     // Counts repeat a name, and the roster comes out in the order written.
     Roster r;
@@ -851,6 +861,558 @@ void test_scripted_participant() {
     PX_CHECK(s2.hash() == s.hash());
 }
 
+
+// ---- the standard experiment runner (arena/suite.hpp, docs/RUNNER.md) --------
+
+// Sends nothing, ever, but wakes on its own timer: an inert seat that is busier
+// than the placebo, to show the seat is invisible however often it looks.
+struct Idle {
+    const char* name = "idle";
+    SimTime reaction_ns = 10'000;
+    SimTime timer_ns = 7'000;
+    void reset(std::uint64_t) {}
+    ActionBatch on_event(const MarketView&) { return ActionBatch{}; }
+};
+
+// Posts a far-away bid and cancels it again on every wake of a 1 us timer: a
+// runaway the step ceiling must catch.
+struct Churn {
+    const char* name = "churn";
+    SimTime reaction_ns = 10'000;
+    SimTime timer_ns = 1'000;
+    void reset(std::uint64_t) {}
+    ActionBatch on_event(const MarketView& v) {
+        ActionBatch out;
+        for (std::size_t i = 0; i < v.my_order_count; ++i) out.push(Action::cancel(v.my_orders[i].id));
+        if (v.in_flight == 0) out.push(Action::limit(Side::Buy, 90 * kPriceScale, 1));
+        return out;
+    }
+};
+
+// Records how stale its view is on every wake, to show the seat runs at the
+// suite's delay rather than the one it declares.
+struct LagState {
+    std::uint64_t wakes = 0;
+    SimTime min_lag = kNever;
+    SimTime max_lag = 0;
+};
+struct Lag {
+    const char* name = "lag";
+    SimTime reaction_ns = 30'000;
+    SimTime timer_ns = 5'000;
+    LagState* st = nullptr;
+    void reset(std::uint64_t) {}
+    ActionBatch on_event(const MarketView& v) {
+        ++st->wakes;
+        const SimTime lag = v.now_ns - v.as_of_ns;
+        if (lag < st->min_lag) st->min_lag = lag;
+        if (lag > st->max_lag) st->max_lag = lag;
+        return ActionBatch{};
+    }
+};
+
+// The default roster with anchor and tick synced to the session, exactly as
+// Session::start(scfg, rcfg) builds it.
+Roster default_roster(const SessionConfig& sc) {
+    RosterConfig rc;
+    rc.anchor = sc.start_price;
+    rc.tick = sc.tick;
+    return build_roster(rc);
+}
+
+bool same_account(const Account& a, const Account& b) {
+    return a.position == b.position && a.cash == b.cash && a.fees == b.fees && a.fills == b.fills &&
+           a.maker_fills == b.maker_fills && a.taker_fills == b.taker_fills && a.filled_qty == b.filled_qty &&
+           a.orders_sent == b.orders_sent && a.rejects == b.rejects && a.self_trade_cancels == b.self_trade_cancels &&
+           a.edge_sum == b.edge_sum && a.spread_sum == b.spread_sum && a.adverse_sum == b.adverse_sum &&
+           a.markout_n == b.markout_n && a.adverse_fills == b.adverse_fills && a.unresolved_fills == b.unresolved_fills;
+}
+
+void test_placebo_is_inert() {
+    // (a) It is a nameable participant that never acts.
+    Roster one;
+    PX_CHECK(add_named_strategy("placebo", RosterConfig{}, one));
+    PX_CHECK(std::string(one.strategies[0]->name()) == "placebo");
+    PX_CHECK(one.strategies[0]->timer_ns() == 0);
+    PX_CHECK(!one.informed[0]);
+    PX_CHECK(one.strategies[0]->on_event(MarketView{}).empty());
+
+    // (b) Appended last, it leaves the session exactly as it was.
+    const SessionConfig sc = small_session();
+    Session bare;
+    bare.start(sc, default_roster(sc));
+    bare.run();
+    PX_CHECK(bare.hash() == 0x2853d2127a3486c5ULL);
+
+    auto with_seat = [&](std::unique_ptr<StrategyHandle> seat, Session& s) {
+        Roster r = default_roster(sc);
+        r.strategies.push_back(std::move(seat));
+        r.informed.push_back(false);
+        s.start(sc, std::move(r));
+        s.run();
+    };
+    auto placebo = [] {
+        Roster p;
+        (void)add_named_strategy("placebo", RosterConfig{}, p);
+        return std::move(p.strategies.front());
+    };
+
+    Session a;
+    with_seat(placebo(), a);
+    PX_CHECK(a.hash() == bare.hash());
+    PX_CHECK(a.event_hash() == bare.event_hash());
+    PX_CHECK(a.event_count() == bare.event_count());
+    const std::size_t n = bare.participants();
+    PX_CHECK(a.participants() == n + 1);
+    for (std::size_t i = 0; i < n; ++i) {
+        PX_CHECK(same_account(a.ledger().at(i), bare.ledger().at(i)));
+        PX_CHECK(a.wakes_of(i) == bare.wakes_of(i));
+    }
+    PX_CHECK(same_account(a.ledger().at(n), Account{}));
+    PX_CHECK(a.wakes_of(n) > 0);
+
+    // (c) Whatever its delay, and however often an inert seat looks.
+    Session b, c;
+    with_seat(std::make_unique<suite::SeatOverride>(placebo(), 0), b);
+    with_seat(make_strategy(Idle{}), c);
+    PX_CHECK(b.hash() == bare.hash());
+    PX_CHECK(c.hash() == bare.hash());
+    PX_CHECK(c.wakes_of(n) > a.wakes_of(n));
+
+    // (d) Inserted earlier it is not invisible: every later owner id and reset
+    // seed shift. The check above could fail.
+    Roster r = default_roster(sc);
+    r.strategies.insert(r.strategies.begin() + 3, placebo());
+    r.informed.insert(r.informed.begin() + 3, false);
+    Session d;
+    d.start(sc, std::move(r));
+    d.run();
+    PX_CHECK(d.hash() != bare.hash());
+    std::printf("  placebo: appended %016llx (bare %016llx), inserted at 3 %016llx\n",
+                static_cast<unsigned long long>(a.hash()), static_cast<unsigned long long>(bare.hash()),
+                static_cast<unsigned long long>(d.hash()));
+}
+
+const suite::SeedBlock& smoke_block() { return *suite::find_block("smoke"); }
+
+suite::ArmRecord run_named(const suite::SuiteDef& def, std::uint64_t seed, std::string_view candidate) {
+    Roster r;
+    suite::Origin origin = suite::Origin::Reference;
+    std::string why;
+    suite::ArmRecord rec;
+    const bool built = suite::build_arm_roster(def, candidate, r, origin, why);
+    PX_CHECK(built);
+    const bool ran = suite::run_arm(def, smoke_block(), seed, candidate.empty() ? "none" : candidate, origin,
+                                    std::move(r), rec, why);
+    PX_CHECK(ran);
+    return rec;
+}
+
+suite::ArmRecord run_seated(const suite::SuiteDef& def, std::uint64_t seed, std::unique_ptr<StrategyHandle> h,
+                            std::string_view label) {
+    Roster r;
+    std::string why;
+    suite::ArmRecord rec;
+    PX_CHECK(suite::build_arm_roster(def, std::move(h), r, why));
+    PX_CHECK(suite::run_arm(def, smoke_block(), seed, label, suite::Origin::Builtin, std::move(r), rec, why));
+    return rec;
+}
+
+void test_suite_reference_is_default() {
+    const suite::SuiteDef def = suite::standard_suite();
+    const SessionConfig sc = suite::suite_session_config(def, 42);
+    PX_CHECK(sc.max_requests == 0);
+    PX_CHECK(sc.stall_limit_ns == 0);
+    PX_CHECK(sc.max_time_ns == 25'000'000);
+    Roster check_roster;
+    std::string why;
+    PX_CHECK(roster_from_spec(def.lineup, suite::suite_roster_config(def), check_roster, why));
+    PX_CHECK(Session::check(sc, check_roster) == Session::StartError::None);
+
+    const suite::SeedBlock& blk = smoke_block();
+    for (std::uint64_t seed = blk.first; seed < blk.first + blk.count; ++seed) {
+        const SessionConfig s = suite::suite_session_config(def, seed);
+        // The line-up spec is the published default roster ...
+        Roster spec;
+        PX_CHECK(roster_from_spec(def.lineup, suite::suite_roster_config(def), spec, why));
+        Session x, y;
+        x.start(s, std::move(spec));
+        x.run();
+        y.start(s, RosterConfig{});
+        y.run();
+        PX_CHECK(x.hash() == y.hash());
+        // ... and driving step() under the ceiling is run().
+        const suite::ArmRecord none = run_named(def, seed, "");
+        PX_CHECK(none.session.session_hash == y.hash());
+        PX_CHECK(none.session.ended_by == suite::EndedBy::Time);
+        PX_CHECK(none.parts.size() == 6);
+    }
+}
+
+void test_suite_common_conditions() {
+    const suite::SuiteDef def = suite::standard_suite();
+    const suite::SeedBlock& blk = smoke_block();
+    int request_bound_differs = 0;
+    for (std::uint64_t seed = blk.first; seed < blk.first + blk.count; ++seed) {
+        const suite::ArmRecord p = run_named(def, seed, "placebo");
+        for (const char* arm : {"maker", "noise", "momentum"}) {
+            const suite::ArmRecord a = run_named(def, seed, arm);
+            // The fundamental's path and closing value are common to every arm.
+            PX_CHECK(a.session.v_final == p.session.v_final);
+            PX_CHECK(a.session.fair_steps == p.session.fair_steps);
+            PX_CHECK(a.session.ended_by == suite::EndedBy::Time);
+            PX_CHECK(a.session.steps < def.step_ceiling);
+
+            // Under a request bound they would not be: the candidate's own
+            // orders spend the shared budget and end the session earlier.
+            SessionConfig rb = suite::suite_session_config(def, seed);
+            rb.max_requests = 7'000;
+            rb.max_time_ns = 0;
+            rb.stall_limit_ns = SessionConfig{}.stall_limit_ns;
+            Roster r0, r1;
+            suite::Origin o;
+            std::string why;
+            PX_CHECK(suite::build_arm_roster(def, "placebo", r0, o, why));
+            PX_CHECK(suite::build_arm_roster(def, arm, r1, o, why));
+            Session s0, s1;
+            s0.start(rb, std::move(r0));
+            s0.run();
+            s1.start(rb, std::move(r1));
+            s1.run();
+            if (s0.fair_value().value() != s1.fair_value().value()) ++request_bound_differs;
+        }
+    }
+    std::printf("  suite: closing value common to every arm under the time bound; %d/12 differ under 7,000 requests\n",
+                request_bound_differs);
+    PX_CHECK(request_bound_differs > 0);
+}
+
+void test_suite_health_gate() {
+    using suite::Health;
+    const suite::HealthGate g;
+    SessionStats st;
+    st.gap_samples = 100;
+    st.gap_sum_ticks = 400; // a mean of exactly 4 ticks passes
+    PX_CHECK(suite::judge(st, suite::EndedBy::Time, g) == Health::Ok);
+    st.gap_sum_ticks = 401;
+    PX_CHECK(suite::judge(st, suite::EndedBy::Time, g) == Health::Gap);
+    st.gap_sum_ticks = 100;
+    st.gap_samples = 95;
+    st.gap_unpriced = 5; // exactly 5% one-sided passes
+    PX_CHECK(suite::judge(st, suite::EndedBy::Time, g) == Health::Ok);
+    st.gap_samples = 94;
+    st.gap_unpriced = 6;
+    PX_CHECK(suite::judge(st, suite::EndedBy::Time, g) == Health::OneSided);
+    SessionStats ok;
+    ok.gap_samples = 10;
+    ok.gap_sum_ticks = 10;
+    SessionStats bf = ok;
+    bf.book_full_rejects = 1;
+    PX_CHECK(suite::judge(bf, suite::EndedBy::Time, g) == Health::BookFull);
+    SessionStats wall = ok;
+    wall.wall_hits = 1;
+    PX_CHECK(suite::judge(wall, suite::EndedBy::Time, g) == Health::Wall);
+    PX_CHECK(suite::judge(SessionStats{}, suite::EndedBy::Time, g) == Health::NoSamples);
+    PX_CHECK(suite::judge(ok, suite::EndedBy::Ceiling, g) == Health::Ceiling);
+    PX_CHECK(suite::judge(ok, suite::EndedBy::Time, g) == Health::Ok);
+}
+
+void test_suite_reference_admissible() {
+    const suite::SuiteDef def = suite::standard_suite();
+    const suite::SeedBlock& blk = smoke_block();
+    for (std::uint64_t seed = blk.first; seed < blk.first + blk.count; ++seed) {
+        const suite::ArmRecord p = run_named(def, seed, "placebo");
+        PX_CHECK(p.session.healthy());
+        PX_CHECK(p.session.inert);
+        PX_CHECK(p.session.seat_value == 0);
+    }
+}
+
+void test_suite_seat_rules() {
+    std::string why;
+    using V = std::vector<std::string>;
+    PX_CHECK(!suite::check_candidates(V{}, why));
+    PX_CHECK(!suite::check_candidates(V{"informed"}, why) && why.find("informed") != std::string::npos);
+    PX_CHECK(!suite::check_candidates(V{"placebo"}, why) && why.find("placebo") != std::string::npos);
+    PX_CHECK(!suite::check_candidates(V{"nonsense"}, why) && why.find("nonsense") != std::string::npos);
+    PX_CHECK(!suite::check_candidates(V{"maker", "maker"}, why) && why.find("twice") != std::string::npos);
+    PX_CHECK(!suite::check_candidates(V{""}, why));
+    PX_CHECK(!suite::check_candidates(V(9, "maker"), why));
+    PX_CHECK(suite::check_candidates(V{"maker", "noise", "momentum", "fader", "rival"}, why));
+
+    const suite::SuiteDef def = suite::standard_suite();
+    Roster r;
+    suite::Origin origin;
+    PX_CHECK(suite::build_arm_roster(def, "maker", r, origin, why));
+    PX_CHECK(origin == suite::Origin::Builtin);
+    PX_CHECK(r.size() == 7);
+    PX_CHECK(!r.informed[6]); // never informed, whatever sits there
+    std::size_t seat = 0;
+    PX_CHECK(suite::lineup_size(def, seat, why) && seat == 6);
+
+    // The seat runs at the suite's delay, not the one the candidate declares.
+    const suite::ArmRecord f = run_named(def, 42, "fader");
+    PX_CHECK(f.session.declared_reaction_ns == 30'000);
+    PX_CHECK(f.session.seat_reaction_ns == 10'000);
+    PX_CHECK(f.parts[6].reaction_ns == 10'000);
+    PX_CHECK(f.parts[6].seat);
+    LagState st;
+    Lag lag;
+    lag.st = &st;
+    const suite::ArmRecord l = run_seated(def, 42, make_strategy(lag), "lag");
+    PX_CHECK(st.wakes > 100);
+    PX_CHECK(st.min_lag == 10'000 && st.max_lag == 10'000);
+    PX_CHECK(l.session.declared_reaction_ns == 30'000);
+}
+
+void test_suite_arm_determinism() {
+    const suite::SuiteDef def = suite::standard_suite();
+    auto text = [](const suite::ArmRecord& r) {
+        std::string s;
+        suite::append_session_row(s, r.session);
+        suite::append_participant_rows(s, r.parts);
+        return s;
+    };
+    const std::string m1 = text(run_named(def, 42, "maker"));
+    const std::string m2 = text(run_named(def, 42, "maker"));
+    PX_CHECK(m1 == m2);
+    // Arms are independent sessions: running another one in between changes nothing.
+    const std::string n1 = text(run_named(def, 43, "noise"));
+    const std::string m3 = text(run_named(def, 42, "maker"));
+    const std::string n2 = text(run_named(def, 43, "noise"));
+    PX_CHECK(m3 == m1);
+    PX_CHECK(n2 == n1);
+}
+
+void test_suite_inert_arm() {
+    const suite::SuiteDef def = suite::standard_suite();
+    const suite::SeedBlock& blk = smoke_block();
+    for (std::uint64_t seed = blk.first; seed < blk.first + blk.count; ++seed) {
+        const suite::ArmRecord p = run_named(def, seed, "placebo");
+        const suite::ArmRecord i = run_seated(def, seed, make_strategy(Idle{}), "idle");
+        PX_CHECK(i.session.inert);
+        PX_CHECK(i.session.session_hash == p.session.session_hash);
+        PX_CHECK(i.parts[6].wakes > p.parts[6].wakes);
+    }
+}
+
+void test_suite_ceiling() {
+    suite::SuiteDef def = suite::standard_suite();
+    def.step_ceiling = 5'000;
+    const suite::ArmRecord c = run_seated(def, 42, make_strategy(Churn{}), "churn");
+    PX_CHECK(c.session.ended_by == suite::EndedBy::Ceiling);
+    PX_CHECK(c.session.health == suite::Health::Ceiling);
+    PX_CHECK(c.session.steps == 5'000);
+    PX_CHECK(c.session.value_sum == 0);
+    PX_CHECK(c.session.seat_orders > 100);
+}
+
+void test_suite_closed_identity() {
+    const suite::SuiteDef def = suite::standard_suite();
+    const suite::SeedBlock& blk = smoke_block();
+    for (std::uint64_t seed = blk.first; seed < blk.first + blk.count; ++seed) {
+        const suite::ArmRecord p = run_named(def, seed, "placebo");
+        for (const char* arm : {"placebo", "maker", "momentum"}) {
+            const suite::ArmRecord a = run_named(def, seed, arm);
+            PX_CHECK(a.session.cash_sum == 0);
+            PX_CHECK(a.session.position_sum == 0);
+            PX_CHECK(a.session.value_sum == 0);
+            // The seat's value is exactly what the reference participants lost
+            // against their own placebo-arm selves: attribution with no model.
+            std::int64_t shift = 0;
+            for (std::size_t i = 0; i < 6; ++i) shift += a.parts[i].value - p.parts[i].value;
+            PX_CHECK(a.session.seat_value == -shift);
+        }
+    }
+}
+
+void test_suite_param_dump() {
+    // Every advertised name is gettable and round-trips through its setter.
+    for (const std::string& k : suite::split_names(kRosterParamNames)) {
+        RosterConfig c;
+        std::int64_t before = -1, after = -1;
+        PX_CHECK(get_roster_param(c, k, before));
+        const bool is_bool = k.ends_with(".enabled");
+        const std::int64_t x = is_bool ? (before == 0 ? 1 : 0) : before + 3;
+        PX_CHECK(set_roster_param(c, k, x));
+        PX_CHECK(get_roster_param(c, k, after));
+        PX_CHECK(after == x);
+    }
+    for (const std::string& k : suite::split_names(Session::kSessionParamNames)) {
+        SessionConfig c;
+        std::int64_t before = -1, after = -1;
+        PX_CHECK(Session::get_param(c, k, before));
+        PX_CHECK(Session::set_param(c, k, before + 3));
+        PX_CHECK(Session::get_param(c, k, after));
+        PX_CHECK(after == before + 3);
+    }
+    std::int64_t dummy = 0;
+    PX_CHECK(!get_roster_param(RosterConfig{}, "nonsense", dummy));
+    PX_CHECK(!Session::get_param(SessionConfig{}, "nonsense", dummy));
+
+    // suite.cfg names every field once, and applying it to fresh configs and
+    // dumping again reproduces it byte for byte: it can be read back.
+    const suite::SuiteDef def = suite::standard_suite();
+    const suite::RunInfo info;
+    const std::string cfg = suite::suite_cfg_text(def, smoke_block(), info);
+    auto count = [&cfg](const std::string& key) {
+        std::size_t n = 0, at = 0;
+        const std::string needle = "\n" + key + "=";
+        while ((at = cfg.find(needle, at)) != std::string::npos) {
+            ++n;
+            ++at;
+        }
+        return n;
+    };
+    for (const std::string& k : suite::split_names(kRosterParamNames)) PX_CHECK(count(k) == 1);
+    for (const std::string& k : suite::split_names(Session::kSessionParamNames)) {
+        PX_CHECK(count(k) == (k == "session.seed" ? 0u : 1u));
+    }
+    RosterConfig rc;
+    SessionConfig sc;
+    std::size_t line_start = 0;
+    while (line_start < cfg.size()) {
+        const std::size_t end = cfg.find('\n', line_start);
+        const std::string line = cfg.substr(line_start, end - line_start);
+        line_start = end + 1;
+        const std::size_t eq = line.find('=');
+        if (line.empty() || line[0] == '#' || eq == std::string::npos) continue;
+        const std::string key = line.substr(0, eq);
+        const std::int64_t v = std::strtoll(line.c_str() + eq + 1, nullptr, 10);
+        if (set_roster_param(rc, key, v)) continue;
+        (void)Session::set_param(sc, key, v);
+    }
+    suite::SuiteDef again = def;
+    again.roster = rc;
+    PX_CHECK(suite::roster_text(again) == suite::roster_text(def));
+    std::int64_t mt = 0;
+    PX_CHECK(Session::get_param(sc, "session.max_time_ns", mt) && mt == def.session_ns);
+}
+
+std::vector<std::pair<std::uint64_t, std::uint64_t>> smoke_placebo_hashes(const suite::SuiteDef& def) {
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> out;
+    const suite::SeedBlock& blk = smoke_block();
+    for (std::uint64_t seed = blk.first; seed < blk.first + blk.count; ++seed) {
+        out.emplace_back(seed, run_named(def, seed, "placebo").session.session_hash);
+    }
+    return out;
+}
+
+void test_suite_fingerprint() {
+    const suite::SuiteDef def = suite::standard_suite();
+    const auto hashes = smoke_placebo_hashes(def);
+    const std::uint64_t fp = suite::suite_fingerprint(def, smoke_block(), hashes);
+    std::printf("  suite: smoke fingerprint %016llx\n", static_cast<unsigned long long>(fp));
+    PX_CHECK(fp == kPinnedSmokeFingerprint);
+
+    // A change to the suite's own settings moves it, even with every placebo
+    // hash unchanged ...
+    suite::SuiteDef seat = def;
+    seat.seat_reaction_ns = 10'001;
+    PX_CHECK(suite::suite_fingerprint(seat, smoke_block(), hashes) != fp);
+    // ... and a change to a reference strategy moves it through the hashes.
+    suite::SuiteDef ref = def;
+    ref.roster.maker_impact_centiticks = 16;
+    const auto moved = smoke_placebo_hashes(ref);
+    PX_CHECK(moved != hashes);
+    PX_CHECK(suite::suite_fingerprint(ref, smoke_block(), moved) != fp);
+}
+
+void test_paired_stats() {
+    const suite::Paired p = suite::paired({1, 2, 3, 4}, {2, 4, 6, 8});
+    auto near = [](double a, double b) { return a - b < 1e-3 && b - a < 1e-3; };
+    PX_CHECK(p.n == 4);
+    PX_CHECK(near(p.mean, 2.5));
+    PX_CHECK(near(p.sd, 1.2910));
+    PX_CHECK(near(p.se, 0.6455));
+    PX_CHECK(near(p.t, 3.182));
+    PX_CHECK(near(p.lo, 0.4460) && near(p.hi, 4.5540));
+    PX_CHECK(near(p.median, 2.5) && near(p.min, 1) && near(p.max, 4));
+    PX_CHECK(p.ahead == 4);
+    PX_CHECK(p.var_removed_defined && near(p.var_removed, 0.8));
+    PX_CHECK(p.separated() && !p.straddles && !p.identical);
+
+    const suite::Paired c = suite::paired({1, 2, 3}, {4, 5, 6}); // constant difference
+    PX_CHECK(c.se == 0 && near(c.mean, 3) && c.separated());
+    const suite::Paired z = suite::paired({5, 7}, {5, 7});
+    PX_CHECK(z.identical && !z.separated());
+    for (const suite::SeedBlock& b : suite::kSeedBlocks) PX_CHECK(suite::t975(b.count - 1) > 0);
+}
+
+void test_suite_compare() {
+    // A synthetic run: an A/A pair, a pair separated by its interval although
+    // the range straddles zero, and an arm that failed one seed.
+    suite::RunRecord run;
+    run.block = suite::SeedBlock{"synthetic", 1, 8};
+    for (const char* n : {"a", "b", "c", "d"}) {
+        suite::CandidateInfo ci;
+        ci.name = n;
+        run.info.candidates.push_back(ci);
+    }
+    const std::int64_t a[] = {10, 20, 30, 40, 50, 60, 70, 80};
+    const std::int64_t c[] = {30, 41, 49, 61, 70, 79, 91, 79}; // a + ~20, but one seed far below
+    for (std::uint64_t k = 0; k < 8; ++k) {
+        auto row = [&](const char* arm, std::int64_t v, bool healthy) {
+            suite::SessionRow r;
+            r.arm = arm;
+            r.seed = k + 1;
+            r.seat_value = v * kPriceScale;
+            r.health = healthy ? suite::Health::Ok : suite::Health::Gap;
+            run.sessions.push_back(r);
+        };
+        row("placebo", 0, true);
+        row("a", a[k], true);
+        row("b", a[k], true);
+        row("c", c[k], true);
+        row("d", a[k], k != 5);
+    }
+    const std::vector<suite::ComparisonRow> rows = suite::compare(run);
+    PX_CHECK(rows.size() == 4 + 3);
+    auto find = [&rows](const std::string& base, const std::string& arm) -> const suite::ComparisonRow* {
+        for (const auto& r : rows) {
+            if (r.baseline == base && r.arm == arm) return &r;
+        }
+        return nullptr;
+    };
+    const suite::ComparisonRow* aa = find("a", "b");
+    const suite::ComparisonRow* ac = find("a", "c");
+    const suite::ComparisonRow* ad = find("a", "d");
+    PX_CHECK(aa != nullptr && aa->verdict == "identical");
+    PX_CHECK(ac != nullptr && ac->verdict == "separated" && ac->stats.straddles);
+    PX_CHECK(ad != nullptr && ad->verdict == "not_admissible");
+    PX_CHECK(ad != nullptr && ad->stats.n == 8); // the failing seed is not dropped
+    PX_CHECK(find("placebo", "d")->verdict == "not_admissible");
+    PX_CHECK(suite::outcome_of(run).exit_code() == 0);
+}
+
+void test_suite_rows() {
+    const suite::SuiteDef def = suite::standard_suite();
+    const suite::ArmRecord m = run_named(def, 42, "maker");
+    std::string sessions = suite::kSessionsHeader;
+    suite::append_session_row(sessions, m.session);
+    std::string parts = suite::kParticipantsHeader;
+    suite::append_participant_rows(parts, m.parts);
+    auto columns = [](const std::string& line) { return 1 + std::count(line.begin(), line.end(), ','); };
+    auto lines = [](const std::string& text) {
+        std::vector<std::string> out;
+        std::size_t at = 0;
+        while (at < text.size()) {
+            const std::size_t end = text.find('\n', at);
+            out.push_back(text.substr(at, end - at));
+            at = end + 1;
+        }
+        return out;
+    };
+    for (const std::string* t : {&sessions, &parts}) {
+        const std::vector<std::string> ls = lines(*t);
+        PX_CHECK(ls.size() >= 2);
+        for (const std::string& l : ls) PX_CHECK(columns(l) == columns(ls[0]));
+        PX_CHECK(t->find('.') == std::string::npos); // integers and identifiers only
+        PX_CHECK(t->find('\r') == std::string::npos);
+    }
+    PX_CHECK(lines(parts).size() == 1 + 7);
+}
+
 } // namespace
 
 int main() {
@@ -869,5 +1431,20 @@ int main() {
     test_quiet_session_terminates();
     test_ui_grid();
     test_speed_beats_slow();
+    test_placebo_is_inert();
+    test_suite_reference_is_default();
+    test_suite_common_conditions();
+    test_suite_health_gate();
+    test_suite_reference_admissible();
+    test_suite_seat_rules();
+    test_suite_arm_determinism();
+    test_suite_inert_arm();
+    test_suite_ceiling();
+    test_suite_closed_identity();
+    test_suite_param_dump();
+    test_suite_fingerprint();
+    test_paired_stats();
+    test_suite_compare();
+    test_suite_rows();
     PX_TEST_REPORT_AND_RETURN();
 }
