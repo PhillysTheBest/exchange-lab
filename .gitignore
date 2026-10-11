@@ -17,3 +17,7 @@ __pycache__/
 # Strategies installed with `make strategy STRATEGY=...`. Only the .gitkeep is
 # tracked: a strategy of your own stays yours.
 arena/strategies/user/*.hpp
+
+# Standard-suite run directories (make compare). They belong to whoever ran
+# them; the published evidence is results/.
+runs/

@@ -38,6 +38,7 @@
 #include "arena/strategies/market_maker.hpp"
 #include "arena/strategies/momentum.hpp"
 #include "arena/strategies/noise.hpp"
+#include "arena/strategies/placebo.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -238,6 +239,43 @@ struct Roster {
     return true;
 }
 
+// Reads one roster field by name: the counterpart of set_roster_param(), so a
+// run can write down every field it ran with under the same names --set= takes
+// and read them back. Booleans come out as 0 or 1. test_arena holds the two
+// together: every listed name is gettable, and get(set(x)) == x.
+[[nodiscard]] inline bool get_roster_param(const RosterConfig& c, std::string_view key, std::int64_t& out) {
+    if (key == "maker.reaction_ns") out = static_cast<std::int64_t>(c.maker_reaction_ns);
+    else if (key == "maker.half_spread_ticks") out = static_cast<std::int64_t>(c.maker_half_spread_ticks);
+    else if (key == "maker.quote_qty") out = static_cast<std::int64_t>(c.maker_quote_qty);
+    else if (key == "maker.max_position") out = static_cast<std::int64_t>(c.maker_max_position);
+    else if (key == "maker.skew_ticks_at_limit") out = static_cast<std::int64_t>(c.maker_skew_ticks_at_limit);
+    else if (key == "maker.impact_centiticks") out = static_cast<std::int64_t>(c.maker_impact_centiticks);
+    else if (key == "rival.enabled") out = c.rival_enabled ? 1 : 0;
+    else if (key == "rival.reaction_ns") out = static_cast<std::int64_t>(c.rival_reaction_ns);
+    else if (key == "rival.half_spread_ticks") out = static_cast<std::int64_t>(c.rival_half_spread_ticks);
+    else if (key == "rival.quote_qty") out = static_cast<std::int64_t>(c.rival_quote_qty);
+    else if (key == "rival.impact_centiticks") out = static_cast<std::int64_t>(c.rival_impact_centiticks);
+    else if (key == "informed.enabled") out = c.informed_enabled ? 1 : 0;
+    else if (key == "informed.reaction_ns") out = static_cast<std::int64_t>(c.informed_reaction_ns);
+    else if (key == "informed.edge_ticks") out = static_cast<std::int64_t>(c.informed_edge_ticks);
+    else if (key == "informed.qty") out = static_cast<std::int64_t>(c.informed_qty);
+    else if (key == "informed.max_position") out = static_cast<std::int64_t>(c.informed_max_position);
+    else if (key == "noise.count") out = static_cast<std::int64_t>(c.noise_count);
+    else if (key == "noise.reaction_ns") out = static_cast<std::int64_t>(c.noise_reaction_ns);
+    else if (key == "noise.timer_ns") out = static_cast<std::int64_t>(c.noise_timer_ns);
+    else if (key == "noise.qty") out = static_cast<std::int64_t>(c.noise_qty);
+    else if (key == "noise.pct_market") out = static_cast<std::int64_t>(c.noise_pct_market);
+    else if (key == "momentum.enabled") out = c.momentum_enabled ? 1 : 0;
+    else if (key == "momentum.reaction_ns") out = static_cast<std::int64_t>(c.momentum_reaction_ns);
+    else if (key == "momentum.qty") out = static_cast<std::int64_t>(c.momentum_qty);
+    else if (key == "fader.enabled") out = c.fader_enabled ? 1 : 0;
+    else if (key == "fader.reaction_ns") out = static_cast<std::int64_t>(c.fader_reaction_ns);
+    else if (key == "fader.qty") out = static_cast<std::int64_t>(c.fader_qty);
+    else if (key == "fader.trigger_ticks") out = static_cast<std::int64_t>(c.fader_trigger_ticks);
+    else return false;
+    return true;
+}
+
 // Every name set_roster_param() accepts, for --help. Kept in step with the
 // function above by test_arena, which asserts that each name listed here is
 // actually settable — otherwise this comment rots the first time a strategy changes.
@@ -333,6 +371,11 @@ namespace px::arena {
         fader.trigger_ticks = cfg.fader_trigger_ticks;
         r.strategies.push_back(make_strategy(fader));
         r.informed.push_back(false);
+    } else if (name == "placebo") {
+        // The empty seat the standard experiment runner uses as its control
+        // (arena/strategies/placebo.hpp). Never in a default line-up.
+        r.strategies.push_back(make_strategy(strategies::Placebo{}));
+        r.informed.push_back(false);
     } else {
 #if defined(PX_ARENA_USER_STRATEGIES)
         return add_user_strategy(name, r);
@@ -343,7 +386,7 @@ namespace px::arena {
     return true;
 }
 
-inline constexpr const char* kStrategyNames = "maker rival informed noise momentum fader";
+inline constexpr const char* kStrategyNames = "maker rival informed noise momentum fader placebo";
 
 // Builds a roster from a spec like "maker,rival,informed,noise:2,momentum":
 // comma-separated names, each optionally followed by :count to repeat it. On a

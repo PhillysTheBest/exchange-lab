@@ -4,6 +4,7 @@
 #   make bench    release build (-O3 -march=native -flto); builds and runs every benchmark
 #   make latency  builds and runs only bench_matching_latency (the 1M-order headline number)
 #   make repl     release build of the interactive REPL
+#   make compare CANDIDATES=a,b   the standard experiment (docs/RUNNER.md); see "strategies of your own"
 #   make all      test, then build the benchmarks and the REPL
 #   make clean
 #
@@ -67,7 +68,7 @@ REPL_BIN   := $(REL)/repl$(EXE)
 # The arena: the headless experiment runner and the terminal viewer. Both are
 # consumers of the same MatchingEngine the benchmarks measure, so neither can
 # affect a latency number.
-ARENA_BINS := $(REL)/sweep$(EXE) $(REL)/arena$(EXE)
+ARENA_BINS := $(REL)/sweep$(EXE) $(REL)/arena$(EXE) $(REL)/suite$(EXE)
 
 .PHONY: all test bench latency repl arena sweep clean
 
@@ -81,7 +82,7 @@ test: $(TEST_BINS)
 # configuration that could never terminate must be refused, not hang. These were
 # all verified by hand once; this target is so they stay verified.
 .PHONY: test-cli
-test-cli: $(REL)/sweep$(EXE)
+test-cli: $(REL)/sweep$(EXE) $(REL)/suite$(EXE)
 	@set -e; \
 	fail() { echo "FAIL: $$1"; exit 1; }; \
 	echo "== sweep command line"; \
@@ -104,7 +105,49 @@ test-cli: $(REL)/sweep$(EXE)
 	./$< --values=1000 --seeds=1 --requests=2000 --strategies=maker,rival,informed,noise:2 --quiet > /dev/null \
 	    || fail "a named line-up should succeed"; \
 	./$< --values=1000 --seeds=1 --requests=2000 --quiet > /dev/null || fail "a normal sweep should succeed"; \
-	echo "11/11 command-line checks passed"
+	echo "11/11 command-line checks passed"; \
+	echo "== suite command line"; \
+	S=./$(REL)/suite$(EXE); W=./$(REL)/sweep$(EXE); D=$(BUILD)/cli; \
+	exits() { want=$$1; shift; rc=0; "$$@" > /dev/null 2>&1 || rc=$$?; [ $$rc -eq $$want ]; }; \
+	files="suite.cfg sessions.csv participants.csv comparison.csv report.txt outcome.cfg"; \
+	same() { for f in $$files; do cmp -s $$1/$$f $$2/$$f || return 1; done; }; \
+	placebo42() { awk -F, 'NR==1{for(i=1;i<=NF;i++) c[$$i]=i; next} \
+	    $$c["arm"]=="placebo" && $$c["seed"]==42 {print $$c["session_hash"]}' $$1/sessions.csv; }; \
+	sweephash() { $$W "$$@" --quiet | sed -n 's/.*session hash at seed 42, per point: *//p'; }; \
+	rm -rf $$D; mkdir -p $$D/keep; echo mine > $$D/keep/mine.txt; \
+	$$S --help > /dev/null || fail "suite --help should succeed"; \
+	exits 2 $$S || fail "no --candidates should exit 2"; \
+	exits 2 $$S --candidates=nonsense || fail "an unknown candidate should exit 2"; \
+	exits 2 $$S --candidates=informed || fail "the informed trader cannot sit in the seat"; \
+	exits 2 $$S --candidates=placebo || fail "the placebo is not a candidate"; \
+	exits 2 $$S --candidates=maker,maker || fail "a candidate named twice should exit 2"; \
+	exits 2 $$S --candidates=maker --block=bogus || fail "an unknown block should exit 2"; \
+	exits 2 $$S --candidates=maker --set=maker.quote_qty=1 || fail "the conditions cannot be changed"; \
+	exits 2 $$S --block=smoke --candidates=maker --out=$$D/keep || fail "a foreign directory should be refused"; \
+	[ "$$(ls $$D/keep)" = mine.txt ] && [ "$$(cat $$D/keep/mine.txt)" = mine ] \
+	    || fail "a refused directory must be left untouched"; \
+	$$S --block=smoke --candidates=maker,momentum --out=$$D/suite-a > /dev/null 2>&1 || fail "a smoke run should succeed"; \
+	for f in $$files; do [ -f $$D/suite-a/$$f ] || fail "a run should write $$f"; done; \
+	head -n1 $$D/suite-a/sessions.csv | grep -q '^suite,version,block,seed,arm,origin,' || fail "sessions.csv header"; \
+	head -n1 $$D/suite-a/participants.csv | grep -q '^suite,version,block,seed,arm,index,' || fail "participants.csv header"; \
+	grep -qx 'status=complete' $$D/suite-a/outcome.cfg || fail "outcome.cfg should say status=complete"; \
+	$$S --block=smoke --candidates=maker,momentum --out=$$D/suite-b > /dev/null 2>&1 || fail "a second smoke run should succeed"; \
+	same $$D/suite-a $$D/suite-b || fail "two runs should write byte-identical files"; \
+	$$S --block=smoke --candidates=maker,momentum --out=$$D/suite-a > /dev/null 2>&1 || fail "a previous run should be replaced"; \
+	same $$D/suite-a $$D/suite-b || fail "a replaced run should still match"; \
+	ref=$$(placebo42 $$D/suite-a); \
+	ev=$$(sweephash --values=10000 --seeds=1 --set=session.max_time_ns=25000000 \
+	    --set=session.max_requests=0 --set=session.stall_limit_ns=0); \
+	[ -n "$$ref" ] && [ "$$ref" = "$$ev" ] || fail "the placebo arm ($$ref) should be the sweep's market ($$ev)"; \
+	bare=$$(sweephash --values=10000 --seeds=1 --requests=2000 --strategies=maker,rival,informed,noise:2,momentum); \
+	seated=$$(sweephash --values=10000 --seeds=1 --requests=2000 --strategies=maker,rival,informed,noise:2,momentum,placebo); \
+	[ -n "$$bare" ] && [ "$$bare" = "$$seated" ] || fail "an appended placebo should not move the sweep's hash"; \
+	$$S --candidates=momentum --out=$$D/suite-std > /dev/null 2>&1 || fail "the standard block should run (exit 3: reference not admissible)"; \
+	grep -qx 'reference_admissible=1' $$D/suite-std/outcome.cfg || fail "the reference should be admissible"; \
+	! grep -nwE 'double|float' arena/suite.hpp || fail "arena/suite.hpp must stay integer-only"; \
+	rm -rf $$D; \
+	echo "  placebo arm at seed 42: $$ref, the sweep's market"; \
+	echo "17/17 suite command-line checks passed"
 
 bench: $(BENCH_BINS)
 	@set -e; for b in $(BENCH_BINS); do echo "== $$b"; ./$$b; done
@@ -156,12 +199,12 @@ USER_STRATEGY_DIR := arena/strategies/user
 GEN      := $(BUILD)/generated
 MANIFEST := $(GEN)/px_user_strategies.hpp
 LOBJ     := $(REL)/obj-lab
-LAB_BINS := $(REL)/sweep_lab$(EXE) $(REL)/arena_lab$(EXE)
+LAB_BINS := $(REL)/sweep_lab$(EXE) $(REL)/arena_lab$(EXE) $(REL)/suite_lab$(EXE)
 LAB_FLAGS := -DPX_ARENA_USER_STRATEGIES -I$(GEN)
 # Read from the registry itself, so an installed name can never shadow a built-in.
 BUILTIN_STRATEGIES := $(shell sed -n 's/.*kStrategyNames = "\(.*\)";/\1/p' arena/strategies/registry.hpp)
 
-.PHONY: strategy lab test-lab FORCE
+.PHONY: strategy lab test-lab compare FORCE
 
 strategy:
 	@set -e; f='$(STRATEGY)'; \
@@ -179,10 +222,20 @@ strategy:
 	echo "installed $$n -> $(USER_STRATEGY_DIR)/$$n.hpp"
 	@$(MAKE) --no-print-directory lab
 	@n=$$(basename '$(STRATEGY)' .hpp); \
-	echo; echo "score it:  $(REL)/sweep_lab --strategies=maker,rival,informed,noise:2,$$n --seeds=8"; \
-	echo "watch it:  $(REL)/arena_lab --strategies=maker,rival,informed,noise:2,$$n"
+	echo; echo "compare it: make compare CANDIDATES=$$n"; \
+	echo "explore it: $(REL)/sweep_lab --strategies=maker,rival,informed,noise:2,momentum,$$n --seeds=8"; \
+	echo "watch it:   $(REL)/arena_lab --strategies=maker,rival,informed,noise:2,momentum,$$n"
 
 lab: $(LAB_BINS)
+
+# The standard experiment (docs/RUNNER.md): every candidate in the same seat of
+# the same market on the same named block of seeds, written to runs/.
+#   make compare CANDIDATES=mine,other [BLOCK=smoke] [OUT=dir]
+# BLOCK rather than SEEDS, because bench/run_arena_evidence.sh reads a numeric
+# SEEDS from the environment and an exported one would leak in here.
+compare: $(REL)/suite_lab$(EXE)
+	@[ -n '$(CANDIDATES)' ] || { echo "make compare: say which strategies: make compare CANDIDATES=a[,b,...]" >&2; exit 2; }
+	./$(REL)/suite_lab$(EXE) --candidates=$(CANDIDATES) $(if $(BLOCK),--block=$(BLOCK)) $(if $(OUT),--out=$(OUT))
 
 # Regenerated on every lab build but only rewritten when its contents change, so
 # an unchanged set of strategies does not relink anything.
@@ -220,7 +273,7 @@ $(LAB_BINS): $(REL)/%_lab$(EXE): $(LOBJ)/arena/%.o $(LIB_REL)
 
 # The whole path, run the way a newcomer would: refusals first, then install the
 # example, score it, and confirm the evidence binary cannot see it.
-test-lab: $(REL)/sweep$(EXE)
+test-lab: $(REL)/sweep$(EXE) $(REL)/suite$(EXE)
 	@set -e; \
 	fail() { echo "FAIL: $$1"; exit 1; }; \
 	echo "== strategy install"; \
@@ -240,7 +293,26 @@ test-lab: $(REL)/sweep$(EXE)
 	! ./$(REL)/sweep$(EXE) --values=1000 --seeds=1 --requests=2000 \
 	    --strategies=maker,imbalance --quiet > /dev/null 2>&1 || fail "the evidence binary must not see it"; \
 	echo "  imbalance: $$fills fills (median of 2 seeds)"; \
-	echo "7/7 strategy-install checks passed"
+	echo "7/7 strategy-install checks passed"; \
+	echo "== suite with an installed strategy"; \
+	D=$(BUILD)/lab; rm -rf $$D; \
+	fp() { sed -n 's/^fingerprint=//p' $$1/outcome.cfg; }; \
+	./$(REL)/suite_lab$(EXE) --block=smoke --candidates=imbalance,maker --out=$$D/suite > /dev/null 2>&1 \
+	    || fail "suite_lab should run the example"; \
+	grep -q 'maker vs imbalance' $$D/suite/report.txt || fail "the report should pair maker against imbalance"; \
+	awk -F, 'NR==1{for(i=1;i<=NF;i++) c[$$i]=i; next} $$c["arm"]=="imbalance" {n++; if ($$c["origin"]!="installed") bad++} \
+	    END {exit !(n > 0 && bad == 0)}' $$D/suite/sessions.csv || fail "imbalance rows should say origin=installed"; \
+	./$(REL)/suite$(EXE) --block=smoke --candidates=maker --out=$$D/evidence > /dev/null 2>&1 \
+	    || fail "suite should run a built-in candidate"; \
+	[ -n "$$(fp $$D/suite)" ] && [ "$$(fp $$D/suite)" = "$$(fp $$D/evidence)" ] \
+	    || fail "suite_lab and suite should share one reference market"; \
+	rc=0; ./$(REL)/suite$(EXE) --block=smoke --candidates=imbalance --out=$$D/no > /dev/null 2>&1 || rc=$$?; \
+	[ $$rc -eq 2 ] || fail "the evidence binary's suite must not see it (exit $$rc, want 2)"; \
+	$(MAKE) --no-print-directory compare CANDIDATES=imbalance BLOCK=smoke OUT=$$D/compare > /dev/null 2>&1 \
+	    || fail "make compare should run it"; \
+	echo "  fingerprint $$(fp $$D/suite), identical in suite and suite_lab"; \
+	rm -rf $$D; \
+	echo "4/4 suite checks passed"
 
 clean:
 	rm -rf $(BUILD)
