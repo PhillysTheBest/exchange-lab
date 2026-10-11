@@ -27,8 +27,9 @@ measured and committed: see `docs/ARENA.md` for its design, the modelling mistak
 produced confidently wrong results on the way, and the parameters that turned out to be
 load-bearing. Its scope boundary is binding — everything compiles into one binary and
 nothing talks over a network. All of it sits on the branch `arena`, open as pull request
-#1 against `main`. The next piece of work is turning the arena into a strategy research platform; see
-"Strategies of your own" below for the plan and what is built.
+#1 against `main`. The arena is being turned into a strategy research platform in five
+steps; steps 1 and 2 (the strategy interface and the standard experiment runner) are
+built. See "Strategies of your own" below for the plan and what is built.
 
 **The result is a negative one and the documentation leads with it.** "What is 10
 microseconds worth?" answers *less than 24 seeds can resolve*; 1 ms costs real money,
@@ -79,8 +80,9 @@ mingw32-make test       # debug (-Og, PX_DEBUG invariants, _GLIBCXX_ASSERTIONS):
 mingw32-make bench      # release (-O3 -march=native -flto): builds and runs all 3 benchmarks
 mingw32-make latency    # only the 1M-order matching-latency benchmark
 mingw32-make repl       # then: build/release/repl.exe < tools/repl_demo.txt
-mingw32-make arena      # the arena: build/release/sweep.exe and build/release/arena.exe
-mingw32-make test-cli   # the sweep runner's command line: bad flags fail, bad configs refused
+mingw32-make arena      # the arena: build/release/sweep.exe, arena.exe and suite.exe
+mingw32-make test-cli   # the sweep's and the suite's command lines: bad flags fail, bad configs refused
+mingw32-make compare CANDIDATES=a,b   # the standard experiment, written to runs/; see "Strategies of your own"
 mingw32-make all        # tests, command-line checks, benchmarks, REPL, arena
 mingw32-make clean
 ```
@@ -176,7 +178,8 @@ engine as it goes, so cancels target orders that are really resting.
 **The arena** (`arena/`) is a fourth consumer of the same engine, alongside the
 pipeline, the benchmarks and the REPL. `arena/session.hpp` owns a `MatchingEngine`, a
 simulated clock, a roster of strategies and the accounting; `arena/sweep.cpp` runs the
-experiment headless; `arena/arena.cpp` renders it. It adds no engine API: a strategy's view
+experiment headless; `arena/suite.cpp` runs the standard comparison of strategies
+(`docs/RUNNER.md`); `arena/arena.cpp` renders it. It adds no engine API: a strategy's view
 of the book, including its queue position, is reconstructed from the `ExecEvent`
 stream in `arena/book_mirror.hpp`. Read `docs/ARENA.md` before changing anything in
 there — several of its parameters are load-bearing in ways that are not obvious, and
@@ -187,8 +190,8 @@ Adding one is a header plus one line in `add_named_strategy()` and its name in `
 which `test_arena` holds together so the two cannot drift. `arena/strategies/fader.hpp` is the
 worked example, written against `arena/strategy.hpp` alone. `--strategies=maker,rival,noise:3`
 composes a line-up by name; without it the registry's default line-up is used, which is
-what every published number came from. The strategy lab, designed below, turns those
-two steps into one make target for a strategy of your own; it does not change what a strategy is.
+what every published number came from. The strategy lab below turns those two steps
+into one make target for a strategy of your own; it does not change what a strategy is.
 
 **`arena/ui.hpp`** owns a grid of coloured cells and knows nothing about trading;
 `arena/arena.cpp` is the only place the renderer and the market meet. A frame composes
@@ -200,14 +203,19 @@ changes. `handoff.md` explains the viewer and its purpose at length.
 The project is becoming a strategy research platform: someone writes a strategy,
 runs it against the reference market on fixed seeds, and gets a reproducible
 result. The plan is in five steps (strategy interface, standard experiment runner,
-evaluation report, validating the evaluator, one-command reproducibility). **Step 1,
-the strategy interface, is built**; the rest is not. Everything participating in a
+evaluation report, validating the evaluator, one-command reproducibility). **Steps 1
+and 2, the strategy interface and the standard experiment runner, are built**; steps
+3-5 are not. Everything participating in a
 session is called a *strategy*, never a bot: built-in ones are the reference market.
 
 ```bash
 make strategy STRATEGY=examples/strategies/imbalance.hpp   # validate, install, build the lab binaries
-build/release/sweep_lab --strategies=maker,rival,informed,noise:2,imbalance --seeds=8
-build/release/arena_lab --strategies=maker,rival,informed,noise:2,imbalance
+make compare CANDIDATES=imbalance BLOCK=smoke              # 4 seeds: does it run, does it trade
+make compare CANDIDATES=imbalance                          # the standard block, 64 seeds -> runs/imbalance-standard/
+make compare CANDIDATES=imbalance,maker                    # two strategies, identical conditions, one command
+build/release/suite --candidates=maker,momentum            # built-ins only, from the binary that cannot see installed code
+build/release/sweep_lab --strategies=maker,rival,informed,noise:2,momentum,imbalance --seeds=8   # explore
+build/release/arena_lab --strategies=maker,rival,informed,noise:2,momentum,imbalance             # watch
 make test-lab                                              # the whole path, checked
 ```
 
@@ -220,16 +228,43 @@ make test-lab                                              # the whole path, che
   `make strategy` copies the header into `arena/strategies/user/` (git-ignored) and
   generates `$(BUILD)/generated/px_user_strategies.hpp` (never committed). The
   registry includes that manifest only under `-DPX_ARENA_USER_STRATEGIES`, which only
-  `sweep_lab` and `arena_lab` set, from their own object subtree `$(REL)/obj-lab`.
-  `sweep`, `arena` and every test are compiled without it, so a stranger's header is
-  not in the binaries that pin hashes, and one with a typo cannot break `make test`.
-  `test-lab` asserts that `sweep` refuses an installed name.
+  `sweep_lab`, `arena_lab` and `suite_lab` set, from their own object subtree
+  `$(REL)/obj-lab`. `sweep`, `arena`, `suite` and every test are compiled without it,
+  so a stranger's header is not in the binaries that pin hashes, and one with a typo
+  cannot break `make test`. `test-lab` asserts that `sweep` and `suite` refuse an
+  installed name, and that `suite` and `suite_lab` report the same fingerprint.
 - **It is not runtime loading.** A strategy links into the binary; installing is a
   build step, and the viewer is unchanged.
 - **With `--strategies=`, `sweep` prints a row per participant** (value, orders,
   fills, rejects), because the maker-centred tables say nothing about a strategy of
   your own. `--replay-check` now replays the composed line-up; before step 1 it
   silently replayed the default one.
+- **`make compare` is how a strategy is scored** (`docs/RUNNER.md` is the design). Every
+  candidate sits in one seat (index 6, owner 7, appended after the default line-up
+  `maker,rival,informed,noise:2,momentum`, never informed) on a named seed block
+  (`standard` is 42..105, `smoke` is 42..45), beside a placebo arm with an inert strategy
+  in the seat. Every candidate session is replayed; every placebo session is checked
+  against the market with no seat. No condition can be set on the command line: a
+  different set of conditions is a new suite in `arena/suite.hpp`, and ad-hoc
+  exploration stays with `sweep_lab`. Exit 0 complete, 1 a replay differed, 2 usage,
+  3 the reference market is not admissible on this build.
+- **Run directories go to `runs/`, which is git-ignored and is never `results/`.** Each
+  holds `suite.cfg`, `sessions.csv`, `participants.csv`, `comparison.csv`, `report.txt`
+  and `outcome.cfg`, written last; a directory without `status=complete` in it is
+  incomplete.
+- **Suite sessions end on 25 ms of simulated time, not on requests.** A request bound
+  counts the candidate's own orders, so a busy candidate would end its arm early and be
+  marked at a different closing fundamental. Suite numbers are therefore not the
+  published 200,000-request numbers, and they never go in `results/`.
+- **The seat runs at the suite's reaction delay, 10,000 ns, not the strategy's declared
+  `reaction_ns`.** The declared value is recorded in `suite.cfg` and not used. A
+  strategy that reads its own `reaction_ns` member sees what it declared; the delay it
+  actually has is `now_ns - as_of_ns` in its `MarketView`.
+- **The suite fingerprint is pinned** (`kPinnedSmokeFingerprint` in `test_arena`,
+  `d461c30ab2446acf`). A change to a reference strategy, a default, the session or the
+  engine moves it and needs a suite version bump in `standard_suite()`, not a silent
+  re-pin: "standard v1" names one set of conditions, and two runs are comparable only if
+  their fingerprints are equal.
 - **One claim not to make.** Nothing here redeems the positive control that failed in
   `docs/ARENA.md`: that control failed because a maker stale enough to be reliably
   picked off also stops tracking the fundamental.
@@ -261,7 +296,8 @@ to differ between library versions and would silently break cross-platform repla
   behaviour — verify that was intended and say so explicitly. The arena has its own
   hash over the event stream *and* every event's arrival time, printed by `sweep` and
   asserted by `test_arena`; it moves whenever any strategy or any default changes, which is
-  expected, so it is not pinned here.
+  expected, so it is not pinned here. The suite's fingerprint is the exception: it is
+  pinned, and moving it means a suite version bump (see "Strategies of your own").
 - **Ring payloads stay trivially copyable and exactly 64 bytes** (`static_assert`ed).
 - **Sides hold at most `levels_per_side` (2048) levels**; beyond that a GTC order is
   rejected `BookFull`. That bound is what makes the worst-case index shift bounded.

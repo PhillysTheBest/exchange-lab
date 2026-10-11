@@ -83,6 +83,10 @@ arena/strategies/registry.hpp  the single list of who is in the market.
 arena/session.hpp      the session: engine + clock + roster + accounting. No
                        rendering.
 arena/sweep.cpp        the experiment, headless. Writes CSV.
+arena/suite.hpp        the standard suite: fixed conditions, one seat, raw integer
+                       rows. See "Comparing strategies" below.
+arena/suite_report.hpp the paired comparison, computed after every session ends.
+arena/suite.cpp        the runner behind make compare. Writes runs/.
 arena/ui.hpp           the retro-desktop renderer. Knows nothing about trading.
 arena/term.hpp         the four things the viewer needs from a terminal.
 arena/arena.cpp        the viewer: the only place the renderer meets the market.
@@ -553,6 +557,60 @@ published number was produced with, and the session hashes confirm it:
 What a strategy cannot see: the fundamental value (unless the roster marks it
 informed), the clock, other participants' positions, the engine's internals, or
 its queue position except by having tracked the feed itself.
+
+## Comparing strategies
+
+`make compare CANDIDATES=a,b` is the standard way to score a strategy, whether built
+in or installed with `make strategy`. Every candidate sits in the same seat of the
+default market, on the same named block of seeds, beside a placebo arm in which that
+seat is held by a strategy that never acts. The seat is appended after the line-up, is
+never informed, and runs at a reaction delay of 10,000 ns that the suite sets rather
+than the candidate, so speed and information are conditions of the comparison and not
+part of what it compares. [RUNNER.md](RUNNER.md) is the design: the conditions, the
+health gate every session must pass, the files a run writes and what it prints.
+
+Two measured facts carry it.
+
+**An appended inert seat is invisible.** Adding a participant would be expected to
+change the order in which everyone wakes, and with it every number in the session. For
+a participant that acts it does, and that is the treatment. For one inserted before the
+others it does too, because every later owner id and reset seed shifts. For an inert one
+appended last it does not: its wakes take sequence numbers, but processing them pushes
+nothing for anyone else, so every other participant's wakes come out in the same order.
+In `test_arena`'s 30,000-request session at seed 42, the market alone and the market
+with the placebo appended both hash to `2853d2127a3486c5`, while the placebo inserted at
+index 3 gives `5a9a688a7ca5b9f8`. The sweep binary prints the same three hashes:
+
+```bash
+build/release/sweep --values=10000 --seeds=1 --requests=30000 --quiet --strategies=maker,rival,informed,noise:2,momentum
+build/release/sweep --values=10000 --seeds=1 --requests=30000 --quiet --strategies=maker,rival,informed,noise:2,momentum,placebo
+build/release/sweep --values=10000 --seeds=1 --requests=30000 --quiet --strategies=maker,rival,informed,placebo,noise:2,momentum
+```
+
+So the placebo arm is the reference market itself, and every difference between a
+candidate's arm and the placebo arm is caused by the candidate's orders. The suite does
+not take this on trust: beside every placebo session it runs the market with no seat,
+and if the two hashes ever differ the reference is not admissible and the run exits 3.
+
+**A request bound breaks pairing.** The published numbers come from sessions bounded by
+a request count, and that count includes the candidate's own orders. A candidate that
+sends more orders ends everyone's session earlier in simulated time, so its arm is
+marked at a different closing fundamental, and the paired difference then mixes the
+candidate's effect with a different mark on everyone's inventory. Under
+`max_requests=7,000`, the closing fundamental differed from the placebo arm's on all
+12 (arm, seed) pairs of the smoke block (maker, noise and momentum in the seat, seeds
+42 to 45). The suite therefore ends every session on 25 ms of simulated time, with no
+request bound and no stall exit. Under that bound the closing fundamental is common to
+every arm; `test_arena` checks both cases on the smoke block, and on the 64 seeds of
+the standard block the placebo, imbalance, maker, noise, momentum and fader arms all
+closed on the same fundamental.
+
+The cost is that suite numbers are a different quantity from the published ones: a
+25 ms session, not 200,000 requests, so the two never mix, and suite runs go to
+`runs/`, never to `results/`. The length is short on purpose. At 25 ms the reference
+market still tracks the fundamental: the placebo arm passes the health gate on all 64
+standard seeds, with a worst mean |mid − fundamental| of 2.03 ticks. RUNNER.md explains
+the choice.
 
 ## Known limits, found by testing
 

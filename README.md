@@ -492,7 +492,7 @@ mingw32-make bench      # every benchmark
 build/release/bench_matching_latency --profile=deep --repeat=5
 build/release/bench_matching_latency --rate=50000 --outliers=slow.csv
 mingw32-make repl && build/release/repl < tools/repl_demo.txt
-mingw32-make arena      # the arena: the sweep runner and the viewer
+mingw32-make arena      # the arena: the sweep runner, the suite and the viewer
 build/release/arena                    # watch a market happen
 build/release/sweep --seeds=24 --replay-check   # the reaction-delay sweep
 build/release/sweep --null             # the control: nobody informed
@@ -504,19 +504,25 @@ build/release/arena --strategies=maker,informed,noise:2         # and watch it
 
 A strategy is one C++ header, written against `arena/strategy.hpp` only: a view of
 the market in, a batch of orders out. `examples/strategies/imbalance.hpp` is a
-complete one and states the convention. Installing it builds two lab binaries that
-can see it; `sweep`, `arena` and the tests cannot, so the published numbers above
-stay out of its reach.
+complete one and states the convention. Installing it builds three lab binaries that
+can see it; `sweep`, `arena`, `suite` and the tests cannot, so the published numbers
+above stay out of its reach.
 
 ```bash
 make strategy STRATEGY=examples/strategies/imbalance.hpp
-build/release/sweep_lab --strategies=maker,rival,informed,noise:2,imbalance --seeds=8
-build/release/arena_lab --strategies=maker,rival,informed,noise:2,imbalance
+make compare CANDIDATES=imbalance          # score it
+build/release/arena_lab --strategies=maker,rival,informed,noise:2,momentum,imbalance   # watch it
 ```
 
-The sweep prints a row per participant (value, orders, fills, rejects) across shared
-seeds. A standard benchmark, an evaluation report and validated controls are the
-next steps and are not built yet.
+`make compare` puts the strategy in one seat of the default market on 64 fixed seeds,
+beside a placebo arm in which the same seat never acts, replays every session, and
+prints the paired difference with its standard error. `CANDIDATES=mine,other` puts two
+strategies through identical conditions with one command. The conditions and every
+raw per-session result are written to `runs/`, never to `results/`: a suite session
+lasts 25 ms of simulated time rather than 200,000 requests, so its numbers are not
+comparable with the ones above. [`docs/RUNNER.md`](docs/RUNNER.md) is the design. An
+evaluation report, validated controls and one-command reproducibility are the next
+steps and are not built yet.
 
 A minimal REPL session:
 
@@ -552,9 +558,9 @@ renderer.
 | `include/px/` | the engine: types, messages, pools, hash map, level index, matching engine, ring, TSC clock, stats, platform |
 | `src/` | engine and platform implementations (Windows and Linux) |
 | `sim/` | seeded order-stream generator, three-thread pipeline and timing, allocation counter |
-| `arena/` | the simulated market: clock and scheduler, fundamental value, book mirror, accounting, the strategy contract, `strategies/`, the sweep runner, the renderer and the viewer |
+| `arena/` | the simulated market: clock and scheduler, fundamental value, book mirror, accounting, the strategy contract, `strategies/`, the sweep runner, the standard suite, the renderer and the viewer |
 | `tests/` | unit, scenario, fuzz (with the reference engine), allocation, determinism and arena tests |
 | `bench/` | `bench_matching_latency`, `bench_engine`, `bench_ring`, and the evidence scripts |
 | `results/` | raw benchmark evidence with the machine state it was captured on, and the arena's sweeps |
 | `tools/` | the interactive REPL and a demo script |
-| `docs/` | [`ARENA.md`](docs/ARENA.md): the arena's design, and the four modelling mistakes it took to get there |
+| `docs/` | [`ARENA.md`](docs/ARENA.md): the arena's design, and the four modelling mistakes it took to get there; [`RUNNER.md`](docs/RUNNER.md): the standard experiment runner behind `make compare` |

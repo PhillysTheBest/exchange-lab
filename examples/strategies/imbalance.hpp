@@ -3,7 +3,7 @@
 // Install it the way anyone would install their own:
 //
 //     make strategy STRATEGY=examples/strategies/imbalance.hpp
-//     build/release/sweep_lab --strategies=maker,rival,informed,noise:2,imbalance --seeds=8
+//     make compare CANDIDATES=imbalance
 //
 // THE CONVENTION a strategy header follows, and the only one:
 //   * the file is <name>.hpp, where <name> is lowercase letters, digits and
