@@ -27,8 +27,8 @@ that engine, each with a reaction delay the experimenter sets, plus a terminal
 renderer to watch it and a headless runner to sweep it. About 4,300 lines.
 
 The project's centre of gravity moved as a result. The engine is now the
-instrument; the experiment is the result. The strategy lab, designed but not
-built (§6), moves it once more: it makes the instrument something other people
+instrument; the experiment is the result. The strategy lab, whose first two steps
+are built (§6), moves it once more: it makes the instrument something other people
 can submit a strategy to, so "add your own strategy" becomes part of what the project
 is rather than a paragraph about what it would permit. That is why the repository is being
 renamed to `exchange-lab` rather than `matching-engine` — see the name section in
@@ -100,9 +100,9 @@ panes. The layout is computed from the terminal size each frame, so it reflows
 when you resize the window, but the panes are not movable. That was a scope
 decision: dragging panes would mean parsing mouse escape sequences, hit-testing,
 z-order and a focus model — a window manager, to make six fixed panes movable.
-The planned strategy lab does not change that either: it was going to accept a
-dragged file, and that was cut on review, so installing a strategy is a make target
-and the viewer is not involved at all.
+The strategy lab does not change that either: an early design accepted a dragged
+file, and that was cut on review, so installing a strategy is a make target and the
+viewer is not involved at all.
 
 **No control can change what happens.** The viewer paces a session by asking it
 to advance to a simulated timestamp; the keyboard only changes how fast it asks.
@@ -242,10 +242,20 @@ would not survive contact with the evidence in `results/`.
 
 **Next:** turning the arena into a strategy research platform, in five steps
 (strategy interface, standard experiment runner, evaluation report, validating the
-evaluator, one-command reproducibility). Step 1 is built: `make strategy
-STRATEGY=path/to/name.hpp` installs a strategy of your own and builds `sweep_lab` and
-`arena_lab`, which are the only binaries that can see it. See "Strategies of your own"
-in `CLAUDE.md`.
+evaluator, one-command reproducibility). Steps 1 and 2 are built.
+
+- **Step 1, the strategy interface.** `make strategy STRATEGY=path/to/name.hpp`
+  installs a strategy of your own and builds `sweep_lab`, `arena_lab` and `suite_lab`,
+  which are the only binaries that can see it.
+- **Step 2, the standard experiment runner.** `make compare CANDIDATES=a,b` puts every
+  candidate in the same seat of the default market on the same 64 seeds, beside a
+  placebo arm in which the seat never acts. It replays every candidate session, checks
+  every placebo session against the market with no seat, writes the conditions and the
+  raw per-session results to `runs/` (git-ignored, never `results/`), and prints the
+  paired comparison with its standard error. `docs/RUNNER.md` is its design.
+
+Steps 3-5 (the evaluation report, validating the evaluator, one-command
+reproducibility) are not built. See "Strategies of your own" in `CLAUDE.md`.
 
 **Not done, and yours to do:**
 
