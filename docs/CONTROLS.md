@@ -2,7 +2,8 @@
 
 Step 4 of turning the arena into a strategy research platform. Steps 1 to 3, the strategy
 interface, the standard experiment runner (`docs/RUNNER.md`) and the evaluation report
-(`docs/REPORT.md`), came first; step 5, one-command reproducibility, is not built.
+(`docs/REPORT.md`), came first; step 5, one-command reproducibility (`docs/REPRODUCE.md`),
+came after.
 
 This file began as a short plan and is now the design document. Every number in it was
 printed by `build/release/controls` on the standard block, on Linux with g++ 13.
