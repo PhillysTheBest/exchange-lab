@@ -27,7 +27,7 @@ that engine, each with a reaction delay the experimenter sets, plus a terminal
 renderer to watch it and a headless runner to sweep it. About 4,300 lines.
 
 The project's centre of gravity moved as a result. The engine is now the
-instrument; the experiment is the result. The strategy lab, whose first four steps
+instrument; the experiment is the result. The strategy lab, whose five steps
 are built (§6), moves it once more: it makes the instrument something other people
 can submit a strategy to, so "add your own strategy" becomes part of what the project
 is rather than a paragraph about what it would permit. That is why the repository is being
@@ -242,7 +242,7 @@ would not survive contact with the evidence in `results/`.
 
 **Next:** turning the arena into a strategy research platform, in five steps
 (strategy interface, standard experiment runner, evaluation report, validating the
-evaluator, one-command reproducibility). Steps 1 to 4 are built.
+evaluator, one-command reproducibility). All five are built.
 
 - **Step 1, the strategy interface.** `make strategy STRATEGY=path/to/name.hpp`
   installs a strategy of your own and builds `sweep_lab`, `arena_lab` and `suite_lab`,
@@ -265,7 +265,10 @@ evaluator, one-command reproducibility). Steps 1 to 4 are built.
   must lose money in spread) and a noise floor (9,999 ns against 10,000 ns). Each has a
   planted defect in `test_arena` that makes it fail. `docs/CONTROLS.md` is its design.
 
-Step 5 (one-command reproducibility) is not built. See "Strategies of your own" in `CLAUDE.md`.
+- **Step 5, one-command reproducibility.** Every `suite.cfg` records the build and each
+  installed strategy's checksum, and `make reproduce RUN=runs/x` re-runs a run from it and
+  compares every file. The README now opens with that workflow. `docs/REPRODUCE.md` is
+  its design. See "Strategies of your own" in `CLAUDE.md`.
 
 **Not done, and yours to do:**
 

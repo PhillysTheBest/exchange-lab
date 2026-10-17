@@ -1803,6 +1803,36 @@ void test_suite_outcomes() {
     for (const suite::ComparisonRow& row : suite::compare(r2)) PX_CHECK(row.verdict == "not_admissible");
 }
 
+void test_suite_cfg_reading() {
+    const suite::SuiteDef def = suite::standard_suite();
+    suite::RunInfo info;
+    suite::CandidateInfo c;
+    c.name = "maker";
+    info.candidates.push_back(c);
+    const std::string bare = suite::suite_cfg_text(def, smoke_block(), info);
+    PX_CHECK(bare.find("build.") == std::string::npos); // no build recorded, no build lines
+    info.build.commit = "0123456789ab";
+    info.build.compiler = "x";
+    info.binary = "suite_lab";
+    info.candidates[0].digest = "42";
+    const std::string full = suite::suite_cfg_text(def, smoke_block(), info);
+    PX_CHECK(suite::cfg_value(full, "build.commit") == "0123456789ab");
+    PX_CHECK(suite::cfg_value(full, "run.candidate.maker.digest") == "42");
+    PX_CHECK(suite::cfg_value(full, "suite.name") == "standard");
+    PX_CHECK(suite::cfg_value(full, "suite") == "");           // a prefix is not a key
+    PX_CHECK(suite::cfg_value(full, "no.such.key") == "");
+    // What ran and on which build never counts as a condition.
+    PX_CHECK(suite::condition_lines(full) == suite::condition_lines(bare));
+    PX_CHECK(!suite::condition_lines(full).empty());
+    for (const std::string& l : suite::condition_lines(full)) {
+        PX_CHECK(!l.starts_with("run.") && !l.starts_with("build.") && !l.starts_with("#"));
+    }
+    // A different family is a different set of conditions.
+    suite::SuiteDef wide = def;
+    PX_CHECK(suite::find_suite("wide", wide));
+    PX_CHECK(suite::condition_lines(suite::suite_cfg_text(wide, smoke_block(), info)) != suite::condition_lines(full));
+}
+
 } // namespace
 
 int main() {
@@ -1844,5 +1874,6 @@ int main() {
     test_controls_hold();
     test_controls_catch_defects();
     test_suite_outcomes();
+    test_suite_cfg_reading();
     PX_TEST_REPORT_AND_RETURN();
 }
