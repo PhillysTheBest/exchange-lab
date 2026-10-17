@@ -523,8 +523,10 @@ strategies through identical conditions with one command. The conditions and eve
 raw per-session result are written to `runs/`, never to `results/`: a suite session
 lasts 25 ms of simulated time rather than 200,000 requests, so its numbers are not
 comparable with the ones above. [`docs/RUNNER.md`](docs/RUNNER.md) and
-[`docs/REPORT.md`](docs/REPORT.md) are the design. Validated controls and one-command
-reproducibility are the next steps and are not built yet.
+[`docs/REPORT.md`](docs/REPORT.md) are the design. `make controls` runs the evaluator's
+own controls ([`docs/CONTROLS.md`](docs/CONTROLS.md)): answers known in advance that it
+reproduces, each paired with a planted defect that makes it fail. One-command
+reproducibility is the next step and is not built yet.
 
 A minimal REPL session:
 

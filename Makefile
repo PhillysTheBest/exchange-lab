@@ -68,9 +68,9 @@ REPL_BIN   := $(REL)/repl$(EXE)
 # The arena: the headless experiment runner and the terminal viewer. Both are
 # consumers of the same MatchingEngine the benchmarks measure, so neither can
 # affect a latency number.
-ARENA_BINS := $(REL)/sweep$(EXE) $(REL)/arena$(EXE) $(REL)/suite$(EXE)
+ARENA_BINS := $(REL)/sweep$(EXE) $(REL)/arena$(EXE) $(REL)/suite$(EXE) $(REL)/controls$(EXE)
 
-.PHONY: all test bench latency repl arena sweep clean
+.PHONY: all test bench latency repl arena sweep controls clean
 
 all: test test-cli test-lab $(BENCH_BINS) $(REPL_BIN) $(ARENA_BINS)
 
@@ -82,7 +82,7 @@ test: $(TEST_BINS)
 # configuration that could never terminate must be refused, not hang. These were
 # all verified by hand once; this target is so they stay verified.
 .PHONY: test-cli
-test-cli: $(REL)/sweep$(EXE) $(REL)/suite$(EXE)
+test-cli: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(REL)/controls$(EXE)
 	@set -e; \
 	fail() { echo "FAIL: $$1"; exit 1; }; \
 	echo "== sweep command line"; \
@@ -157,7 +157,16 @@ test-cli: $(REL)/sweep$(EXE) $(REL)/suite$(EXE)
 	! grep -nwE 'double|float' arena/suite.hpp || fail "arena/suite.hpp must stay integer-only"; \
 	rm -rf $$D; \
 	echo "  placebo arm at seed 42: $$ref, the sweep's market"; \
-	echo "26/26 suite command-line checks passed"
+	echo "26/26 suite command-line checks passed"; \
+	echo "== the evaluator's controls"; \
+	C=./$(REL)/controls$(EXE); \
+	$$C --help > /dev/null || fail "controls --help should succeed"; \
+	exits 2 $$C --bogus || fail "controls: an unknown flag should exit 2"; \
+	exits 2 $$C --block=bogus || fail "controls: an unknown block should exit 2"; \
+	out=$$($$C 2>/dev/null) || fail "every control should hold on the standard block"; \
+	echo "$$out" | grep -qx '8/8 controls held' || fail "controls should report 8/8"; \
+	echo "$$out" | grep -A1 'noise floor' | sed -n 's/^ *measured: /  noise floor: /p'; \
+	echo "4/4 controls checks passed"
 
 bench: $(BENCH_BINS)
 	@set -e; for b in $(BENCH_BINS); do echo "== $$b"; ./$$b; done
@@ -170,6 +179,10 @@ repl: $(REPL_BIN)
 arena: $(ARENA_BINS)
 
 sweep: $(REL)/sweep$(EXE)
+	./$<
+
+# The evaluator's own controls on the standard block (docs/CONTROLS.md); fails if one does not hold.
+controls: $(REL)/controls$(EXE)
 	./$<
 
 $(DOBJ)/%.o: %.cpp

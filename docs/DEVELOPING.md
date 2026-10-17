@@ -28,8 +28,8 @@ produced confidently wrong results on the way, and the parameters that turned ou
 load-bearing. Its scope boundary is binding — everything compiles into one binary and
 nothing talks over a network. All of it sits on the branch `arena`, open as pull request
 #1 against `main`. The arena is being turned into a strategy research platform in five
-steps; steps 1 to 3 (the strategy interface, the standard experiment runner and the
-evaluation report) are built. See "Strategies of your own" below for the plan and what is built.
+steps; steps 1 to 4 (the strategy interface, the standard experiment runner, the
+evaluation report and its validation) are built. See "Strategies of your own" below for the plan and what is built.
 
 **The result is a negative one and the documentation leads with it.** "What is 10
 microseconds worth?" answers *less than 24 seeds can resolve*; 1 ms costs real money,
@@ -80,9 +80,10 @@ mingw32-make test       # debug (-Og, PX_DEBUG invariants, _GLIBCXX_ASSERTIONS):
 mingw32-make bench      # release (-O3 -march=native -flto): builds and runs all 3 benchmarks
 mingw32-make latency    # only the 1M-order matching-latency benchmark
 mingw32-make repl       # then: build/release/repl.exe < tools/repl_demo.txt
-mingw32-make arena      # the arena: build/release/sweep.exe, arena.exe and suite.exe
+mingw32-make arena      # the arena: build/release/sweep.exe, arena.exe, suite.exe and controls.exe
 mingw32-make test-cli   # the sweep's and the suite's command lines: bad flags fail, bad configs refused
 mingw32-make compare CANDIDATES=a,b   # the standard experiment, written to runs/; see "Strategies of your own"
+mingw32-make controls   # the evaluator's own controls on the standard block (docs/CONTROLS.md)
 mingw32-make all        # tests, command-line checks, benchmarks, REPL, arena
 mingw32-make clean
 ```
@@ -204,8 +205,8 @@ The project is becoming a strategy research platform: someone writes a strategy,
 runs it against the reference market on fixed seeds, and gets a reproducible
 result. The plan is in five steps (strategy interface, standard experiment runner,
 evaluation report, validating the evaluator, one-command reproducibility). **Steps 1
-to 3, the strategy interface, the standard experiment runner and the evaluation report,
-are built**; steps 4 and 5 are not. Everything participating in a
+to 4, the strategy interface, the standard experiment runner, the evaluation report and
+the evaluator's controls, are built**; step 5 is not. Everything participating in a
 session is called a *strategy*, never a bot: built-in ones are the reference market.
 
 ```bash
@@ -260,6 +261,12 @@ make test-lab                                              # the whole path, che
   Scenario families `wide` and `busy` are suites of their own with pinned fingerprints
   beside `standard`'s; a built-in candidate takes the family's parameters too. There is
   no `null` family: its placebo fails the health gate on 56 of 64 seeds.
+- **The evaluator has controls of its own** (`docs/CONTROLS.md`, `make controls`, also run by
+  `test-cli`): the placebo is zero and inert, arms share a close, replay holds, the
+  identities hold, an A/A pair is identical, 9,999 ns against 10,000 ns does not separate
+  (the noise floor, about ±2 a session), and `roundtrip` loses money in spread. Each control
+  has a planted defect in `test_arena` that makes it fail; keep that pairing when adding one.
+  `roundtrip` is the positive control: do not tune it, and do not claim its size was predicted.
 - **Suite sessions end on 25 ms of simulated time, not on requests.** A request bound
   counts the candidate's own orders, so a busy candidate would end its arm early and be
   marked at a different closing fundamental. Suite numbers are therefore not the

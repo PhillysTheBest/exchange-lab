@@ -39,6 +39,7 @@
 #include "arena/strategies/momentum.hpp"
 #include "arena/strategies/noise.hpp"
 #include "arena/strategies/placebo.hpp"
+#include "arena/strategies/roundtrip.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -376,6 +377,11 @@ namespace px::arena {
         // (arena/strategies/placebo.hpp). Never in a default line-up.
         r.strategies.push_back(make_strategy(strategies::Placebo{}));
         r.informed.push_back(false);
+    } else if (name == "roundtrip") {
+        // The evaluator's positive control (arena/strategies/roundtrip.hpp,
+        // docs/CONTROLS.md). Never in a default line-up.
+        r.strategies.push_back(make_strategy(strategies::Roundtrip{}));
+        r.informed.push_back(false);
     } else {
 #if defined(PX_ARENA_USER_STRATEGIES)
         return add_user_strategy(name, r);
@@ -386,7 +392,7 @@ namespace px::arena {
     return true;
 }
 
-inline constexpr const char* kStrategyNames = "maker rival informed noise momentum fader placebo";
+inline constexpr const char* kStrategyNames = "maker rival informed noise momentum fader placebo roundtrip";
 
 // Builds a roster from a spec like "maker,rival,informed,noise:2,momentum":
 // comma-separated names, each optionally followed by :count to repeat it. On a

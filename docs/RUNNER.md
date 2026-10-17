@@ -997,7 +997,9 @@ this sketch (no `null` family, reading back deferred to step 5, fills per order 
   These go under a new suite name or version, because the pinned `standard` must not change in place.
 - **Multiple comparisons.** With up to 8 candidates, a correction belongs in the report.
 
-**Step 4, validating the evaluator.** Candidates are names, so most of it needs no new mechanism:
+**Step 4, validating the evaluator.** Built; `docs/CONTROLS.md` is its design and says where it departed from this
+sketch (the positive control checks sign and location, not a predicted size). Candidates are names, so most of it
+needed no new mechanism:
 
 - **Baselines.** `maker`, `noise`, `momentum` and `fader` can go in the seat today, from the
   evidence-side `suite` binary, which is also the binary to publish baselines from. A zero-intelligence
