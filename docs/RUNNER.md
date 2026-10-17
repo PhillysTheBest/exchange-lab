@@ -5,8 +5,8 @@ interface, is built, and so is this step: it makes an installed strategy compara
 `make compare` runs any installed or built-in strategy in one fixed seat of the reference
 market, on a named block of seeds, beside a control arm, and prints a paired comparison
 with its uncertainty. Steps 3 to 5 (the evaluation report, validating the evaluator, and
-one-command reproducibility) are not built; "How steps 3-5 plug in" says where each one
-attaches.
+one-command reproducibility) are built on top of it, in `docs/REPORT.md`, `docs/CONTROLS.md`
+and `docs/REPRODUCE.md`; "How steps 3-5 plug in" says where each one attaches.
 
 This file began as the plan, written before building, as CLAUDE.md asks. It is now the
 runner's design document. It keeps the reasoning and the measurements that decided each

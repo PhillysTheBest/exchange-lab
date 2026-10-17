@@ -2,7 +2,8 @@
 
 Step 3 of turning the arena into a strategy research platform. Steps 1 and 2, the strategy
 interface and the standard experiment runner (`docs/RUNNER.md`), came first; steps 4 and 5,
-validating the evaluator and one-command reproducibility, are not built.
+validating the evaluator (`docs/CONTROLS.md`) and one-command reproducibility
+(`docs/REPRODUCE.md`), came after.
 
 This file began as the plan, written before building, as CLAUDE.md asks, and is now the
 report's design document. Every number in it was printed by
