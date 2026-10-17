@@ -28,8 +28,8 @@ produced confidently wrong results on the way, and the parameters that turned ou
 load-bearing. Its scope boundary is binding — everything compiles into one binary and
 nothing talks over a network. All of it sits on the branch `arena`, open as pull request
 #1 against `main`. The arena is being turned into a strategy research platform in five
-steps; steps 1 to 4 (the strategy interface, the standard experiment runner, the
-evaluation report and its validation) are built. See "Strategies of your own" below for the plan and what is built.
+steps, and all five are built: the strategy interface, the standard experiment runner,
+the evaluation report, its validation and one-command reproducibility. See "Strategies of your own" below for the plan and what is built.
 
 **The result is a negative one and the documentation leads with it.** "What is 10
 microseconds worth?" answers *less than 24 seeds can resolve*; 1 ms costs real money,
@@ -84,6 +84,7 @@ mingw32-make arena      # the arena: build/release/sweep.exe, arena.exe, suite.e
 mingw32-make test-cli   # the sweep's and the suite's command lines: bad flags fail, bad configs refused
 mingw32-make compare CANDIDATES=a,b   # the standard experiment, written to runs/; see "Strategies of your own"
 mingw32-make controls   # the evaluator's own controls on the standard block (docs/CONTROLS.md)
+mingw32-make reproduce RUN=runs/x   # re-run a run from its suite.cfg, compare every file (docs/REPRODUCE.md)
 mingw32-make all        # tests, command-line checks, benchmarks, REPL, arena
 mingw32-make clean
 ```
@@ -204,9 +205,9 @@ changes. `handoff.md` explains the viewer and its purpose at length.
 The project is becoming a strategy research platform: someone writes a strategy,
 runs it against the reference market on fixed seeds, and gets a reproducible
 result. The plan is in five steps (strategy interface, standard experiment runner,
-evaluation report, validating the evaluator, one-command reproducibility). **Steps 1
-to 4, the strategy interface, the standard experiment runner, the evaluation report and
-the evaluator's controls, are built**; step 5 is not. Everything participating in a
+evaluation report, validating the evaluator, one-command reproducibility). **All five
+are built**: the strategy interface, the standard experiment runner, the evaluation report,
+the evaluator's controls and one-command reproducibility. Everything participating in a
 session is called a *strategy*, never a bot: built-in ones are the reference market.
 
 ```bash
@@ -215,6 +216,8 @@ make compare CANDIDATES=imbalance BLOCK=smoke              # 4 seeds: does it ru
 make compare CANDIDATES=imbalance                          # the standard block, 64 seeds -> runs/imbalance-standard/
 make compare CANDIDATES=imbalance,maker                    # two strategies, identical conditions, one command
 make compare CANDIDATES=imbalance,maker SUITE=all          # every scenario family, side by side, never pooled
+make reproduce RUN=runs/imbalance-vs-maker-standard        # re-run it from its own record, compare every file
+make controls                                              # the evaluator's own controls
 build/release/suite --candidates=maker,momentum            # built-ins only, from the binary that cannot see installed code
 build/release/sweep_lab --strategies=maker,rival,informed,noise:2,momentum,imbalance --seeds=8   # explore
 build/release/arena_lab --strategies=maker,rival,informed,noise:2,momentum,imbalance             # watch
@@ -267,6 +270,12 @@ make test-lab                                              # the whole path, che
   (the noise floor, about ±2 a session), and `roundtrip` loses money in spread. Each control
   has a planted defect in `test_arena` that makes it fail; keep that pairing when adding one.
   `roundtrip` is the positive control: do not tune it, and do not claim its size was predicted.
+- **`make reproduce RUN=runs/x` re-runs a run from its own `suite.cfg`** (`docs/REPRODUCE.md`).
+  It refuses before running if a condition line differs or an installed strategy's `cksum`
+  digest changed, then compares every file byte for byte (`suite.cfg` on its condition
+  lines only). `run.*` and `build.*` lines (commit, dirty flag, compiler, platform, flags,
+  from the generated `$(BUILD)/generated/px_build_info.hpp`) are recorded, never conditions
+  and never fingerprinted: two builds facing the same conditions must stay comparable.
 - **Suite sessions end on 25 ms of simulated time, not on requests.** A request bound
   counts the candidate's own orders, so a busy candidate would end its arm early and be
   marked at a different closing fundamental. Suite numbers are therefore not the

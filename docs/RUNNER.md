@@ -1029,7 +1029,8 @@ needed no new mechanism:
   `kSeedBlocks`. It is deferred because it only means something once there is a report people tune
   against.
 
-**Step 5, one-command reproducibility.**
+**Step 5, one-command reproducibility.** Built as `suite --reproduce=DIR` (`make reproduce`), not `--config=`;
+`docs/REPRODUCE.md` is its design.
 
 - `suite.cfg` already uses the `--set` names and round-trips through the setters, which
   `test_suite_param_dump` pins. So `--config=runs/x/suite.cfg` can re-run a directory and refuse if this

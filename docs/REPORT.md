@@ -194,7 +194,8 @@ correction.
 ## Deferred
 
 - **Reading a run back from disk** (`--report=DIR`, comparing two runs whose fingerprints
-  match) moves to step 5, beside re-running from `suite.cfg`.
+  match) moved to step 5, which built re-running from `suite.cfg` instead and left reading
+  back undone; `docs/REPRODUCE.md` says why.
 - **A correction for multiple comparisons.** Counting is honest; a Holm correction across a
   table this mixed would need a decision about which metrics are hypotheses at all.
 - **A `null` family that is a market.** It needs some other participant to anchor the book to

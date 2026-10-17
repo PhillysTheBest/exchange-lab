@@ -564,12 +564,24 @@ struct CandidateInfo {
     Origin origin = Origin::Builtin;
     SimTime declared_reaction_ns = 0;
     SimTime timer_ns = 0;
+    std::string digest; // an installed strategy's header checksum (cksum CRC), empty for a built-in
+};
+
+// Which build ran: recorded so a run can be traced and re-run, never
+// fingerprinted, because the same conditions on two builds must stay comparable.
+struct BuildInfo {
+    std::string commit;   // git rev-parse --short=12 HEAD at build time, or "unknown"
+    bool dirty = false;   // tracked files differed from that commit
+    std::string compiler; // __VERSION__
+    std::string platform; // windows or linux
+    std::string flags;    // the release flags
 };
 
 struct RunInfo {
     std::string binary;          // "suite" or "suite_lab"
     std::string user_strategies; // the installed names this binary can see, or "none"
     std::vector<CandidateInfo> candidates;
+    BuildInfo build;             // empty commit: not recorded (tests)
 };
 
 // Exactly what the three raw files hold, so a report is a function of this
@@ -860,8 +872,48 @@ inline void append_participant_rows(std::string& s, const std::vector<Participan
         append_kv(s, k + ".origin", origin_name(c.origin));
         append_kv(s, k + ".declared_reaction_ns", c.declared_reaction_ns);
         append_kv(s, k + ".timer_ns", c.timer_ns);
+        if (!c.digest.empty()) append_kv(s, k + ".digest", c.digest);
+    }
+    if (!info.build.commit.empty()) {
+        s += "# Which build ran it. Not conditions: `suite --reproduce` re-runs on any build.\n";
+        append_kv(s, "build.commit", info.build.commit);
+        append_kv(s, "build.dirty", std::int64_t{info.build.dirty ? 1 : 0});
+        append_kv(s, "build.compiler", info.build.compiler);
+        append_kv(s, "build.platform", info.build.platform);
+        append_kv(s, "build.flags", info.build.flags);
     }
     return s;
+}
+
+// The lines of a suite.cfg that are conditions: everything except comments and
+// the run.* and build.* lines, which say what ran rather than what it faced.
+[[nodiscard]] inline std::vector<std::string> condition_lines(std::string_view cfg) {
+    std::vector<std::string> out;
+    std::size_t at = 0;
+    while (at < cfg.size()) {
+        std::size_t end = cfg.find('\n', at);
+        if (end == std::string_view::npos) end = cfg.size();
+        const std::string_view line = cfg.substr(at, end - at);
+        at = end + 1;
+        if (line.empty() || line[0] == '#' || line.starts_with("run.") || line.starts_with("build.")) continue;
+        out.emplace_back(line);
+    }
+    return out;
+}
+
+// One key of a suite.cfg, or empty.
+[[nodiscard]] inline std::string cfg_value(std::string_view cfg, std::string_view key) {
+    std::size_t at = 0;
+    while (at < cfg.size()) {
+        std::size_t end = cfg.find('\n', at);
+        if (end == std::string_view::npos) end = cfg.size();
+        const std::string_view line = cfg.substr(at, end - at);
+        at = end + 1;
+        if (line.size() > key.size() && line.starts_with(key) && line[key.size()] == '=') {
+            return std::string(line.substr(key.size() + 1));
+        }
+    }
+    return {};
 }
 
 [[nodiscard]] inline std::uint64_t fnv1a(std::uint64_t h, std::string_view s) noexcept {

@@ -22,6 +22,43 @@ best-of-5 time is under 1 µs. So the tail there comes from the machine, not the
 work. The sections below show how that was established rather than assumed, and the
 one case where the engine itself goes over 2 µs.
 
+## Test a strategy, reproducibly
+
+The engine and the arena are also a research platform: write a strategy, run it against
+the same reference market on the same fixed seeds as everyone else, and get a result
+anyone can re-run and check, file by file.
+
+```bash
+make strategy STRATEGY=examples/strategies/imbalance.hpp   # 1. install one C++ header
+make compare CANDIDATES=imbalance,maker                    # 2. run it, paired, against a placebo and a rival
+cat runs/imbalance-vs-maker-standard/report.txt            # 3. read what it made, how, and from whom
+make reproduce RUN=runs/imbalance-vs-maker-standard        # 4. re-run it from its own record, compare every file
+make controls                                              #    and check the evaluator itself
+```
+
+1. **A strategy is one header** written against `arena/strategy.hpp`: a view of the market
+   in, orders out. Installing it builds the lab binaries, which are the only ones that can
+   see it ([Add your own strategy](#add-your-own-strategy)).
+2. **`make compare`** puts every candidate in the same seat of the same market on 64 named
+   seeds, beside a placebo arm whose seat never acts, replays every session, and refuses to
+   compare anything on a market whose book has come loose from the fundamental
+   ([`docs/RUNNER.md`](docs/RUNNER.md)). `SUITE=all` adds two scenario families, side by
+   side, never pooled.
+3. **The report** gives the paired difference with its standard error and interval, then
+   value broken into spread, adverse markout and carry, inventory and drawdown, and which
+   reference participant paid for the result ([`docs/REPORT.md`](docs/REPORT.md)).
+4. **`make reproduce`** reads the run's `suite.cfg` (the conditions, the seeds, each
+   strategy's identity and the build), refuses before running if this build faces different
+   conditions or holds a different version of a strategy, re-runs it and compares every file
+   it wrote ([`docs/REPRODUCE.md`](docs/REPRODUCE.md)).
+
+**The evaluator is tested like the engine.** `make controls` runs eight controls with
+answers known in advance, among them a strategy that must lose money in spread and a
+one-nanosecond change that must not separate, and each has a planted defect in the tests that
+makes it fail ([`docs/CONTROLS.md`](docs/CONTROLS.md)). Run directories go to `runs/` and
+never to `results/`: their sessions last 25 ms of simulated time, so their numbers are not
+the published arena numbers below.
+
 ## What it does
 
 - **Order types:** limit (GTC or IOC), market (an IOC sweep with no price limit), and
@@ -525,8 +562,9 @@ lasts 25 ms of simulated time rather than 200,000 requests, so its numbers are n
 comparable with the ones above. [`docs/RUNNER.md`](docs/RUNNER.md) and
 [`docs/REPORT.md`](docs/REPORT.md) are the design. `make controls` runs the evaluator's
 own controls ([`docs/CONTROLS.md`](docs/CONTROLS.md)): answers known in advance that it
-reproduces, each paired with a planted defect that makes it fail. One-command
-reproducibility is the next step and is not built yet.
+reproduces, each paired with a planted defect that makes it fail. `make reproduce
+RUN=runs/<dir>` re-runs a run from its own record and compares every file
+([`docs/REPRODUCE.md`](docs/REPRODUCE.md)).
 
 A minimal REPL session:
 
@@ -567,4 +605,4 @@ renderer.
 | `bench/` | `bench_matching_latency`, `bench_engine`, `bench_ring`, and the evidence scripts |
 | `results/` | raw benchmark evidence with the machine state it was captured on, and the arena's sweeps |
 | `tools/` | the interactive REPL and a demo script |
-| `docs/` | [`ARENA.md`](docs/ARENA.md): the arena's design, and the four modelling mistakes it took to get there; [`RUNNER.md`](docs/RUNNER.md): the standard experiment runner behind `make compare`; [`REPORT.md`](docs/REPORT.md): its evaluation report |
+| `docs/` | [`ARENA.md`](docs/ARENA.md): the arena's design, and the four modelling mistakes it took to get there; [`RUNNER.md`](docs/RUNNER.md): the standard experiment runner behind `make compare`; [`REPORT.md`](docs/REPORT.md): its evaluation report; [`CONTROLS.md`](docs/CONTROLS.md): the evaluator's controls; [`REPRODUCE.md`](docs/REPRODUCE.md): re-running a run |

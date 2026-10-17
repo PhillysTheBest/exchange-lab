@@ -5,6 +5,8 @@
 #   make latency  builds and runs only bench_matching_latency (the 1M-order headline number)
 #   make repl     release build of the interactive REPL
 #   make compare CANDIDATES=a,b   the standard experiment (docs/RUNNER.md); see "strategies of your own"
+#   make reproduce RUN=runs/x     re-run a run from its suite.cfg and compare every file (docs/REPRODUCE.md)
+#   make controls                 the evaluator's own controls on the standard block (docs/CONTROLS.md)
 #   make all      test, then build the benchmarks and the REPL
 #   make clean
 #
@@ -70,7 +72,7 @@ REPL_BIN   := $(REL)/repl$(EXE)
 # affect a latency number.
 ARENA_BINS := $(REL)/sweep$(EXE) $(REL)/arena$(EXE) $(REL)/suite$(EXE) $(REL)/controls$(EXE)
 
-.PHONY: all test bench latency repl arena sweep controls clean
+.PHONY: all test bench latency repl arena sweep controls reproduce clean
 
 all: test test-cli test-lab $(BENCH_BINS) $(REPL_BIN) $(ARENA_BINS)
 
@@ -145,6 +147,16 @@ test-cli: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(REL)/controls$(EXE)
 	same $$D/suite-a $$D/suite-b || fail "two runs should write byte-identical files"; \
 	$$S --block=smoke --candidates=maker,momentum --out=$$D/suite-a > /dev/null 2>&1 || fail "a previous run should be replaced"; \
 	same $$D/suite-a $$D/suite-b || fail "a replaced run should still match"; \
+	grep -q '^build.commit=' $$D/suite-a/suite.cfg || fail "suite.cfg should record the build"; \
+	$$S --reproduce=$$D/suite-a --out=$$D/re-a 2>/dev/null | grep -q '^  REPRODUCED' || fail "a run should reproduce"; \
+	exits 2 $$S --reproduce=$$D/suite-a --candidates=maker || fail "--reproduce takes nothing but --out"; \
+	exits 2 $$S --reproduce=$$D/keep || fail "--reproduce of a directory with no run should exit 2"; \
+	cp -r $$D/suite-a $$D/cond; sed -i.bak 's/^maker.quote_qty=50$$/maker.quote_qty=40/' $$D/cond/suite.cfg; \
+	exits 2 $$S --reproduce=$$D/cond --out=$$D/re-cond || fail "changed conditions should be refused before running"; \
+	[ ! -e $$D/re-cond ] || fail "a refused reproduction should write nothing"; \
+	cp -r $$D/suite-a $$D/raw; sed -i.bak '2s/,maker,/,maker ,/' $$D/raw/participants.csv; \
+	exits 1 $$S --reproduce=$$D/raw --out=$$D/re-raw || fail "a run whose raw files changed should not reproduce"; \
+	$$S --reproduce=$$D/fam --out=$$D/re-fam > /dev/null 2>&1 || fail "a --suite=all run should reproduce family by family"; \
 	ref=$$(placebo42 $$D/suite-a); \
 	ev=$$(sweephash --values=10000 --seeds=1 --set=session.max_time_ns=25000000 \
 	    --set=session.max_requests=0 --set=session.stall_limit_ns=0); \
@@ -157,7 +169,7 @@ test-cli: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(REL)/controls$(EXE)
 	! grep -nwE 'double|float' arena/suite.hpp || fail "arena/suite.hpp must stay integer-only"; \
 	rm -rf $$D; \
 	echo "  placebo arm at seed 42: $$ref, the sweep's market"; \
-	echo "26/26 suite command-line checks passed"; \
+	echo "34/34 suite command-line checks passed"; \
 	echo "== the evaluator's controls"; \
 	C=./$(REL)/controls$(EXE); \
 	$$C --help > /dev/null || fail "controls --help should succeed"; \
@@ -260,6 +272,11 @@ compare: $(REL)/suite_lab$(EXE)
 	@[ -n '$(CANDIDATES)' ] || { echo "make compare: say which strategies: make compare CANDIDATES=a[,b,...]" >&2; exit 2; }
 	./$(REL)/suite_lab$(EXE) --candidates=$(CANDIDATES) $(if $(BLOCK),--block=$(BLOCK)) $(if $(SUITE),--suite=$(SUITE)) $(if $(OUT),--out=$(OUT))
 
+# Re-run a run directory from its own suite.cfg and compare every file (docs/REPRODUCE.md).
+reproduce: $(REL)/suite_lab$(EXE)
+	@[ -n '$(RUN)' ] || { echo "make reproduce: say which run: make reproduce RUN=runs/<dir>" >&2; exit 2; }
+	./$(REL)/suite_lab$(EXE) --reproduce=$(RUN) $(if $(OUT),--out=$(OUT))
+
 # Regenerated on every lab build but only rewritten when its contents change, so
 # an unchanged set of strategies does not relink anything.
 $(MANIFEST): FORCE
@@ -282,10 +299,33 @@ $(MANIFEST): FORCE
 	  echo "    (void)name; (void)r;"; echo "    return false;"; echo "}"; echo; \
 	  names=$$(for h in $$(ls $(USER_STRATEGY_DIR)/*.hpp 2>/dev/null | sort); do basename $$h .hpp; done | tr '\n' ' '); \
 	  echo "inline constexpr const char* kUserStrategyNames = \"$${names% }\";"; \
+	  echo; echo "// Each installed header's cksum CRC: which version of a strategy ran."; \
+	  echo "[[nodiscard]] inline const char* user_strategy_digest(std::string_view name) {"; \
+	  for h in $$(ls $(USER_STRATEGY_DIR)/*.hpp 2>/dev/null | sort); do \
+	    echo "    if (name == \"$$(basename $$h .hpp)\") return \"$$(cksum < $$h | cut -d' ' -f1)\";"; \
+	  done; \
+	  echo "    (void)name;"; echo "    return \"\";"; echo "}"; \
 	  echo; echo "} // namespace px::arena"; } > $$t; \
 	if cmp -s $$t $@; then rm -f $$t; else mv $$t $@; fi
 
 FORCE:
+
+# Which build ran a suite, recorded in every suite.cfg (docs/REPRODUCE.md).
+# Regenerated on every build, rewritten only when it changes.
+BUILD_INFO := $(GEN)/px_build_info.hpp
+$(BUILD_INFO): FORCE
+	@mkdir -p $(GEN)
+	@set -e; t=$@.tmp; \
+	commit=$$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown); \
+	dirty=$$(git status --porcelain --untracked-files=no 2>/dev/null | head -n 1 | wc -l | tr -d ' '); \
+	{ echo "// Generated by make. Do not edit; never committed."; echo "#pragma once"; \
+	  echo "inline constexpr const char* kBuildCommit = \"$$commit\";"; \
+	  echo "inline constexpr bool kBuildDirty = $$( [ "$$dirty" = 0 ] && echo false || echo true );"; \
+	  echo "inline constexpr const char* kBuildFlags = \"$(strip $(RELEASE_FLAGS))\";"; } > $$t; \
+	if cmp -s $$t $@; then rm -f $$t; else mv $$t $@; fi
+
+$(ROBJ)/arena/suite.o $(LOBJ)/arena/suite.o: $(BUILD_INFO)
+$(ROBJ)/arena/suite.o: INCLUDES += -I$(GEN)
 
 $(LOBJ)/%.o: %.cpp $(MANIFEST)
 	@mkdir -p $(dir $@)
@@ -333,9 +373,15 @@ test-lab: $(REL)/sweep$(EXE) $(REL)/suite$(EXE)
 	[ $$rc -eq 2 ] || fail "the evidence binary's suite must not see it (exit $$rc, want 2)"; \
 	$(MAKE) --no-print-directory compare CANDIDATES=imbalance BLOCK=smoke OUT=$$D/compare > /dev/null 2>&1 \
 	    || fail "make compare should run it"; \
+	grep -q '^run.candidate.imbalance.digest=[0-9]' $$D/suite/suite.cfg || fail "an installed strategy should be recorded by checksum"; \
+	$(MAKE) --no-print-directory reproduce RUN=$$D/suite OUT=$$D/re > /dev/null 2>&1 || fail "make reproduce should reproduce it"; \
+	exits_() { want=$$1; shift; rc=0; "$$@" > /dev/null 2>&1 || rc=$$?; [ $$rc -eq $$want ]; }; \
+	exits_ 2 ./$(REL)/suite$(EXE) --reproduce=$$D/suite --out=$$D/re2 || fail "the evidence suite cannot reproduce an installed strategy"; \
+	sed -i.bak 's/^\(run.candidate.imbalance.digest=\).*/\1123/' $$D/suite/suite.cfg; \
+	exits_ 2 ./$(REL)/suite_lab$(EXE) --reproduce=$$D/suite --out=$$D/re3 || fail "a changed strategy should be refused"; \
 	echo "  fingerprint $$(fp $$D/suite), identical in suite and suite_lab"; \
 	rm -rf $$D; \
-	echo "4/4 suite checks passed"
+	echo "8/8 suite checks passed"
 
 clean:
 	rm -rf $(BUILD)
