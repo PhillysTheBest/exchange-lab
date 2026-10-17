@@ -57,6 +57,9 @@ constexpr std::uint64_t kPinnedFrameHash = 0xddfa48c44bff4de8ULL;
 // session, a reference strategy, a default or the suite's own settings fails
 // here and forces a deliberate suite version bump (docs/RUNNER.md).
 constexpr std::uint64_t kPinnedSmokeFingerprint = 0xd461c30ab2446acfULL;
+// The scenario families, likewise pinned: a change needs a version bump.
+constexpr std::uint64_t kPinnedWideFingerprint = 0x9bb1a7c184ccb2d7ULL;
+constexpr std::uint64_t kPinnedBusyFingerprint = 0x5d735a9faa384bf5ULL;
 
 // ---- 1. the mirror against the engine ------------------------------------
 
@@ -1413,6 +1416,185 @@ void test_suite_rows() {
     PX_CHECK(lines(parts).size() == 1 + 7);
 }
 
+// ---- the evaluation report (docs/REPORT.md) ----------------------------------
+
+// A whole smoke run of `def` for the named candidates, as suite.cpp builds it.
+suite::RunRecord smoke_run(const suite::SuiteDef& def, const std::vector<std::string>& names) {
+    suite::RunRecord run;
+    run.def = def;
+    run.block = smoke_block();
+    for (const std::string& n : names) {
+        suite::CandidateInfo c;
+        c.name = n;
+        run.info.candidates.push_back(c);
+    }
+    const suite::SeedBlock& blk = smoke_block();
+    for (std::uint64_t seed = blk.first; seed < blk.first + blk.count; ++seed) {
+        for (const std::string& arm : suite::arm_names(run)) {
+            suite::ArmRecord a = run_named(def, seed, arm);
+            run.sessions.push_back(a.session);
+            for (suite::ParticipantRow& p : a.parts) run.parts.push_back(std::move(p));
+        }
+    }
+    return run;
+}
+
+void test_report_path() {
+    const suite::SuiteDef def = suite::standard_suite();
+    const suite::ArmRecord m = run_named(def, 42, "maker");
+    const suite::SessionRow& r = m.session;
+    const Account& a = m.parts.back().account;
+    PX_CHECK(m.parts.back().seat);
+    // One sample per step that moved the fundamental, and one at the end.
+    PX_CHECK(r.seat_path_samples > 1 && r.seat_path_samples <= r.fair_steps + 1);
+    const std::uint64_t final_abs = static_cast<std::uint64_t>(a.position < 0 ? -a.position : a.position);
+    PX_CHECK(r.seat_max_abs_position >= final_abs && r.seat_max_abs_position > 0);
+    PX_CHECK(r.seat_abs_position_sum <= r.seat_max_abs_position * r.seat_path_samples);
+    PX_CHECK(r.seat_max_drawdown > 0);
+    // The empty seat's path is flat.
+    const suite::ArmRecord p = run_named(def, 42, "placebo");
+    PX_CHECK(p.session.seat_path_samples > 1);
+    PX_CHECK(p.session.seat_abs_position_sum == 0 && p.session.seat_max_abs_position == 0);
+    PX_CHECK(p.session.seat_max_drawdown == 0);
+    // Sampling reads the session and never steers it: the no-seat market has no
+    // path at all, and the placebo's hash is still the no-seat market's.
+    const suite::ArmRecord none = run_named(def, 42, "");
+    PX_CHECK(none.session.seat_path_samples == 0);
+    PX_CHECK(none.session.session_hash == p.session.session_hash);
+}
+
+void test_report_metrics() {
+    const suite::RunRecord run = smoke_run(suite::standard_suite(), {"maker", "momentum"});
+    const std::vector<suite::MetricRow> rows = suite::evaluate(run);
+    PX_CHECK(rows.size() == 3 * suite::kMetricCount); // two levels, one pair
+    for (const suite::MetricRow& r : rows) PX_CHECK(r.stats.n == 4 || std::string(suite::kMetrics[r.metric].key) == "maker_share");
+    // The value level is the step-2 statistic, and value decomposes exactly.
+    const std::vector<std::int64_t> v = suite::seat_values(run, "maker");
+    const suite::Paired direct = suite::paired(std::vector<std::int64_t>(v.size(), 0), v);
+    PX_CHECK(rows[0].arm == "maker" && rows[0].metric == 0);
+    const double dm = rows[0].stats.mean - suite::to_currency(direct.mean);
+    PX_CHECK(dm < 1e-9 && -dm < 1e-9);
+    for (const char* arm : {"maker", "momentum"}) {
+        for (const suite::SeatSeed& x : suite::seat_series(run, arm)) {
+            const double sum = x.v[9] + x.v[10] + x.v[11];
+            PX_CHECK(sum - x.v[0] < 1e-6 && x.v[0] - sum < 1e-6);
+            PX_CHECK(x.v[3] >= x.v[2]); // max |inventory| >= mean |inventory|
+        }
+    }
+    // Pairs run on the seeds where both are defined, and say so.
+    for (const suite::MetricRow& r : rows) {
+        if (r.baseline.empty()) continue;
+        PX_CHECK(r.baseline == "maker" && r.arm == "momentum");
+        PX_CHECK(!r.verdict.empty());
+    }
+    // The CSV has one header and one row per metric row, all the same width.
+    const std::string csv = suite::evaluation_csv(rows);
+    PX_CHECK(static_cast<std::size_t>(std::count(csv.begin(), csv.end(), '\n')) == 1 + rows.size());
+
+    // A ratio undefined on one seed drops that seed from that metric only.
+    suite::RunRecord syn;
+    syn.block = suite::SeedBlock{"synthetic", 1, 4};
+    suite::CandidateInfo ci;
+    ci.name = "a";
+    syn.info.candidates.push_back(ci);
+    for (std::uint64_t k = 0; k < 4; ++k) {
+        for (const char* arm : {"placebo", "a"}) {
+            suite::SessionRow s;
+            s.arm = arm;
+            s.seed = k + 1;
+            s.seat = 0;
+            syn.sessions.push_back(s);
+            suite::ParticipantRow p;
+            p.arm = arm;
+            p.seed = k + 1;
+            p.index = 0;
+            p.seat = true;
+            if (std::string(arm) == "a" && k != 2) {
+                p.account.orders_sent = 4;
+                p.account.fills = 2 + k;
+            }
+            syn.parts.push_back(p);
+        }
+    }
+    for (const suite::MetricRow& r : suite::evaluate(syn)) {
+        const std::string key = suite::kMetrics[r.metric].key;
+        if (key == "fills_per_order") PX_CHECK(r.stats.n == 3);
+        if (key == "fills") PX_CHECK(r.stats.n == 4);
+    }
+}
+
+void test_report_attribution() {
+    const suite::RunRecord run = smoke_run(suite::standard_suite(), {"maker", "momentum"});
+    bool identity = false;
+    const std::vector<suite::AttributionRow> rows = suite::attribute(run, identity);
+    PX_CHECK(identity);
+    PX_CHECK(rows.size() == 2 * 6);
+    // Per candidate, the reference participants' changes undo the seat exactly.
+    for (const char* arm : {"maker", "momentum"}) {
+        double sum = 0;
+        for (const suite::AttributionRow& r : rows) {
+            if (r.arm == arm) sum += r.stats.mean;
+        }
+        const std::vector<std::int64_t> v = suite::seat_values(run, arm);
+        double seat = 0;
+        for (const std::int64_t x : v) seat += suite::to_currency(static_cast<double>(x));
+        seat /= static_cast<double>(v.size());
+        PX_CHECK(sum + seat < 1e-6 && -(sum + seat) < 1e-6);
+    }
+    PX_CHECK(rows[0].name == "maker" && rows[5].name == "momentum");
+    // A broken identity is reported, not hidden.
+    suite::RunRecord bad = run;
+    for (suite::ParticipantRow& p : bad.parts) {
+        if (p.arm == "maker" && p.index == 1 && p.seed == 43) p.value += 1;
+    }
+    bool still = true;
+    (void)suite::attribute(bad, still);
+    PX_CHECK(!still);
+}
+
+void test_report_t_table() {
+    // Past the table, within 0.0005 of the exact quantiles.
+    auto near = [](double a, double b) { return a - b < 5e-4 && b - a < 5e-4; };
+    PX_CHECK(near(suite::t975(31), 2.0395));
+    PX_CHECK(near(suite::t975(40), 2.0211));
+    PX_CHECK(near(suite::t975(60), 2.0003));
+    PX_CHECK(near(suite::t975(120), 1.9799));
+    // Non-increasing, give or take the table's three decimals at 63 and 127.
+    for (std::size_t df = 31; df < 200; ++df) PX_CHECK(suite::t975(df + 1) < suite::t975(df) + 5e-4);
+}
+
+void test_report_families() {
+    const std::vector<std::string> names = suite::split_names(suite::kSuiteNames);
+    PX_CHECK(names.size() == 3 && names[0] == "standard");
+    suite::SuiteDef d = suite::standard_suite();
+    PX_CHECK(!suite::find_suite("null", d) && !suite::find_suite("bogus", d));
+    std::vector<std::uint64_t> fps;
+    for (const std::string& n : names) {
+        suite::SuiteDef f = suite::standard_suite();
+        PX_CHECK(suite::find_suite(n, f));
+        PX_CHECK(n == f.name);
+        PX_CHECK((n == "standard") == (f.change[0] == '\0'));
+        const auto hashes = smoke_placebo_hashes(f);
+        for (std::uint64_t seed = smoke_block().first; seed < smoke_block().first + smoke_block().count; ++seed) {
+            PX_CHECK(run_named(f, seed, "placebo").session.healthy());
+        }
+        fps.push_back(suite::suite_fingerprint(f, smoke_block(), hashes));
+    }
+    PX_CHECK(fps[0] == kPinnedSmokeFingerprint);
+    PX_CHECK(fps[1] == kPinnedWideFingerprint);
+    PX_CHECK(fps[2] == kPinnedBusyFingerprint);
+    std::printf("  families: smoke fingerprints wide %016llx, busy %016llx\n", static_cast<unsigned long long>(fps[1]),
+                static_cast<unsigned long long>(fps[2]));
+    // The cross-family table names every family and never pools them.
+    suite::FamilyResult a, b;
+    a.suite = "standard";
+    b.suite = "wide";
+    b.change = "maker.half_spread_ticks=4";
+    const std::string t = suite::families_text({"maker"}, {a, b});
+    PX_CHECK(t.find("not pooled") != std::string::npos);
+    PX_CHECK(t.find("maker.half_spread_ticks=4") != std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -1446,5 +1628,10 @@ int main() {
     test_paired_stats();
     test_suite_compare();
     test_suite_rows();
+    test_report_path();
+    test_report_metrics();
+    test_report_attribution();
+    test_report_t_table();
+    test_report_families();
     PX_TEST_REPORT_AND_RETURN();
 }

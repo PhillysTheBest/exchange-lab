@@ -516,13 +516,15 @@ build/release/arena_lab --strategies=maker,rival,informed,noise:2,momentum,imbal
 
 `make compare` puts the strategy in one seat of the default market on 64 fixed seeds,
 beside a placebo arm in which the same seat never acts, replays every session, and
-prints the paired difference with its standard error. `CANDIDATES=mine,other` puts two
+prints the paired difference with its standard error, then where the money came from:
+spread, adverse markout and carry, inventory and drawdown, and which reference participant
+paid. `SUITE=all` repeats it in two scenario families beside the default market, never pooled. `CANDIDATES=mine,other` puts two
 strategies through identical conditions with one command. The conditions and every
 raw per-session result are written to `runs/`, never to `results/`: a suite session
 lasts 25 ms of simulated time rather than 200,000 requests, so its numbers are not
-comparable with the ones above. [`docs/RUNNER.md`](docs/RUNNER.md) is the design. An
-evaluation report, validated controls and one-command reproducibility are the next
-steps and are not built yet.
+comparable with the ones above. [`docs/RUNNER.md`](docs/RUNNER.md) and
+[`docs/REPORT.md`](docs/REPORT.md) are the design. Validated controls and one-command
+reproducibility are the next steps and are not built yet.
 
 A minimal REPL session:
 
@@ -563,4 +565,4 @@ renderer.
 | `bench/` | `bench_matching_latency`, `bench_engine`, `bench_ring`, and the evidence scripts |
 | `results/` | raw benchmark evidence with the machine state it was captured on, and the arena's sweeps |
 | `tools/` | the interactive REPL and a demo script |
-| `docs/` | [`ARENA.md`](docs/ARENA.md): the arena's design, and the four modelling mistakes it took to get there; [`RUNNER.md`](docs/RUNNER.md): the standard experiment runner behind `make compare` |
+| `docs/` | [`ARENA.md`](docs/ARENA.md): the arena's design, and the four modelling mistakes it took to get there; [`RUNNER.md`](docs/RUNNER.md): the standard experiment runner behind `make compare`; [`REPORT.md`](docs/REPORT.md): its evaluation report |

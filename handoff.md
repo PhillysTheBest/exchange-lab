@@ -27,7 +27,7 @@ that engine, each with a reaction delay the experimenter sets, plus a terminal
 renderer to watch it and a headless runner to sweep it. About 4,300 lines.
 
 The project's centre of gravity moved as a result. The engine is now the
-instrument; the experiment is the result. The strategy lab, whose first two steps
+instrument; the experiment is the result. The strategy lab, whose first three steps
 are built (§6), moves it once more: it makes the instrument something other people
 can submit a strategy to, so "add your own strategy" becomes part of what the project
 is rather than a paragraph about what it would permit. That is why the repository is being
@@ -242,7 +242,7 @@ would not survive contact with the evidence in `results/`.
 
 **Next:** turning the arena into a strategy research platform, in five steps
 (strategy interface, standard experiment runner, evaluation report, validating the
-evaluator, one-command reproducibility). Steps 1 and 2 are built.
+evaluator, one-command reproducibility). Steps 1 to 3 are built.
 
 - **Step 1, the strategy interface.** `make strategy STRATEGY=path/to/name.hpp`
   installs a strategy of your own and builds `sweep_lab`, `arena_lab` and `suite_lab`,
@@ -254,8 +254,13 @@ evaluator, one-command reproducibility). Steps 1 and 2 are built.
   raw per-session results to `runs/` (git-ignored, never `results/`), and prints the
   paired comparison with its standard error. `docs/RUNNER.md` is its design.
 
-Steps 3-5 (the evaluation report, validating the evaluator, one-command
-reproducibility) are not built. See "Strategies of your own" in `CLAUDE.md`.
+- **Step 3, the evaluation report.** The same run now says how the seat made its
+  money (spread, adverse, carry, inventory, drawdown, paired on every metric), which
+  reference participant paid for it, and, with `SUITE=all`, how it fares in the `wide`
+  and `busy` scenario families. `docs/REPORT.md` is its design, including the `null`
+  family that was built and dropped because its market fails the health gate.
+
+Steps 4 and 5 (validating the evaluator, one-command reproducibility) are not built. See "Strategies of your own" in `CLAUDE.md`.
 
 **Not done, and yours to do:**
 

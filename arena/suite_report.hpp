@@ -41,7 +41,14 @@ namespace px::arena::suite {
     if (df < sizeof k / sizeof k[0]) return k[df];
     if (df == 63) return 1.998;
     if (df == 127) return 1.979;
-    return 0; // not in the table: test_arena fails if a block needs it
+    if (df <= 30) return 0;
+    // Past the table, the Cornish-Fisher expansion about z = 1.959964: within
+    // 0.0005 of the exact value for every df above 30 (it gives 1.9984 at 63
+    // and 1.9788 at 127, the table's entries). Needed when a ratio metric is
+    // undefined on some seeds, which leaves a df no block has.
+    const double z = 1.959964, n = static_cast<double>(df);
+    const double z3 = z * z * z, z5 = z3 * z * z;
+    return z + (z3 + z) / (4 * n) + (5 * z5 + 16 * z3 + 3 * z) / (96 * n * n);
 }
 
 struct Paired {
@@ -71,8 +78,9 @@ struct Paired {
 }
 
 // The paired statistic of `arm - base`, seed by seed, in whatever units the
-// inputs are in. Inputs are integers: the per-seed values are exact.
-[[nodiscard]] inline Paired paired(const std::vector<std::int64_t>& base, const std::vector<std::int64_t>& arm) {
+// inputs are in. Integer inputs (the raw records) are exact in a double up to
+// 2^53, so "identical" is an exact test for them.
+[[nodiscard]] inline Paired paired_values(const std::vector<double>& base, const std::vector<double>& arm) {
     Paired p;
     const std::size_t n = std::min(base.size(), arm.size());
     p.n = n;
@@ -80,12 +88,11 @@ struct Paired {
     std::vector<double> a(n), b(n), d(n);
     bool all_zero = true;
     for (std::size_t i = 0; i < n; ++i) {
-        b[i] = static_cast<double>(base[i]);
-        a[i] = static_cast<double>(arm[i]);
-        const std::int64_t di = arm[i] - base[i];
-        d[i] = static_cast<double>(di);
-        if (di != 0) all_zero = false;
-        if (di > 0) ++p.ahead;
+        b[i] = base[i];
+        a[i] = arm[i];
+        d[i] = arm[i] - base[i];
+        if (d[i] != 0) all_zero = false;
+        if (d[i] > 0) ++p.ahead;
     }
     p.identical = all_zero;
     p.mean = mean_of(d);
@@ -108,6 +115,10 @@ struct Paired {
         p.var_removed_defined = true;
     }
     return p;
+}
+
+[[nodiscard]] inline Paired paired(const std::vector<std::int64_t>& base, const std::vector<std::int64_t>& arm) {
+    return paired_values(std::vector<double>(base.begin(), base.end()), std::vector<double>(arm.begin(), arm.end()));
 }
 
 // One row of comparison.csv, in currency units per session.
@@ -194,6 +205,294 @@ struct ComparisonRow {
     return s;
 }
 
+// ---- the seat, metric by metric (step 3, docs/REPORT.md) -------------------------
+
+// What the seat did, per seed, read off the raw records. Every metric is a
+// value of the seat in one arm; against the placebo (the empty seat, zero on
+// all of them) a metric is its own level, so pairs are candidate against
+// candidate. A ratio is undefined on a seed with nothing to divide by, and that
+// seed is left out of that metric only; the seed count printed beside it says so.
+struct MetricDef {
+    const char* key;
+    const char* label;
+    const char* unit;
+};
+
+inline constexpr MetricDef kMetrics[] = {
+    {"value", "value", "currency"},
+    {"final_inventory", "final inventory", "qty"},
+    {"mean_abs_inventory", "mean |inventory|", "qty"},
+    {"max_abs_inventory", "max |inventory|", "qty"},
+    {"max_drawdown", "max drawdown", "currency"},
+    {"fills", "fills", "count"},
+    {"turnover", "turnover", "qty"},
+    {"fills_per_order", "fills per order", "ratio"},
+    {"maker_share", "maker share", "% of fills"},
+    {"spread_earned", "spread earned", "currency"},
+    {"adverse", "adverse markout", "currency"},
+    {"carry", "carry to close", "currency"},
+};
+inline constexpr std::size_t kMetricCount = sizeof kMetrics / sizeof kMetrics[0];
+
+struct SeatSeed {
+    std::uint64_t seed = 0;
+    double v[kMetricCount] = {};
+    bool defined[kMetricCount] = {};
+    std::uint64_t markout_n = 0, unresolved = 0;
+};
+
+[[nodiscard]] inline const ParticipantRow* find_part(const RunRecord& run, const std::string& arm, std::uint64_t seed,
+                                                     std::uint32_t index) {
+    for (const ParticipantRow& p : run.parts) {
+        if (p.seed == seed && p.index == index && p.arm == arm) return &p;
+    }
+    return nullptr;
+}
+
+// The seat's metrics for one arm, one entry per session row, in block order.
+[[nodiscard]] inline std::vector<SeatSeed> seat_series(const RunRecord& run, const std::string& arm) {
+    std::vector<SeatSeed> out;
+    for (const SessionRow& r : run.sessions) {
+        if (r.arm != arm) continue;
+        SeatSeed x;
+        x.seed = r.seed;
+        const ParticipantRow* p = find_part(run, arm, r.seed, r.seat);
+        const Account a = p != nullptr && p->seat ? p->account : Account{};
+        auto set = [&x](std::size_t i, double v) {
+            x.v[i] = v;
+            x.defined[i] = true;
+        };
+        set(0, to_currency(static_cast<double>(r.seat_value)));
+        set(1, static_cast<double>(a.position));
+        set(2, r.seat_path_samples == 0 ? 0.0
+                                        : static_cast<double>(r.seat_abs_position_sum) /
+                                              static_cast<double>(r.seat_path_samples));
+        set(3, static_cast<double>(r.seat_max_abs_position));
+        set(4, to_currency(static_cast<double>(r.seat_max_drawdown)));
+        set(5, static_cast<double>(a.fills));
+        set(6, static_cast<double>(a.filled_qty));
+        // Fills, not orders filled: one order can fill against several resting ones.
+        if (a.orders_sent != 0) set(7, static_cast<double>(a.fills) / static_cast<double>(a.orders_sent));
+        if (a.fills != 0) set(8, 100.0 * static_cast<double>(a.maker_fills) / static_cast<double>(a.fills));
+        set(9, to_currency(static_cast<double>(a.spread_sum)));
+        set(10, to_currency(static_cast<double>(a.adverse_sum)));
+        // What the inventory earned between each fill's markout and the close:
+        // value = spread + adverse + carry, exactly (any fees land in carry;
+        // the suite charges none).
+        set(11, to_currency(static_cast<double>(r.seat_value - a.spread_sum - a.adverse_sum)));
+        x.markout_n = a.markout_n;
+        x.unresolved = a.unresolved_fills;
+        out.push_back(x);
+    }
+    return out;
+}
+
+// One metric's values, and the seeds they came from, where defined.
+[[nodiscard]] inline std::vector<double> metric_values(const std::vector<SeatSeed>& s, std::size_t m) {
+    std::vector<double> v;
+    for (const SeatSeed& x : s) {
+        if (x.defined[m]) v.push_back(x.v[m]);
+    }
+    return v;
+}
+
+struct MetricRow {
+    std::string baseline; // empty for a level
+    std::string arm;
+    std::size_t metric = 0;
+    Paired stats; // a level is paired against zero
+    bool admissible = true;
+    std::string verdict; // paired rows only
+};
+
+// Every candidate's level on every metric, then every later candidate against
+// the first, on every metric, over the seeds where both are defined.
+[[nodiscard]] inline std::vector<MetricRow> evaluate(const RunRecord& run) {
+    const std::vector<ArmSummary> arms = summarize_arms(run);
+    auto admissible = [&arms](const std::string& name) {
+        for (const ArmSummary& a : arms) {
+            if (a.arm == name) return a.admissible();
+        }
+        return false;
+    };
+    std::vector<MetricRow> out;
+    std::vector<std::vector<SeatSeed>> series;
+    for (const CandidateInfo& c : run.info.candidates) series.push_back(seat_series(run, c.name));
+    for (std::size_t c = 0; c < series.size(); ++c) {
+        for (std::size_t m = 0; m < kMetricCount; ++m) {
+            MetricRow r;
+            r.arm = run.info.candidates[c].name;
+            r.metric = m;
+            const std::vector<double> v = metric_values(series[c], m);
+            r.stats = paired_values(std::vector<double>(v.size(), 0.0), v);
+            r.admissible = admissible(r.arm);
+            out.push_back(std::move(r));
+        }
+    }
+    for (std::size_t c = 1; c < series.size(); ++c) {
+        for (std::size_t m = 0; m < kMetricCount; ++m) {
+            std::vector<double> b, a;
+            for (const SeatSeed& x : series[0]) {
+                for (const SeatSeed& y : series[c]) {
+                    if (y.seed == x.seed && x.defined[m] && y.defined[m]) {
+                        b.push_back(x.v[m]);
+                        a.push_back(y.v[m]);
+                    }
+                }
+            }
+            MetricRow r;
+            r.baseline = run.info.candidates[0].name;
+            r.arm = run.info.candidates[c].name;
+            r.metric = m;
+            r.stats = paired_values(b, a);
+            r.admissible = admissible(r.baseline) && admissible(r.arm) && admissible("placebo");
+            if (!r.admissible) r.verdict = "not_admissible";
+            else if (r.stats.n == 0) r.verdict = "undefined";
+            else if (r.stats.identical) r.verdict = "identical";
+            else if (r.stats.separated()) r.verdict = "separated";
+            else r.verdict = "not_separated";
+            out.push_back(std::move(r));
+        }
+    }
+    return out;
+}
+
+[[nodiscard]] inline std::string evaluation_csv(const std::vector<MetricRow>& rows) {
+    std::string s = "kind,baseline,arm,metric,unit,seeds,mean,se,t_crit,ci95_lo,ci95_hi,min,max,verdict\n";
+    for (const MetricRow& r : rows) {
+        const Paired& p = r.stats;
+        const MetricDef& m = kMetrics[r.metric];
+        s += r.baseline.empty() ? "level," : "paired,";
+        s += r.baseline + ',' + r.arm + ',' + m.key + ',' + m.unit + ',';
+        append_u(s, p.n);
+        s += ',' + fmt("%.4f", p.mean) + ',' + fmt("%.4f", p.se) + ',' + fmt("%.3f", p.t) + ',' +
+             fmt("%.4f", p.lo) + ',' + fmt("%.4f", p.hi) + ',' + fmt("%.4f", p.min) + ',' + fmt("%.4f", p.max) + ',';
+        s += r.verdict + '\n';
+    }
+    return s;
+}
+
+// ---- where the money came from ---------------------------------------------------
+
+// For each candidate and each reference participant: its value in the
+// candidate's arm minus its value in the placebo arm, seed by seed. Every arm
+// closes at the same fundamental and the market is closed, so on every seed
+// these sum to minus the seat's value exactly; `identity_ok` records that.
+struct AttributionRow {
+    std::string arm;
+    std::uint32_t index = 0;
+    std::string name;
+    Paired stats; // currency units: arm - placebo
+};
+
+[[nodiscard]] inline std::vector<AttributionRow> attribute(const RunRecord& run, bool& identity_ok) {
+    identity_ok = true;
+    std::vector<AttributionRow> out;
+    for (const CandidateInfo& c : run.info.candidates) {
+        std::vector<std::vector<double>> base, arm; // [reference index][seed]
+        std::vector<std::string> names;
+        for (const SessionRow& r : run.sessions) {
+            if (r.arm != c.name) continue;
+            std::int64_t sum = r.seat_value;
+            for (std::uint32_t i = 0; i < r.seat; ++i) {
+                const ParticipantRow* a = find_part(run, c.name, r.seed, i);
+                const ParticipantRow* b = find_part(run, "placebo", r.seed, i);
+                if (a == nullptr || b == nullptr) {
+                    identity_ok = false;
+                    continue;
+                }
+                if (base.size() <= i) {
+                    base.resize(i + 1);
+                    arm.resize(i + 1);
+                    names.resize(i + 1);
+                }
+                names[i] = a->name;
+                base[i].push_back(to_currency(static_cast<double>(b->value)));
+                arm[i].push_back(to_currency(static_cast<double>(a->value)));
+                sum += a->value - b->value;
+            }
+            if (sum != 0) identity_ok = false;
+        }
+        for (std::size_t i = 0; i < base.size(); ++i) {
+            AttributionRow r;
+            r.arm = c.name;
+            r.index = static_cast<std::uint32_t>(i);
+            r.name = names[i];
+            r.stats = paired_values(base[i], arm[i]);
+            out.push_back(std::move(r));
+        }
+    }
+    return out;
+}
+
+[[nodiscard]] inline std::string attribution_csv(const std::vector<AttributionRow>& rows) {
+    std::string s = "arm,index,name,seeds,mean_diff,se_diff,t_crit,ci95_lo,ci95_hi,min_diff,max_diff\n";
+    for (const AttributionRow& r : rows) {
+        const Paired& p = r.stats;
+        s += r.arm + ',';
+        append_u(s, r.index);
+        s += ',' + r.name + ',';
+        append_u(s, p.n);
+        s += ',' + fmt("%.4f", p.mean) + ',' + fmt("%.4f", p.se) + ',' + fmt("%.3f", p.t) + ',' + fmt("%.4f", p.lo) +
+             ',' + fmt("%.4f", p.hi) + ',' + fmt("%.4f", p.min) + ',' + fmt("%.4f", p.max) + '\n';
+    }
+    return s;
+}
+
+// ---- scenario families: one table across suites -------------------------------
+
+struct FamilyResult {
+    std::string suite;
+    std::string change;
+    bool reference_admissible = true;
+    std::vector<ComparisonRow> rows;
+};
+
+// Each candidate's paired value against the placebo, one column per suite.
+// Never pooled: a strategy that wins in one market and loses in another has
+// two results, not an average.
+[[nodiscard]] inline std::string families_text(const std::vector<std::string>& candidates,
+                                               const std::vector<FamilyResult>& fams) {
+    std::string s;
+    char b[256];
+    s += "\nscenario families: each candidate's value against the placebo, currency per session, mean +- s.e.\n";
+    s += "  Each column is its own market, placebo and health gate. The columns are not pooled.\n";
+    std::snprintf(b, sizeof b, "  %-14s", "candidate");
+    s += b;
+    for (const FamilyResult& f : fams) {
+        std::snprintf(b, sizeof b, " | %-22s", f.suite.c_str());
+        s += b;
+    }
+    s += "\n  " + std::string(14 + 25 * fams.size(), '-') + "\n";
+    for (const std::string& c : candidates) {
+        std::snprintf(b, sizeof b, "  %-14s", c.c_str());
+        s += b;
+        for (const FamilyResult& f : fams) {
+            std::string cell = "-";
+            for (const ComparisonRow& r : f.rows) {
+                if (r.baseline != "placebo" || r.arm != c) continue;
+                const char* tag = r.verdict == "separated"    ? "sep"
+                                  : r.verdict == "identical"  ? "same"
+                                  : r.verdict == "not_separated" ? "n.s."
+                                                                 : "N/A";
+                cell = fmt("%+8.2f", to_currency(r.stats.mean)) + " +- " + fmt("%5.2f", to_currency(r.stats.se)) + " " +
+                       tag;
+            }
+            std::snprintf(b, sizeof b, " | %-22s", cell.c_str());
+            s += b;
+        }
+        s += "\n";
+    }
+    for (const FamilyResult& f : fams) {
+        std::snprintf(b, sizeof b, "  %-8s %s%s\n", f.suite.c_str(), f.change.empty() ? "the default market" : f.change.c_str(),
+                      f.reference_admissible ? "" : "; REFERENCE NOT ADMISSIBLE, nothing in this column counts");
+        s += b;
+    }
+    s += "  sep: the 95% interval excludes 0; n.s.: it does not; same: identical on every seed;\n"
+         "  N/A: not admissible. Full tables are in each suite's report.txt.\n";
+    return s;
+}
+
 // ---- the printed report --------------------------------------------------------
 
 struct ArmHealth {
@@ -255,7 +554,8 @@ struct ArmHealth {
                   d.name, d.version, blk.name, blk.count, static_cast<unsigned long long>(blk.first),
                   static_cast<unsigned long long>(blk.first + blk.count - 1), with_commas(d.session_ns).c_str());
     s += b;
-    std::snprintf(b, sizeof b, "  market    %s, every parameter at its default\n", d.lineup);
+    if (d.change[0] == '\0') std::snprintf(b, sizeof b, "  market    %s, every parameter at its default\n", d.lineup);
+    else std::snprintf(b, sizeof b, "  market    %s, every parameter at its default except: %s\n", d.lineup, d.change);
     s += b;
     std::snprintf(b, sizeof b, "  seat      #%zu (owner %zu), appended last, never informed; reaction %s ns, set by the suite\n",
                   seat, seat + 1, with_commas(d.seat_reaction_ns).c_str());
@@ -364,6 +664,116 @@ struct ArmHealth {
                 s += b;
             }
         }
+    }
+
+    // Step 3: how the seat made its money, metric by metric.
+    const std::vector<MetricRow> metrics = evaluate(run);
+    std::size_t tests = 0, separated = 0;
+    for (const ComparisonRow& r : rows) {
+        if (r.verdict == "separated" || r.verdict == "not_separated") ++tests;
+        if (r.verdict == "separated") ++separated;
+    }
+    if (!run.info.candidates.empty()) {
+        std::snprintf(b, sizeof b, "\nthe seat, metric by metric: mean +- s.e. over the seeds where it is defined (%u seeds)\n",
+                      blk.count);
+        s += b;
+        std::snprintf(b, sizeof b, "  %-17s | %-12s", "metric", "unit");
+        s += b;
+        for (const CandidateInfo& c : run.info.candidates) {
+            std::snprintf(b, sizeof b, " | %-20s", c.name.c_str());
+            s += b;
+        }
+        s += "\n  " + std::string(32 + 23 * run.info.candidates.size(), '-') + "\n";
+        for (std::size_t m = 0; m < kMetricCount; ++m) {
+            std::snprintf(b, sizeof b, "  %-17s | %-12s", kMetrics[m].label, kMetrics[m].unit);
+            s += b;
+            for (const MetricRow& r : metrics) {
+                if (!r.baseline.empty() || r.metric != m) continue;
+                std::string cell = r.stats.n == 0 ? std::string("undefined")
+                                                  : fmt("%+10.2f", r.stats.mean) + " +- " + fmt("%6.2f", r.stats.se);
+                if (r.stats.n != 0 && r.stats.n != blk.count) cell += " (" + std::to_string(r.stats.n) + ")";
+                std::snprintf(b, sizeof b, " | %-20s", cell.c_str());
+                s += b;
+            }
+            s += "\n";
+        }
+        std::uint64_t markouts = 0, unresolved = 0;
+        for (const CandidateInfo& c : run.info.candidates) {
+            for (const SeatSeed& x : seat_series(run, c.name)) {
+                markouts += x.markout_n;
+                unresolved += x.unresolved;
+            }
+        }
+        std::snprintf(b, sizeof b,
+                      "  value = spread earned + adverse markout + carry to close, exactly, at zero fees. The adverse column\n"
+                      "  reads near zero for everyone by construction (the fundamental is a martingale; docs/ARENA.md),\n"
+                      "  so a stale quote's loss shows as spread. %.1f%% of the seat's fills fell inside the last markout\n"
+                      "  horizon and were marked at the close instead.\n",
+                      markouts == 0 ? 0.0 : 100.0 * static_cast<double>(unresolved) / static_cast<double>(markouts));
+        s += b;
+    }
+    if (run.info.candidates.size() > 1) {
+        std::snprintf(b, sizeof b, "\npaired against %s, metric by metric: arm - %s, seed by seed\n",
+                      run.info.candidates[0].name.c_str(), run.info.candidates[0].name.c_str());
+        s += b;
+        std::snprintf(b, sizeof b, "  %-14s | %-17s | %-20s | %-24s | %-6s | %s\n", "arm", "metric", "mean +- s.e.",
+                      "95% interval", "seeds", "verdict");
+        s += b;
+        s += "  " + std::string(108, '-') + "\n";
+        for (const MetricRow& r : metrics) {
+            if (r.baseline.empty()) continue;
+            const Paired& p = r.stats;
+            std::string verdict = r.verdict == "not_admissible" ? "NOT ADMISSIBLE"
+                                  : r.verdict == "not_separated" ? "not separated"
+                                                                 : r.verdict;
+            std::snprintf(b, sizeof b, "  %-14s | %-17s | %+9.2f +- %7.2f | %+10.2f .. %+10.2f | %6zu | %s\n",
+                          r.arm.c_str(), kMetrics[r.metric].label, p.mean, p.se, p.lo, p.hi, p.n, verdict.c_str());
+            s += b;
+            if (r.verdict == "separated" || r.verdict == "not_separated") ++tests;
+            if (r.verdict == "separated") ++separated;
+        }
+    }
+
+    bool identity_ok = true;
+    const std::vector<AttributionRow> attribution = attribute(run, identity_ok);
+    if (!attribution.empty()) {
+        s += "\nwhere the seat's money came from: each reference participant's value in the candidate's arm\n"
+             "minus its value in the placebo arm, currency per session, mean +- s.e.\n";
+        std::snprintf(b, sizeof b, "  %-3s %-10s", "#", "reference");
+        s += b;
+        for (const CandidateInfo& c : run.info.candidates) {
+            std::snprintf(b, sizeof b, " | %-18s", c.name.c_str());
+            s += b;
+        }
+        s += "\n  " + std::string(14 + 21 * run.info.candidates.size(), '-') + "\n";
+        for (std::uint32_t i = 0; i < seat; ++i) {
+            std::string name;
+            for (const AttributionRow& r : attribution) {
+                if (r.index == i) name = r.name;
+            }
+            std::snprintf(b, sizeof b, "  %-3u %-10s", i, name.c_str());
+            s += b;
+            for (const CandidateInfo& c : run.info.candidates) {
+                std::string cell = "-";
+                for (const AttributionRow& r : attribution) {
+                    if (r.arm == c.name && r.index == i) {
+                        cell = fmt("%+8.2f", r.stats.mean) + " +- " + fmt("%5.2f", r.stats.se);
+                    }
+                }
+                std::snprintf(b, sizeof b, " | %-18s", cell.c_str());
+                s += b;
+            }
+            s += "\n";
+        }
+        s += identity_ok ? "  On every seed these sum to minus the seat's value exactly: the market is closed.\n"
+                         : "  THE CLOSED IDENTITY FAILED: these do not sum to minus the seat's value on every seed.\n";
+    }
+    if (tests > 0) {
+        std::snprintf(b, sizeof b,
+                      "\n  %zu interval tests above, %zu separated. At 95%% each, about %.1f would separate by chance if\n"
+                      "  nothing were there; no correction is applied, so read a lone separation with that in mind.\n",
+                      tests, separated, 0.05 * static_cast<double>(tests));
+        s += b;
     }
 
     // What failed, by name, so no verdict has to be taken on trust.

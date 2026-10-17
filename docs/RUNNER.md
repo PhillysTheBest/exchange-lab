@@ -963,7 +963,8 @@ The split that makes this work:
 
 Each later step extends one of these without rewriting the others.
 
-**Step 3, the evaluation report.**
+**Step 3, the evaluation report.** Built; `docs/REPORT.md` is its design and records where it departed from
+this sketch (no `null` family, reading back deferred to step 5, fills per order rather than a fill rate).
 
 - **Reading runs back.** It adds `read_run(dir) → RunRecord`. The CSV parser reads columns by name and
   ignores unknown ones, so later columns are additive. It refuses a directory without `status=complete`.
