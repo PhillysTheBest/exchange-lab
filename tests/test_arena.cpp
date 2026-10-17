@@ -30,6 +30,7 @@
 #include "arena/session.hpp"
 #include "arena/suite.hpp"
 #include "arena/suite_report.hpp"
+#include "arena/controls.hpp"
 #include "arena/ui.hpp"
 #include "px/matching_engine.hpp"
 #include "sim/order_stream.hpp"
@@ -686,7 +687,7 @@ void test_roster_from_spec() {
         }
     }
     std::printf("  spec: %zu named participants, all addable\n", listed);
-    PX_CHECK(listed == 7);
+    PX_CHECK(listed == 8);
 
     // Counts repeat a name, and the roster comes out in the order written.
     Roster r;
@@ -1595,6 +1596,213 @@ void test_report_families() {
     PX_CHECK(t.find("maker.half_spread_ticks=4") != std::string::npos);
 }
 
+// ---- the evaluator's controls, and the defects they catch (docs/CONTROLS.md) ----
+
+// Keeps a count in static storage, so a second session in the same process
+// behaves differently from the first: the defect replay exists to catch.
+struct Leaky {
+    const char* name = "leaky";
+    SimTime reaction_ns = 10'000;
+    SimTime timer_ns = 50'000;
+    static inline int sessions = 0;
+    bool active = false;
+    void reset(std::uint64_t) { active = (++sessions % 2) == 1; }
+    ActionBatch on_event(const MarketView& v) {
+        ActionBatch out;
+        if (active && v.reason == WakeReason::Timer && v.in_flight == 0 && v.best(Side::Sell) != 0) {
+            out.push(Action::market(Side::Buy, 5));
+        }
+        return out;
+    }
+};
+
+// A smoke run as arena/controls.cpp builds one: placebo checked against the
+// no-seat market, every candidate replayed.
+suite::RunRecord controls_run(const std::vector<std::pair<std::string, std::string>>& arms) {
+    const suite::SuiteDef def = suite::standard_suite();
+    suite::RunRecord run;
+    run.def = def;
+    run.block = smoke_block();
+    for (const auto& a : arms) {
+        suite::CandidateInfo c;
+        c.name = a.first;
+        run.info.candidates.push_back(c);
+    }
+    const suite::SeedBlock& blk = smoke_block();
+    for (std::uint64_t seed = blk.first; seed < blk.first + blk.count; ++seed) {
+        suite::ArmRecord p = run_named(def, seed, "placebo");
+        const suite::ArmRecord bare = run_named(def, seed, "");
+        p.session.check_kind = "no_seat";
+        p.session.check_hash = bare.session.session_hash;
+        p.session.check_ok = bare.session.session_hash == p.session.session_hash;
+        run.sessions.push_back(p.session);
+        for (suite::ParticipantRow& x : p.parts) run.parts.push_back(std::move(x));
+        for (const auto& [label, strategy] : arms) {
+            suite::ArmRecord a = run_named(def, seed, strategy);
+            const suite::ArmRecord again = run_named(def, seed, strategy);
+            a.session.arm = label;
+            for (suite::ParticipantRow& x : a.parts) x.arm = label;
+            a.session.check_kind = "replay";
+            a.session.check_hash = again.session.session_hash;
+            a.session.check_ok = again.session.session_hash == a.session.session_hash;
+            run.sessions.push_back(a.session);
+            for (suite::ParticipantRow& x : a.parts) run.parts.push_back(std::move(x));
+        }
+    }
+    return run;
+}
+
+void test_controls_hold() {
+    const suite::RunRecord run = controls_run({{"roundtrip", "roundtrip"}, {"maker", "maker"}, {"maker-copy", "maker"}});
+    PX_CHECK(suite::control_placebo_zero(run).pass);
+    PX_CHECK(suite::control_placebo_inert(run).pass);
+    PX_CHECK(suite::control_common_close(run).pass);
+    PX_CHECK(suite::control_replay(run).pass);
+    PX_CHECK(suite::control_identities(run).pass);
+    PX_CHECK(suite::control_aa(run, "maker", "maker-copy").pass);
+    PX_CHECK(suite::control_positive(run, "roundtrip").pass);
+    // Each control can fail on a real arm, not only on a planted defect.
+    PX_CHECK(!suite::control_positive(run, "maker").pass);            // maker makes money
+    PX_CHECK(!suite::control_aa(run, "maker", "roundtrip").pass);     // different strategies
+    PX_CHECK(!suite::control_noise_floor(run, "placebo", "roundtrip", "x").pass); // a real, large effect
+    PX_CHECK(suite::controls_text({suite::control_replay(run)}).find("1/1 controls held") != std::string::npos);
+}
+
+void test_controls_catch_defects() {
+    const suite::SuiteDef def = suite::standard_suite();
+    const suite::RunRecord good = controls_run({{"maker", "maker"}, {"maker-copy", "maker"}});
+    const suite::SeedBlock& blk = smoke_block();
+
+    // 1. Pairing off by one seed: the A/A pair is no longer identical.
+    suite::RunRecord shifted = good;
+    std::vector<std::int64_t> copy = suite::seat_values(good, "maker-copy");
+    std::size_t k = 0;
+    for (suite::SessionRow& r : shifted.sessions) {
+        if (r.arm == "maker-copy") r.seat_value = copy[(k++ + 1) % copy.size()];
+    }
+    PX_CHECK(!suite::control_aa(shifted, "maker", "maker-copy").pass);
+
+    // 2. A request bound instead of the time bound: arms close at different
+    // fundamentals, which breaks pairing.
+    suite::RunRecord bounded;
+    bounded.block = blk;
+    for (std::uint64_t seed = blk.first; seed < blk.first + blk.count; ++seed) {
+        for (const char* arm : {"placebo", "maker"}) {
+            Roster r;
+            suite::Origin origin = suite::Origin::Reference;
+            std::string why;
+            PX_CHECK(suite::build_arm_roster(def, arm, r, origin, why));
+            SessionConfig sc = suite::suite_session_config(def, seed);
+            sc.max_requests = 7'000;
+            sc.max_time_ns = 0;
+            sc.stall_limit_ns = SessionConfig{}.stall_limit_ns;
+            Session s;
+            PX_CHECK(s.start(sc, std::move(r)) == Session::StartError::None);
+            s.run();
+            suite::SessionRow row;
+            row.arm = arm;
+            row.seed = seed;
+            row.v_final = s.fair_value().value();
+            row.fair_steps = s.stats().fair_steps;
+            bounded.sessions.push_back(row);
+        }
+    }
+    PX_CHECK(!suite::control_common_close(bounded).pass);
+
+    // 3. The seat inserted inside the line-up instead of after it: the placebo
+    // is no longer invisible.
+    suite::RunRecord inserted = good;
+    for (suite::SessionRow& r : inserted.sessions) {
+        if (r.arm != "placebo") continue;
+        Roster ro;
+        std::string why;
+        PX_CHECK(roster_from_spec(def.lineup, suite::suite_roster_config(def), ro, why));
+        ro.strategies.insert(ro.strategies.begin() + 3, make_strategy(strategies::Placebo{}));
+        ro.informed.insert(ro.informed.begin() + 3, false);
+        Session s;
+        PX_CHECK(s.start(suite::suite_session_config(def, r.seed), std::move(ro)) == Session::StartError::None);
+        s.run();
+        r.session_hash = s.hash();
+        r.check_ok = r.session_hash == r.check_hash;
+    }
+    PX_CHECK(!suite::control_placebo_inert(inserted).pass);
+
+    // 4. State that survives between sessions: replay differs.
+    suite::RunRecord leaky = good;
+    for (suite::SessionRow& r : leaky.sessions) {
+        if (r.arm != "maker-copy") continue;
+        const suite::ArmRecord a = run_seated(def, r.seed, make_strategy(Leaky{}), "leaky");
+        const suite::ArmRecord b = run_seated(def, r.seed, make_strategy(Leaky{}), "leaky");
+        r.session_hash = a.session.session_hash;
+        r.check_hash = b.session.session_hash;
+        r.check_ok = r.session_hash == r.check_hash;
+    }
+    PX_CHECK(!suite::control_replay(leaky).pass);
+
+    // 5. A broken ledger: one participant's value off by one price unit.
+    suite::RunRecord ledger = good;
+    for (suite::ParticipantRow& p : ledger.parts) {
+        if (p.arm == "maker" && p.index == 2 && p.seed == blk.first) p.value += 1;
+    }
+    PX_CHECK(!suite::control_identities(ledger).pass);
+    suite::RunRecord sessions = good;
+    for (suite::SessionRow& r : sessions.sessions) {
+        if (r.arm == "maker" && r.seed == blk.first) r.value_sum = 1;
+    }
+    PX_CHECK(!suite::control_identities(sessions).pass);
+
+    // 6. A placebo that trades.
+    suite::RunRecord busy = good;
+    for (suite::SessionRow& r : busy.sessions) {
+        if (r.arm == "placebo" && r.seed == blk.first) r.seat_orders = 1;
+    }
+    PX_CHECK(!suite::control_placebo_zero(busy).pass);
+}
+
+void test_suite_outcomes() {
+    // Exit codes, from records alone: 0, then 1 for a replay, then 3 for the reference.
+    suite::RunRecord run;
+    suite::SessionRow p, c;
+    p.arm = "placebo";
+    c.arm = "x";
+    run.sessions = {p, c};
+    PX_CHECK(suite::outcome_of(run).exit_code() == 0);
+    run.sessions[1].check_ok = false;
+    PX_CHECK(suite::outcome_of(run).exit_code() == 1);
+    run.sessions[0].health = suite::Health::Gap;
+    PX_CHECK(suite::outcome_of(run).exit_code() == 3);
+    run.sessions[0].health = suite::Health::Ok;
+    run.sessions[1].check_ok = true;
+    run.sessions[1].value_sum = 1;
+    PX_CHECK(suite::outcome_of(run).exit_code() == 3);
+
+    // An inadmissible reference makes candidate-against-candidate rows
+    // inadmissible too, and a pair that does not separate says so.
+    suite::RunRecord r2;
+    r2.block = suite::SeedBlock{"synthetic", 1, 4};
+    for (const char* n : {"a", "b"}) {
+        suite::CandidateInfo ci;
+        ci.name = n;
+        r2.info.candidates.push_back(ci);
+    }
+    const std::int64_t a[] = {10, 20, 30, 40};
+    const std::int64_t b[] = {12, 17, 33, 39}; // differences 2, -3, 3, -1
+    for (std::uint64_t k = 0; k < 4; ++k) {
+        for (const auto& [arm, v] : {std::pair<const char*, std::int64_t>{"placebo", 0}, {"a", a[k]}, {"b", b[k]}}) {
+            suite::SessionRow s;
+            s.arm = arm;
+            s.seed = k + 1;
+            s.seat_value = v * kPriceScale;
+            r2.sessions.push_back(s);
+        }
+    }
+    for (const suite::ComparisonRow& row : suite::compare(r2)) {
+        if (row.baseline == "a") PX_CHECK(row.verdict == "not_separated");
+    }
+    r2.sessions[0].health = suite::Health::Gap;
+    for (const suite::ComparisonRow& row : suite::compare(r2)) PX_CHECK(row.verdict == "not_admissible");
+}
+
 } // namespace
 
 int main() {
@@ -1633,5 +1841,8 @@ int main() {
     test_report_attribution();
     test_report_t_table();
     test_report_families();
+    test_controls_hold();
+    test_controls_catch_defects();
+    test_suite_outcomes();
     PX_TEST_REPORT_AND_RETURN();
 }

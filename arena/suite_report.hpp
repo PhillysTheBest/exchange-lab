@@ -166,7 +166,9 @@ struct ComparisonRow {
         r.baseline = base;
         r.arm = arm;
         r.stats = paired(seat_values(run, base), seat_values(run, arm));
-        r.admissible = admissible(base) && admissible(arm);
+        // Nothing is compared on a market that is not one, candidate against
+        // candidate included: they share the placebo's market.
+        r.admissible = admissible(base) && admissible(arm) && admissible("placebo");
         if (!r.admissible) r.verdict = "not_admissible";
         else if (r.stats.identical) r.verdict = "identical";
         else if (r.stats.separated()) r.verdict = "separated";
@@ -657,10 +659,17 @@ struct ArmHealth {
         s += b;
         for (const ComparisonRow& r : rows) {
             if (r.verdict == "identical") {
+                // "Sent no orders" only when the records say so on every seed: an
+                // identical value alone does not prove it.
+                bool inert = false;
+                for (const ArmSummary& a : arms) {
+                    if (a.arm == r.arm) inert = a.seeds > 0 && a.inert == a.seeds;
+                }
                 std::snprintf(b, sizeof b, "  %s vs %s: identical on every seed; %s\n", r.arm.c_str(),
                               r.baseline.c_str(),
-                              r.baseline == "placebo" ? "it sent no orders, so its sessions are the placebo's"
-                                                      : "the two arms are the same market");
+                              r.baseline != "placebo" ? "the two arms are the same market"
+                              : inert                 ? "it sent no orders, so its sessions are the placebo's"
+                                                      : "its value equals the placebo's, though it sent orders");
                 s += b;
             }
         }
