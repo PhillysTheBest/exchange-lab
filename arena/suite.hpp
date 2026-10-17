@@ -126,6 +126,7 @@ struct SuiteDef {
     std::uint64_t step_ceiling;  // a bound on a runaway strategy, not a stopping rule
     HealthGate health;
     RosterConfig roster;         // every reference participant's parameters
+    const char* change = "";     // how the market differs from the default, in --set= names; printed only
 };
 
 // The one definition. A change to any of it, or to a reference strategy, a
@@ -142,7 +143,47 @@ struct SuiteDef {
         2'000'000,
         HealthGate{},
         RosterConfig{},
+        "",
     };
+}
+
+// ---- scenario families --------------------------------------------------------
+
+// Each family is a suite of its own, with its own name and therefore its own
+// fingerprint, placebo arm and health gate: `standard` is pinned and must not
+// change in place. A family changes one thing about the market, so a result
+// that holds in `standard` can be asked whether it needs that thing. Families
+// are never pooled into one number; docs/REPORT.md has the reasoning and the
+// measurements that admitted each.
+[[nodiscard]] inline SuiteDef wide_suite() {
+    SuiteDef d = standard_suite();
+    d.name = "wide";
+    d.roster.maker_half_spread_ticks = 4;
+    d.change = "maker.half_spread_ticks=4";
+    return d;
+}
+
+[[nodiscard]] inline SuiteDef busy_suite() {
+    SuiteDef d = standard_suite();
+    d.name = "busy";
+    d.roster.noise_timer_ns = 5'000;
+    d.change = "noise.timer_ns=5000";
+    return d;
+}
+
+// There is no `null` family (no informed participant). It was built and
+// measured: its placebo failed the health gate on 56 of the 64 standard seeds
+// (median gap 8.39 ticks, worst 30.09), because without the informed trader
+// nothing pulls the book back to the fundamental within 25 ms. A market that
+// has come loose is not a market, so it is not shipped; docs/REPORT.md.
+inline constexpr const char* kSuiteNames = "standard wide busy";
+
+[[nodiscard]] inline bool find_suite(std::string_view name, SuiteDef& out) {
+    if (name == "standard") out = standard_suite();
+    else if (name == "wide") out = wide_suite();
+    else if (name == "busy") out = busy_suite();
+    else return false;
+    return true;
 }
 
 // Session settings: the defaults, except that a session ends on simulated time
@@ -345,6 +386,12 @@ struct SessionRow {
     std::uint64_t seat_orders = 0;
     std::uint64_t seat_fills = 0;
     std::int64_t seat_value = 0; // price units, marked at v_final
+    // The seat's path, sampled from outside the session each time the
+    // fundamental moves and once at the end: read-only, so no hash moves.
+    std::uint64_t seat_path_samples = 0;
+    std::uint64_t seat_abs_position_sum = 0;
+    std::uint64_t seat_max_abs_position = 0;
+    std::int64_t seat_max_drawdown = 0; // price units: the largest fall from the running peak, which starts at 0
     bool inert = false;
     Health health = Health::Ok;
     std::uint64_t session_hash = 0;
@@ -408,13 +455,31 @@ struct ArmRecord {
     }
     std::uint64_t steps = 0;
     bool ceiling = false;
+    std::uint64_t path_samples = 0, abs_position_sum = 0, max_abs_position = 0;
+    std::int64_t peak = 0, max_drawdown = 0;
+    auto sample = [&] {
+        const Account& a = s.ledger().at(lineup);
+        const std::uint64_t pos = static_cast<std::uint64_t>(a.position < 0 ? -a.position : a.position);
+        const std::int64_t value = a.value(s.fair_value().value());
+        ++path_samples;
+        abs_position_sum += pos;
+        if (pos > max_abs_position) max_abs_position = pos;
+        if (value > peak) peak = value;
+        if (peak - value > max_drawdown) max_drawdown = peak - value;
+    };
+    std::uint64_t fair_seen = s.stats().fair_steps;
     while (s.step()) {
+        if (has_seat && s.stats().fair_steps != fair_seen) {
+            fair_seen = s.stats().fair_steps;
+            sample();
+        }
         if (++steps >= def.step_ceiling) {
             ceiling = true;
             break;
         }
     }
     s.finish();
+    if (has_seat) sample();
 
     const SessionStats& st = s.stats();
     const Price v = s.fair_value().value();
@@ -458,6 +523,10 @@ struct ArmRecord {
         r.seat_fills = a.fills;
         r.seat_value = a.value(v);
         r.inert = a.orders_sent == 0;
+        r.seat_path_samples = path_samples;
+        r.seat_abs_position_sum = abs_position_sum;
+        r.seat_max_abs_position = max_abs_position;
+        r.seat_max_drawdown = max_drawdown;
     }
     r.health = judge(st, r.ended_by, def.health);
     r.session_hash = s.hash();
@@ -628,7 +697,8 @@ inline constexpr const char* kSessionsHeader =
     "gap_samples,gap_sum_ticks,gap_max_ticks,gap_unpriced,"
     "cash_sum,position_sum,value_sum,"
     "seat_orders,seat_fills,seat_value,inert,healthy,health_reason,"
-    "session_hash,event_hash,event_count,check_kind,check_hash,check_ok\n";
+    "session_hash,event_hash,event_count,check_kind,check_hash,check_ok,"
+    "seat_path_samples,seat_abs_position_sum,seat_max_abs_position,seat_max_drawdown\n";
 
 inline constexpr const char* kParticipantsHeader =
     "suite,version,block,seed,arm,index,owner,role,name,informed,reaction_ns,timer_ns,wakes,"
@@ -679,7 +749,11 @@ inline void append_session_row(std::string& s, const SessionRow& r) {
     append_u(s, r.event_count); s += ',';
     s += r.check_kind; s += ',';
     append_hex(s, r.check_hash); s += ',';
-    append_u(s, r.check_ok ? 1 : 0);
+    append_u(s, r.check_ok ? 1 : 0); s += ',';
+    append_u(s, r.seat_path_samples); s += ',';
+    append_u(s, r.seat_abs_position_sum); s += ',';
+    append_u(s, r.seat_max_abs_position); s += ',';
+    append_i(s, r.seat_max_drawdown);
     s += '\n';
 }
 

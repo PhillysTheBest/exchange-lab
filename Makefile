@@ -109,7 +109,7 @@ test-cli: $(REL)/sweep$(EXE) $(REL)/suite$(EXE)
 	echo "== suite command line"; \
 	S=./$(REL)/suite$(EXE); W=./$(REL)/sweep$(EXE); D=$(BUILD)/cli; \
 	exits() { want=$$1; shift; rc=0; "$$@" > /dev/null 2>&1 || rc=$$?; [ $$rc -eq $$want ]; }; \
-	files="suite.cfg sessions.csv participants.csv comparison.csv report.txt outcome.cfg"; \
+	files="suite.cfg sessions.csv participants.csv comparison.csv evaluation.csv attribution.csv report.txt outcome.cfg"; \
 	same() { for f in $$files; do cmp -s $$1/$$f $$2/$$f || return 1; done; }; \
 	placebo42() { awk -F, 'NR==1{for(i=1;i<=NF;i++) c[$$i]=i; next} \
 	    $$c["arm"]=="placebo" && $$c["seed"]==42 {print $$c["session_hash"]}' $$1/sessions.csv; }; \
@@ -124,6 +124,8 @@ test-cli: $(REL)/sweep$(EXE) $(REL)/suite$(EXE)
 	exits 2 $$S --candidates=maker --block=bogus || fail "an unknown block should exit 2"; \
 	exits 2 $$S --candidates=maker --set=maker.quote_qty=1 || fail "the conditions cannot be changed"; \
 	exits 2 $$S --block=smoke --candidates=maker --out=$$D/keep || fail "a foreign directory should be refused"; \
+	exits 2 $$S --candidates=maker --suite=bogus || fail "an unknown suite should exit 2"; \
+	exits 2 $$S --candidates=maker --suite=null || fail "the null family is not shipped (its market fails the gate)"; \
 	[ "$$(ls $$D/keep)" = mine.txt ] && [ "$$(cat $$D/keep/mine.txt)" = mine ] \
 	    || fail "a refused directory must be left untouched"; \
 	$$S --block=smoke --candidates=maker,momentum --out=$$D/suite-a > /dev/null 2>&1 || fail "a smoke run should succeed"; \
@@ -131,6 +133,14 @@ test-cli: $(REL)/sweep$(EXE) $(REL)/suite$(EXE)
 	head -n1 $$D/suite-a/sessions.csv | grep -q '^suite,version,block,seed,arm,origin,' || fail "sessions.csv header"; \
 	head -n1 $$D/suite-a/participants.csv | grep -q '^suite,version,block,seed,arm,index,' || fail "participants.csv header"; \
 	grep -qx 'status=complete' $$D/suite-a/outcome.cfg || fail "outcome.cfg should say status=complete"; \
+	head -n1 $$D/suite-a/evaluation.csv | grep -q '^kind,baseline,arm,metric,' || fail "evaluation.csv header"; \
+	grep -q '^paired,maker,momentum,spread_earned,' $$D/suite-a/evaluation.csv || fail "evaluation.csv should pair the candidates"; \
+	grep -q 'sum to minus the seat.s value exactly' $$D/suite-a/report.txt || fail "the attribution identity should hold"; \
+	$$S --block=smoke --suite=all --candidates=maker --out=$$D/fam > /dev/null 2>&1 || fail "--suite=all should run every family"; \
+	for f in standard wide busy; do grep -qx 'status=complete' $$D/fam/$$f/outcome.cfg || fail "family $$f should complete"; done; \
+	grep -q 'not pooled' $$D/fam/families.txt || fail "families.txt should hold the cross-family table"; \
+	[ "$$(sed -n 's/^fingerprint=//p' $$D/fam/standard/outcome.cfg)" = d461c30ab2446acf ] \
+	    || fail "the standard family should be the pinned standard suite"; \
 	$$S --block=smoke --candidates=maker,momentum --out=$$D/suite-b > /dev/null 2>&1 || fail "a second smoke run should succeed"; \
 	same $$D/suite-a $$D/suite-b || fail "two runs should write byte-identical files"; \
 	$$S --block=smoke --candidates=maker,momentum --out=$$D/suite-a > /dev/null 2>&1 || fail "a previous run should be replaced"; \
@@ -147,7 +157,7 @@ test-cli: $(REL)/sweep$(EXE) $(REL)/suite$(EXE)
 	! grep -nwE 'double|float' arena/suite.hpp || fail "arena/suite.hpp must stay integer-only"; \
 	rm -rf $$D; \
 	echo "  placebo arm at seed 42: $$ref, the sweep's market"; \
-	echo "17/17 suite command-line checks passed"
+	echo "26/26 suite command-line checks passed"
 
 bench: $(BENCH_BINS)
 	@set -e; for b in $(BENCH_BINS); do echo "== $$b"; ./$$b; done
@@ -235,7 +245,7 @@ lab: $(LAB_BINS)
 # SEEDS from the environment and an exported one would leak in here.
 compare: $(REL)/suite_lab$(EXE)
 	@[ -n '$(CANDIDATES)' ] || { echo "make compare: say which strategies: make compare CANDIDATES=a[,b,...]" >&2; exit 2; }
-	./$(REL)/suite_lab$(EXE) --candidates=$(CANDIDATES) $(if $(BLOCK),--block=$(BLOCK)) $(if $(OUT),--out=$(OUT))
+	./$(REL)/suite_lab$(EXE) --candidates=$(CANDIDATES) $(if $(BLOCK),--block=$(BLOCK)) $(if $(SUITE),--suite=$(SUITE)) $(if $(OUT),--out=$(OUT))
 
 # Regenerated on every lab build but only rewritten when its contents change, so
 # an unchanged set of strategies does not relink anything.

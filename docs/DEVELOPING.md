@@ -28,8 +28,8 @@ produced confidently wrong results on the way, and the parameters that turned ou
 load-bearing. Its scope boundary is binding — everything compiles into one binary and
 nothing talks over a network. All of it sits on the branch `arena`, open as pull request
 #1 against `main`. The arena is being turned into a strategy research platform in five
-steps; steps 1 and 2 (the strategy interface and the standard experiment runner) are
-built. See "Strategies of your own" below for the plan and what is built.
+steps; steps 1 to 3 (the strategy interface, the standard experiment runner and the
+evaluation report) are built. See "Strategies of your own" below for the plan and what is built.
 
 **The result is a negative one and the documentation leads with it.** "What is 10
 microseconds worth?" answers *less than 24 seeds can resolve*; 1 ms costs real money,
@@ -204,8 +204,8 @@ The project is becoming a strategy research platform: someone writes a strategy,
 runs it against the reference market on fixed seeds, and gets a reproducible
 result. The plan is in five steps (strategy interface, standard experiment runner,
 evaluation report, validating the evaluator, one-command reproducibility). **Steps 1
-and 2, the strategy interface and the standard experiment runner, are built**; steps
-3-5 are not. Everything participating in a
+to 3, the strategy interface, the standard experiment runner and the evaluation report,
+are built**; steps 4 and 5 are not. Everything participating in a
 session is called a *strategy*, never a bot: built-in ones are the reference market.
 
 ```bash
@@ -213,6 +213,7 @@ make strategy STRATEGY=examples/strategies/imbalance.hpp   # validate, install, 
 make compare CANDIDATES=imbalance BLOCK=smoke              # 4 seeds: does it run, does it trade
 make compare CANDIDATES=imbalance                          # the standard block, 64 seeds -> runs/imbalance-standard/
 make compare CANDIDATES=imbalance,maker                    # two strategies, identical conditions, one command
+make compare CANDIDATES=imbalance,maker SUITE=all          # every scenario family, side by side, never pooled
 build/release/suite --candidates=maker,momentum            # built-ins only, from the binary that cannot see installed code
 build/release/sweep_lab --strategies=maker,rival,informed,noise:2,momentum,imbalance --seeds=8   # explore
 build/release/arena_lab --strategies=maker,rival,informed,noise:2,momentum,imbalance             # watch
@@ -249,9 +250,16 @@ make test-lab                                              # the whole path, che
   exploration stays with `sweep_lab`. Exit 0 complete, 1 a replay differed, 2 usage,
   3 the reference market is not admissible on this build.
 - **Run directories go to `runs/`, which is git-ignored and is never `results/`.** Each
-  holds `suite.cfg`, `sessions.csv`, `participants.csv`, `comparison.csv`, `report.txt`
-  and `outcome.cfg`, written last; a directory without `status=complete` in it is
-  incomplete.
+  holds `suite.cfg`, `sessions.csv`, `participants.csv`, `comparison.csv`,
+  `evaluation.csv`, `attribution.csv`, `report.txt` and `outcome.cfg`, written last and
+  only if every other file was; a directory without `status=complete` in it is
+  incomplete. `SUITE=all` writes one such directory per family and `families.txt`.
+- **The report (`docs/REPORT.md`) breaks the seat's value down** into spread, adverse and
+  carry (exact, at zero fees), inventory and drawdown from a path sampled outside the
+  session, and attribution to each reference participant (exact by the closed identity).
+  Scenario families `wide` and `busy` are suites of their own with pinned fingerprints
+  beside `standard`'s; a built-in candidate takes the family's parameters too. There is
+  no `null` family: its placebo fails the health gate on 56 of 64 seeds.
 - **Suite sessions end on 25 ms of simulated time, not on requests.** A request bound
   counts the candidate's own orders, so a busy candidate would end its arm early and be
   marked at a different closing fundamental. Suite numbers are therefore not the
@@ -260,8 +268,8 @@ make test-lab                                              # the whole path, che
   `reaction_ns`.** The declared value is recorded in `suite.cfg` and not used. A
   strategy that reads its own `reaction_ns` member sees what it declared; the delay it
   actually has is `now_ns - as_of_ns` in its `MarketView`.
-- **The suite fingerprint is pinned** (`kPinnedSmokeFingerprint` in `test_arena`,
-  `d461c30ab2446acf`). A change to a reference strategy, a default, the session or the
+- **The suite fingerprints are pinned** (`kPinnedSmokeFingerprint` in `test_arena`,
+  `d461c30ab2446acf`, and one per family). A change to a reference strategy, a default, the session or the
   engine moves it and needs a suite version bump in `standard_suite()`, not a silent
   re-pin: "standard v1" names one set of conditions, and two runs are comparable only if
   their fingerprints are equal.
