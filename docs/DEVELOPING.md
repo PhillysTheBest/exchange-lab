@@ -13,6 +13,18 @@ and the published results, `docs/ARENA.md` the arena's design and reasoning, and
 `handoff.md` the narrative of what was built, how the terminal viewer works and what is
 left; this file covers how to work in the repo.
 
+**Who it is for (decided 2026-10-17).** exchange-lab is a research and learning tool for
+**students** of market microstructure and **researchers** who need controlled, reproducible
+experiments on market mechanisms and strategies. It is not a backtester and not a tool for
+deciding whether to trade a strategy: the market is invented, not fitted to data, so its
+P&L predicts nothing about a real venue. Write every user-facing document for those two
+readers, and keep the README's opening in this order: what it is and is not, "Start here",
+the negative result, then the two audiences. `docs/LEARN.md` is the students' path
+(every command in it must run as written; re-run them when a command changes) and
+`GLOSSARY.md` defines terms as this project uses them; a new term in a report or a doc gets
+an entry there. `docs/REPOSITION_PLAN.md` lists the remaining repositioning steps,
+deletions included, none of them carried out without the user's go-ahead.
+
 **History, because the repo name and old commits mislead.** This was a Kalshi
 prediction-market trading system. The whole live stack (WebSocket/REST client,
 strategies, evaluation framework, telemetry, Rust dashboard) was deleted at `07b3be0`
