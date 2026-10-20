@@ -1,12 +1,12 @@
 # The standard experiment runner
 
-Step 2 of turning the arena into a strategy research platform. Step 1, the strategy
-interface, is built, and so is this step: it makes an installed strategy comparable.
-`make compare` runs any installed or built-in strategy in one fixed seat of the reference
-market, on a named block of seeds, beside a control arm, and prints a paired comparison
-with its uncertainty. Steps 3 to 5 (the evaluation report, validating the evaluator, and
-one-command reproducibility) are built on top of it, in `docs/REPORT.md`, `docs/CONTROLS.md`
-and `docs/REPRODUCE.md`; "How steps 3-5 plug in" says where each one attaches.
+The runner behind `make compare`, which makes any strategy comparable with any other.
+It runs an installed or built-in strategy in one fixed seat of the reference market, on a
+named block of seeds, beside a control arm, and prints a paired comparison with its
+uncertainty. It was step 2 of the five that turned the arena into a strategy research
+platform. The evaluation report (`docs/REPORT.md`), the evaluator's controls
+(`docs/CONTROLS.md`) and one-command reproduction (`docs/REPRODUCE.md`) are built on top
+of it.
 
 This file began as the plan, written before building, as CLAUDE.md asks. It is now the
 runner's design document. It keeps the reasoning and the measurements that decided each
@@ -90,7 +90,8 @@ build/release/suite --candidates=maker,momentum   # built-ins only, from the bin
 **Comparing two versions of the same strategy.** Install them under two names, for example
 `mine.hpp` defining `Mine` and `mine_v2.hpp` defining `MineV2`. The name of a strategy is its file
 name, so one binary cannot hold two versions under one name. Comparing two separate run directories
-(`--compare=DIR,DIR`) is step 3; the fingerprint below is what will make that comparison safe.
+(`--compare=DIR,DIR`) is not built (`docs/REPRODUCE.md` says why); the fingerprint below is what would
+make that comparison safe.
 
 **`make compare` variables:**
 
@@ -282,12 +283,14 @@ The suite uses named blocks only:
 At about 15 ms a session, 64 seeds is cheap, and 24 seeds would make every interval about 1.6 times
 wider.
 
-A holdout block is deferred to step 4 (see "How steps 3-5 plug in").
+A holdout block is not built yet. A probe at `6ffdbc3` found seeds 1,000,000..1,000,063
+admissible, with a worst placebo gap of 1.83 ticks at 25 ms; see "Later steps" below.
 
 ### Scenarios
 
-There is one scenario: the default market. Scenario families (null, wide spread, busy flow, long
-sessions) are step 3, and the suite's definition leaves room for them.
+This document describes the default market, `standard`. The scenario families `wide` and `busy` are
+suites of their own, added with the report; `docs/REPORT.md` describes them, and the `null` family that
+was built and dropped.
 
 ### The health gate
 
@@ -404,7 +407,7 @@ above. The placebo arm is still run on every seed, for five reasons:
 2. **It is each reference participant's counterfactual on that seed.** The market is closed and fees
    are 0, so seat value = −Σᵢ (value of reference participant i in the candidate arm − its value in the
    placebo arm). That attribution is exact and needs no model; `test_suite_closed_identity` holds it on
-   every smoke arm. Step 3 prints it.
+   every smoke arm. The report prints it as "where the seat's money came from".
 3. **It is the health baseline,** and the source of the suite's own admissibility.
 4. **It is the source of the fingerprint** (below).
 5. **It identifies a candidate that never acts.** If the seat sent no orders, the arm must hash equal to
@@ -953,95 +956,22 @@ marking is untouched.
 **Vocabulary.** Every participant, built-in or installed, is a strategy, and nothing new names it
 otherwise. The seat's delay is `reaction`, and nothing new in `arena/` is called latency.
 
-## How steps 3-5 plug in
+## Later steps
 
-The split that makes this work:
+This section was the sketch for steps 3 to 5, written before they existed. Each is now built and has a
+design document of its own, which records where it departed from the sketch: `docs/REPORT.md`,
+`docs/CONTROLS.md` and `docs/REPRODUCE.md`. They all build on one split, which still holds:
 
 - `suite.hpp` defines conditions and produces raw records;
 - `suite_report.hpp` reads only a `RunRecord`;
 - the run directory serialises a `RunRecord` completely.
 
-Each later step extends one of these without rewriting the others.
+Two ideas from the sketch are not built:
 
-**Step 3, the evaluation report.** Built; `docs/REPORT.md` is its design and records where it departed from
-this sketch (no `null` family, reading back deferred to step 5, fills per order rather than a fill rate).
-
-- **Reading runs back.** It adds `read_run(dir) → RunRecord`. The CSV parser reads columns by name and
-  ignores unknown ones, so later columns are additive. It refuses a directory without `status=complete`.
-  `--report=DIR` reprints from the files, and `--compare=DIR,DIR` pairs two runs only when their
-  fingerprints are equal, which is how v1 and v2 of one strategy get compared across rebuilds.
-- **Metrics already in `participants.csv`**, with no runner change:
-  - fill rate: `fills / orders_sent`;
-  - spread earned: `spread_sum`;
-  - adverse markouts: `adverse_sum / markout_n`, pooled across seeds;
-  - turnover: `filled_qty`;
-  - final inventory: `position`;
-  - the attribution table: reference rows in the candidate arm minus the placebo arm, exact by the
-    closed identity.
-- **Markout caveat.** In the placebo arm of the standard run, 6,402 of 159,432 fills (4.0%) fall inside
-  the last markout horizon and are resolved early against V(T). `unresolved_fills` records them, and the
-  report must say so beside any markout figure.
-- **Inventory exposure and drawdown** need a path. `run_arm` already owns the step loop. Step 3 adds a
-  sampler there that records the seat's position, cash and V each time `stats().fair_steps` changes, and
-  writes `seat_path.csv`. Neither the session nor the events change, so no hash moves.
-- **Scenario families.** `SuiteDef` gains `std::vector<Scenario>`, where each scenario has a name, a
-  line-up, overrides applied through `set_roster_param` and `Session::set_param`, a session length and a
-  seat delay. Each scenario gets its own placebo arm, health gate and fingerprint, and the rows gain a
-  `scenario` column. Candidates:
-  - `null`: `informed.enabled=0`;
-  - `wide`: `maker.half_spread_ticks=4`;
-  - `busy`: `noise.timer_ns=5000`;
-  - `fast-seat`: seat at 1 µs;
-  - `long`: a longer session that carries its health failures openly.
-
-  These go under a new suite name or version, because the pinned `standard` must not change in place.
-- **Multiple comparisons.** With up to 8 candidates, a correction belongs in the report.
-
-**Step 4, validating the evaluator.** Built; `docs/CONTROLS.md` is its design and says where it departed from this
-sketch (the positive control checks sign and location, not a predicted size). Candidates are names, so most of it
-needed no new mechanism:
-
-- **Baselines.** `maker`, `noise`, `momentum` and `fader` can go in the seat today, from the
-  evidence-side `suite` binary, which is also the binary to publish baselines from. A zero-intelligence
-  baseline is one more header.
-- **Negative controls** with known answers:
-  - the placebo, exactly 0;
-  - the placebo against the no-seat market, identical;
-  - A/A through the library, identical;
-  - the seat at 9,999 against 10,000 ns, which must not separate (−0.72 ± 1.57 for imbalance in a probe
-    at `6ffdbc3`).
-
-  That last control also publishes the noise floor below which an "established" difference should not
-  be read as skill.
-- **The analytic positive control.** A strategy that buys q at market and sells q at market on a fixed
-  timer has an expected cost per round trip of the spread it crosses, which is readable in `spread_sum`.
-  The report must recover it within its interval.
-- **Defect injection.** The pieces are separate functions, and each injected defect must fail a test:
-  - pairing seeds off by one: the variance removed collapses;
-  - bounding sessions by requests: closing V disagrees;
-  - inserting the seat at index 0: the placebo is no longer inert;
-  - gating on `mean_gap_ticks()`: the boundary test fails.
-
-  The fixture overload of `build_arm_roster` seats deliberately broken strategies, such as one with
-  `static` state, which replay must flag.
-- **A holdout block,** for example seeds 1,000,000..1,000,063 (worst placebo gap 1.83 at 25 ms in a probe
-  at `6ffdbc3`), used by no test or example, for reporting after tuning on `standard`. It is one row in
-  `kSeedBlocks`. It is deferred because it only means something once there is a report people tune
-  against.
-
-**Step 5, one-command reproducibility.** Built as `suite --reproduce=DIR` (`make reproduce`), not `--config=`;
-`docs/REPRODUCE.md` is its design.
-
-- `suite.cfg` already uses the `--set` names and round-trips through the setters, which
-  `test_suite_param_dump` pins. So `--config=runs/x/suite.cfg` can re-run a directory and refuse if this
-  binary's resolved values or fingerprint differ.
-- Step 5 adds `build.*` keys: the compiler from `__VERSION__`, the commit passed with `-D` by the
-  Makefile, and the flags. The generated manifest gains a content digest per installed header,
-  `kUserStrategyDigests`, beside `kUserStrategyNames`.
-- The README is restructured around `make strategy` → `make compare` → `runs/`.
-
-**The viewer.** `arena_lab --suite=standard --candidate=X --seed=N` can later call `build_arm_roster`
-and `suite_session_config` to show exactly one arm. Step 2 does not touch the viewer.
+- **A holdout block,** for example seeds 1,000,000..1,000,063, used by no test or example, for
+  reporting after tuning on `standard`. It is one row in `kSeedBlocks`.
+- **Showing one arm in the viewer.** `arena_lab --suite=standard --candidate=X --seed=N` could call
+  `build_arm_roster` and `suite_session_config` to show exactly the session the runner scored.
 
 ## Known weaknesses
 

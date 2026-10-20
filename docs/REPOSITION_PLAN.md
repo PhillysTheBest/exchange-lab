@@ -27,13 +27,27 @@ steps are done, delete this file, as CLAUDE.md asks of a finished plan.
   exist.
 - **`CLAUDE.md`** records the audience, so later work is written for it.
 
-## 1. Deletions and trims (proposed)
+## Done on the user's go-ahead (2026-10-20)
+
+- **D1: `handoff.md` deleted.** It was an agent-handoff narrative, stale ("450 checks",
+  "twelve commits") and asking for a history scrub that `CLAUDE.md` forbids. Its one unique
+  part, the viewer's purpose, what is on screen and how a frame is drawn, moved into
+  `docs/ARENA.md` "The viewer", with the keys, the reasons for no mouse support and the
+  terminal requirements. Its line-ending warning about generated evidence went into
+  `CLAUDE.md`'s gotchas. Everything else was already in README.md, `docs/ARENA.md` or
+  `CLAUDE.md`.
+- **D2: `docs/RUNNER.md` "How steps 3-5 plug in" trimmed** to a short "Later steps"
+  section. It points at the three design documents and keeps the two ideas that are still
+  unbuilt: a holdout block and showing one arm in the viewer. The opening no longer
+  introduces step 2 as the newest thing, and two sentences that said step 3 "will" do
+  something now say what was built.
+- **D3: `CLAUDE.md`'s history, naming and local-checkout paragraphs shortened** to the
+  rules they carry.
+
+## 1. Deletions and trims still proposed
 
 | # | What | Why | What depends on it | Check |
 |---|---|---|---|---|
-| D1 | **Delete `handoff.md`**, after moving its §2 (the viewer's purpose, what is on screen, how a frame is drawn) into `docs/ARENA.md` "The viewer" | It is an agent-handoff narrative, not a reader's document, and it is stale: "450 checks across seven tests" and "twelve commits", against 1,429 checks in `test_arena` alone today. Its §6 asks for a history scrub that `CLAUDE.md` now forbids ("Existing history keeps the trailers it already has; do not rewrite it"). Everything else in it is duplicated by README.md, `docs/ARENA.md` or `CLAUDE.md` | `CLAUDE.md` names it twice (the opening paragraph and the `ui.hpp` paragraph). The word "handoff" in `bench/bench_ring.cpp` is unrelated | `grep -rn handoff.md` finds nothing; `make test` passes |
-| D2 | **Trim `docs/RUNNER.md` "How steps 3-5 plug in"** (about 90 lines) to a three-line pointer at `docs/REPORT.md`, `docs/CONTROLS.md` and `docs/REPRODUCE.md`. Reword its opening, which still introduces step 2 as the newest thing | It is the sketch written before steps 3-5 existed. The three design documents are now the record, and each says where it departed from the sketch. Keep "Known weaknesses" and "Rejected alternatives": the first is linked from the README, and `CLAUDE.md` asks that wrong approaches be kept | Only two sentences inside `docs/RUNNER.md` itself, its opening and the note that defers a holdout block, both of which the trim rewrites (`grep -rn "plug in"`) | The README's link to `docs/RUNNER.md#known-weaknesses` still resolves |
-| D3 | **Shorten `CLAUDE.md`'s history, naming and local-checkout paragraphs** to the rules they carry: no market-data client or strategy in the engine; never name anything latency or tick-to-trade; the folder rename is pending | They tell a story a working session does not need. The rules inside them are what matters | Nothing; it is guidance text | none needed |
 | D4 | **Delete the local branches `backup-main-pre-scrub` and `backup-arena-pre-scrub`** on your computer | They exist only for the history scrub that is no longer happening. They are not on GitHub | Nothing | `git branch` no longer lists them |
 | D5 | **Optional: move `docs/agents/` to `.claude/agents-docs/`** so that `docs/` holds reader-facing documents only | It is contributor tooling for coding agents, and `issue-tracker.md` tells agents to use the `gh` CLI, which cloud sessions do not have | `CLAUDE.md` "Agent skills" names both files | The skills still find their configuration |
 
@@ -81,7 +95,7 @@ has been started.
 ## Order
 
 1. C5, the Windows build (you).
-2. D1-D3 in one commit, with `make test test-cli test-lab` green (Claude, on your go-ahead).
+2. ~~D1-D3~~ done on 2026-10-20.
 3. C1 and C2, once you have chosen (Claude writes the files).
 4. C3, the two merges (you).
 5. C4, the description and topics (you, in GitHub settings), then `CLAUDE.md` to match.
