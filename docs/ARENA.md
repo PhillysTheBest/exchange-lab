@@ -370,33 +370,81 @@ sweeping rather than by thinking:
 
 ## The viewer
 
-A purple grid desktop of chunky windows with magenta, teal, orange and violet
-title bars, hard drop shadows and block-character meters, in 24-bit ANSI. No
-curses and no libraries: `arena/ui.hpp` owns a grid of coloured cells and writes
-each frame in one call, emitting a colour escape only where a colour changes.
+`build/release/arena` draws a purple grid desktop in 24-bit ANSI. It has chunky windows
+with magenta, teal, orange and violet title bars, hard drop shadows and block-character
+meters. It uses no curses and no libraries.
+
+**Why it exists.** The engine was finished, correct and measured, but a reader could not
+*see* anything: the repository was numbers and tests. The viewer makes an order book
+something you watch move, rather than a table you read. It also shows the experiment's
+central claim, that a slow participant loses to a fast one, as one bar shrinking while
+another grows, rather than as a figure in a CSV.
+
+It is also a deliberate limit on scope. Making the engine watchable could have meant a
+web server, a browser and a package manager. Instead it is one header that owns a grid of
+coloured cells, because the real requirement is a 2D array of glyphs and one write.
 
 | Window | Shows |
 |---|---|
-| **ORDER BOOK** (teal) | The ladder: asks above, bids below, size as bars, the fundamental on the middle line |
-| **PARTICIPANTS** (violet) | One row per strategy: reaction delay, position, marked value as a signed bar |
-| **REACTION DELAY** (orange) | Each strategy's delay as a log slider — the dial the experiment turns |
-| **SESSION** (teal) | Seed, simulated clock, orders, trades, the book-to-value gap |
-| **TAPE** (magenta) | Prints as they happen: price, size, aggressor |
-| **! NOTABLE** (magenta dialog) | Interrupts on a print that moved the mid several ticks |
+| **ORDER BOOK** (teal) | The ladder: asks above, bids below, size as bars. The fundamental is printed on the dividing line, so you can see how far the book has drifted from a value no participant can observe. It is drawn from the engine itself, so it is the exchange's view, not any participant's |
+| **PARTICIPANTS** (violet) | One row per strategy: reaction delay, position, and marked value as a bar running both ways from zero. The informed trader's row is orange |
+| **REACTION DELAY** (orange) | Each strategy's delay on a log slider from 1 µs to 1 ms. This is the dial the experiment turns, and the window is labelled *simulated, not measured* |
+| **SESSION** (teal) | Seed, simulated clock, orders, trades, and the book-to-value gap, the number that says whether what you are watching is a market at all |
+| **TAPE** (magenta) | Prints as they happen: direction, price, size, and which participant was the aggressor |
+| **! NOTABLE** (magenta dialog) | Interrupts on a print that moved the mid several ticks, and on anything the `f` key has to report |
 
-Keys: `space` pause, `+`/`-` speed, `1`–`9` focus a participant, `q` quit.
+**How a frame is drawn.**
 
-**The viewer cannot change what it watches.** It paces a session by calling
-`run_until()` with a simulated timestamp, and the keyboard only changes how fast
-it asks for the next one. A session watched at a hundred times speed, paused and
-resumed, has the same hash as the same seed run headless. That settles the
-question of trading by hand, too: live keystrokes would be a wall-clock read
-inside a session and would break replay, so the human gets the controls and the
-market gets none of them.
+- Each frame is composed into a grid of cells in `arena/ui.hpp`, which knows nothing
+  about trading: no price, order or participant appears anywhere in it.
+  `arena/arena.cpp` is the only place the renderer and the market meet.
+- The frame goes out in **one** `fwrite`, emitting a colour escape only where a colour
+  changes. A full 120×40 repaint is therefore a few kilobytes, not 40,000 escape
+  sequences, and a frame can never be seen half-drawn.
+- The cursor is parked at home rather than the screen being cleared, so frames do not
+  flash.
+- `arena/term.hpp` holds the four things a terminal is actually needed for: turning on
+  24-bit colour, asking how big the window is, reading a key without blocking, and
+  putting everything back on exit. It is the only file that reaches for `<windows.h>`
+  and `<termios.h>`, and exactly one translation unit includes it.
 
-`--still=NS` runs a session headless to one simulated instant and prints a single
-frame, which is how the picture in the documentation stays reproducible from a
-seed.
+ncurses would have brought a build dependency, a wide-character configuration problem
+and an input model. In exchange it would only optimise a repaint already small enough not
+to matter at thirty frames a second.
+
+**Keys:**
+
+| Key | Action |
+|---|---|
+| `space` | pause and resume |
+| `+` / `-` | faster or slower, from 1/64× to 512× |
+| `1`–`9` | focus a participant |
+| `f` | re-read the `--script` file and restart from the same seed |
+| `q` | quit |
+
+There is no mouse support at all: no clicking, dragging or resizing of panes. The layout
+is computed from the terminal size each frame, so it reflows when the window is resized,
+but the panes cannot be moved. Movable panes would mean parsing mouse escape sequences,
+hit-testing, z-order and a focus model, which amounts to a window manager for six fixed
+panes. An early design of the strategy lab accepted a strategy file dragged onto the
+viewer, and that was cut on review: installing a strategy is a make target, and the viewer
+is not involved.
+
+**The viewer cannot change what it watches.** It paces a session by calling `run_until()`
+with a simulated timestamp, and the keyboard only changes how fast it asks for the next
+one. A session watched at 512×, paused and resumed, has the same hash as the same seed run
+headless. That settles trading by hand too. A live keystroke would be a wall-clock read
+inside a session and would break replay, so the human gets the controls and the market
+gets none of them. It is also why `f` *restarts* rather than injects: a participant
+appearing at the instant a human pressed a key would be a wall-clock event, and the
+session could never be reproduced again.
+
+`--still=NS` runs a session headless to one simulated instant and prints a single frame.
+That is how the picture in the documentation stays reproducible from a seed.
+
+The viewer needs a terminal that interprets 24-bit colour and is at least 96×32
+characters: Windows Terminal, or any modern Linux terminal. If either is missing, it
+refuses with a clear message instead of drawing garbage.
 
 ## Running it
 

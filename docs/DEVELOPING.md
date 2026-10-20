@@ -9,9 +9,9 @@ core fed by lock-free SPSC rings, no heap allocation after start-up, int64 fixed
 prices, plus the test and measurement machinery that backs its latency claims — and
 `arena/`, a seeded simulated market of strategies trading inside that engine, with a
 controllable reaction delay each and a terminal renderer. README.md holds the design
-and the published results, `docs/ARENA.md` the arena's design and reasoning, and
-`handoff.md` the narrative of what was built, how the terminal viewer works and what is
-left; this file covers how to work in the repo.
+and the published results, `docs/ARENA.md` the arena's design, its reasoning and the
+terminal viewer, `docs/LEARN.md` the students' path and `GLOSSARY.md` the terms; this
+file covers how to work in the repo.
 
 **Who it is for (decided 2026-10-17).** exchange-lab is a research and learning tool for
 **students** of market microstructure and **researchers** who need controlled, reproducible
@@ -25,14 +25,11 @@ the negative result, then the two audiences. `docs/LEARN.md` is the students' pa
 an entry there. `docs/REPOSITION_PLAN.md` lists the remaining repositioning steps,
 deletions included, none of them carried out without the user's go-ahead.
 
-**History, because the repo name and old commits mislead.** This was a Kalshi
-prediction-market trading system. The whole live stack (WebSocket/REST client,
-strategies, evaluation framework, telemetry, Rust dashboard) was deleted at `07b3be0`
-and is not coming back: the user cannot trade on Kalshi. Nothing in the tree depends on
-an exchange account, an API or a network. Do not reintroduce a market-data client or a
-trading strategy into the engine. Strategies live in `arena/strategies/`, never in
-`include/px/` or `src/`. The old strategy code is still readable in history
-(`git show 07b3be0^:strategy/passive_market_maker.hpp`).
+**History.** This was a Kalshi prediction-market trading system; the live stack was
+deleted at `07b3be0` and is not coming back. Nothing in the tree depends on an exchange
+account, an API or a network. Do not reintroduce a market-data client, or put a trading
+strategy in the engine: strategies live in `arena/strategies/`, never in `include/px/` or
+`src/`.
 
 **Status.** The engine is finished, measured and committed. The arena is built,
 measured and committed: see `docs/ARENA.md` for its design, the modelling mistakes that
@@ -52,35 +49,19 @@ post-fill column, because a maker stale enough to be reliably picked off also st
 book tracking the fundamental. When writing about this project, do not restore the tidy
 version: the controls changed the answer twice and that is the interesting part.
 
-**The name.** The repository is `exchange-lab`, renamed from `prediction-markets`,
-which described something this tree no longer contains. Not
-`matching-engine`, which was the earlier plan: the arena is now larger than the engine
-and holds the project's actual result, so that name undersells it and is also shared
-with several hundred other repositories. `exchange-lab` is the tree's own description
-of itself — an exchange, and the lab where strategies and speed compete.
-
-Two names to avoid, for reasons the code depends on. Anything containing **latency**
-would undo the one piece of vocabulary discipline this project keeps: the engine's
-latency is measured and a strategy's `reaction_ns` is invented, nothing in `arena/` is called
-latency, and a repository named `latency-*` re-merges them before a reader opens a file.
-**tick-to-trade** would be a false claim, because the measurement is service time and
-README.md says so explicitly.
-
-The GitHub **description** field does the keyword work the name deliberately does not,
-and it is indexed where the name alone is not. Set it to:
+**Names.** The repository is `exchange-lab`, renamed from `prediction-markets` (GitHub
+redirects the old URL). Never name anything with **latency** in it: the engine's latency
+is measured, a strategy's `reaction_ns` is invented, and nothing in `arena/` is called
+latency. Never say **tick-to-trade** either: the engine's measurement is service time.
+The GitHub description is currently set to:
 
 > Price-time-priority exchange matching engine in C++20 — p99.9 under 2µs, zero
 > allocation, bit-identical cross-OS replay — and the deterministic market simulator
 > built on it.
 
-That description is set. GitHub keeps redirects from the old URL, so an old clone keeps
-working, but the remote here already points at
-`https://github.com/PhillysTheBest/exchange-lab.git`.
-
-**The local checkout is still `prediction-markets`,** and that is the one part not done:
-renaming the folder pulls the directory out from under any running session. When it
-moves, the WSL path in the sanitizer command below moves with it, and that is the only
-path in this file that needs changing.
+`docs/REPOSITION_PLAN.md` (C4) proposes one for the new audience; change this paragraph
+when the user sets it. The user's local checkout is still named `prediction-markets`; when
+it is renamed, the WSL path in the sanitizer command below changes with it.
 
 ## Build and test
 
@@ -210,7 +191,7 @@ into one make target for a strategy of your own; it does not change what a strat
 **`arena/ui.hpp`** owns a grid of coloured cells and knows nothing about trading;
 `arena/arena.cpp` is the only place the renderer and the market meet. A frame composes
 into the grid and goes out in one `fwrite`, emitting a colour escape only where a colour
-changes. `handoff.md` explains the viewer and its purpose at length.
+changes. `docs/ARENA.md`, "The viewer", explains it and why it exists.
 
 ## Strategies of your own
 
@@ -375,7 +356,9 @@ loose from the fundamental is not a market and nothing read off one counts.
   unlimited; with a finite limit it turns later allocations into `std::bad_alloc`.
 - `.gitattributes` pins LF. Windows and WSL share one working tree and a CRLF shell
   script fails under bash with `bash\r`. Editing files from Python on Windows writes
-  CRLF unless you write bytes or pass `newline=''`.
+  CRLF unless you write bytes or pass `newline=''`, and Windows binaries write CRLF
+  through stdout redirection, so generated evidence needs normalising before it is
+  committed.
 - Rebuilding `sweep.exe` or `arena.exe` while one is still running fails with a bare
   `Permission denied` from the linker on Windows. Check for the process first.
 - `arena/term.hpp` reaches for `<windows.h>` and `<termios.h>`, so exactly one
