@@ -492,6 +492,11 @@ test-data: $(INGEST_BIN) $(CALIBRATE_BIN) $(LAB_BINS) $(REL)/suite$(EXE) $(REL)/
 	$$I add examples/data/XBTUSD.csv dir=$$D > $$D/out || fail "the Kraken sample should import"; \
 	grep -q '^xbtusd: XBTUSD, 2024-01-02, trades only$$' $$D/out && grep -q 'read as kraken' $$D/out \
 	    || fail "Kraken's trade history should be found by its name and shape"; ok; \
+	exits 1 $$I add examples/data/01022024.NASDAQ_ITCH50 dir=$$D || fail "an ITCH file without symbol= should be refused"; ok; \
+	$$I add examples/data/01022024.NASDAQ_ITCH50 symbol=DEMO dir=$$D > $$D/out || fail "the ITCH sample should import"; \
+	grep -q '^demo-2024-01-02: DEMO, 2024-01-02, order by order (L3)$$' $$D/out && grep -q '4 adds, 4 cancels, 3 trades$$' $$D/out \
+	    && grep -q "cksum $$(cksum < examples/data/01022024.NASDAQ_ITCH50)" $$D/out \
+	    || fail "it should be streamed for one stock, its cksum as cksum prints it"; ok; \
 	exits 1 $$I add examples/data/quotes_and_trades.csv dir=$$D || fail "a file with no header needs columns="; ok; \
 	$$I add examples/data/quotes_and_trades.csv dir=$$D 'columns=time,price,qty,side,bid,bid_qty,ask,ask_qty' > $$D/out \
 	    || fail "with columns= it should import"; \

@@ -890,6 +890,57 @@ void test_kraken() {
     PX_CHECK(!import_file("k.jsonl", two, "", ImportOptions{}, t, why) && why.find("2 symbols (BTC/USD, ETH/USD)") != std::string::npos);
 }
 
+// Nasdaq ITCH 5.0: binary, one stock read out of the whole market, streamed or not.
+void test_itch() {
+    std::string bytes, why;
+    const std::string path = kSamples + "01022024.NASDAQ_ITCH50";
+    PX_CHECK(read_file(path, bytes) && bytes.size() == 579);
+    PX_CHECK(detect_format("x.bin", bytes) == "itch" && readable("x.bin", bytes, why));
+    PX_CHECK(detect_format("x.csv", "\x00\x0cSabc") == "csv"); // a type with the wrong length is not ITCH
+    ImportOptions demo;
+    demo.symbol = "DEMO";
+    Tape t;
+    PX_CHECK(!import_file(path, bytes, "", ImportOptions{}, t, why) && why.find("pick one with symbol=") != std::string::npos);
+    PX_CHECK(import_file(path, bytes, "", demo, t, why));
+    PX_CHECK(t.h.format == "itch" && t.h.depth == Depth::L3 && t.h.instrument == "DEMO" && t.h.date == "2024-01-02" &&
+             t.h.name == "demo-2024-01-02" && t.h.origin_kind == TimeKind::Midnight);
+    PX_CHECK(t.h.price_scale == 100 && t.h.tick == 1 && t.h.skipped == 1);
+    PX_CHECK(t.h.notes.find("1 execution marked not printable") != std::string::npos);
+    std::string kinds;
+    for (const TapeEvent& e : t.ev) kinds += e.kind;
+    // Adds (one with an MPID), executions at the order's price and at another,
+    // one not printable, a partial cancel, a replace, a delete, a hidden print.
+    PX_CHECK(kinds == "AAATTCCCACT");
+    PX_CHECK(t.ev[3].side == 'B' && t.ev[3].id == 2 && t.ev[3].qty == 50 && t.ev[4].side == 'S' && t.ev[4].id == 1);
+    PX_CHECK(t.ev[5].id == 4 && t.ev[5].qty == 100 && t.ev[7].qty == 200 && t.ev[8].id == 5 && t.ev[8].price == 9998);
+    PX_CHECK(t.ev[10].id == 0 && t.ev[10].side == '-' && t.ev[10].qty == 25);
+    TapeBook b;
+    for (const TapeEvent& e : t.ev) b.apply(e);
+    PX_CHECK((b.top(0, 3) == std::vector<std::pair<std::int64_t, std::int64_t>>{{9998, 150}}));
+    PX_CHECK((b.top(1, 3) == std::vector<std::pair<std::int64_t, std::int64_t>>{{10002, 100}}));
+
+    // Streamed a megabyte at a time, or fed a byte at a time: the same tape.
+    Tape streamed;
+    PX_CHECK(import_itch_file(path, demo, streamed, why) && tape_text(streamed) == tape_text(t));
+    RawTape raw;
+    ItchReader one("DEMO", raw);
+    bool fed = true;
+    for (const char c : bytes) fed = fed && one.feed(std::string_view(&c, 1), why);
+    PX_CHECK(fed && one.end(why) && raw.ev.size() == t.ev.size() && one.messages == 17);
+
+    // Refused: no day in the name, a stock not there, a file cut short, a damaged length.
+    PX_CHECK(!import_file("market.itch", bytes, "", demo, t, why) && why.find("does not give its day") != std::string::npos);
+    ImportOptions none;
+    none.symbol = "NONE";
+    PX_CHECK(!import_file(path, bytes, "", none, t, why) && why == "no orders or trades for symbol=NONE in 17 messages");
+    PX_CHECK(!import_file(path, bytes.substr(0, bytes.size() - 3), "", demo, t, why) && why.find("cut short") != std::string::npos);
+    std::string bad = bytes;
+    bad[14 + 1] = 40; // the second message, R, said to be 40 bytes: no longer found as ITCH, so named
+    PX_CHECK(detect_format(path, bad) == "csv" && !readable(path, bad, why));
+    demo.format = "itch";
+    PX_CHECK(!import_file(path, bad, "", demo, t, why) && why.find("byte 15: a 'R' message of 40 bytes") == 0);
+}
+
 // A market file round trip, its refusals, and the suite it becomes.
 void test_market_file() {
     namespace su = px::arena::suite;
@@ -1003,6 +1054,7 @@ int main() {
     test_json();
     test_coinbase();
     test_kraken();
+    test_itch();
     test_stats();
     test_session_tape();
     test_calibration_parts();

@@ -1,7 +1,7 @@
 # Sample market data
 
-Every file here is synthetic: made up for the tests by a script, from no real market, so
-it carries no licence and can be committed. Real data never goes in the repository; a file
+Every file here is synthetic: made up by hand for the tests, from no real market, so it
+carries no licence and can be committed. Real data never goes in the repository; a file
 you bring stays where you keep it, and its tape goes in `data/`, which git ignores
 (`docs/DATA.md`).
 
@@ -18,6 +18,7 @@ you bring stays where you keep it, and its tape goes in `data/`, which git ignor
 | `ETHUSDT-trades-2025-01-02.csv` | a Binance spot trades file: no header, and times in microseconds, as spot files are from 2025 |
 | `coinbase_feed.jsonl` | a capture of Coinbase Exchange's `level2_batch` and `matches` channels, one JSON message a line: a snapshot with no time, level updates, matches whose side is the resting order's, a heartbeat and a `last_match` from before the capture |
 | `XBTUSD.csv` | Kraken's downloadable trade history for a pair: `timestamp,price,volume`, no header, seconds since the epoch, and no side |
+| `01022024.NASDAQ_ITCH50` | Nasdaq TotalView-ITCH 5.0, binary, named as Nasdaq names a day's file: two stocks, and for `DEMO` every order message (adds with and without an MPID, executions at the order's price and at another, one not printable, a partial cancel, a replace, a delete), a hidden execution and a cross; `/data add` needs `symbol=DEMO` |
 | `quotes_and_trades.csv` | best bid and ask changes and trades in one file, `;`-separated, ISO times and no header: `/data add` needs `columns=time,price,qty,side,bid,bid_qty,ask,ask_qty` |
 
 `tests/test_data.cpp` holds the LOBSTER sample to its orderbook file after every message:

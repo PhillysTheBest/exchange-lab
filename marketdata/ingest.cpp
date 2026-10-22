@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -40,9 +41,10 @@ constexpr const char* kHelp =
     "somewhere other than data/.\n"
     "  format=     csv, lobster, databento (CSV or uncompressed DBN), tardis, binance,\n"
     "              coinbase or kraken (REST trades, or a feed captured a JSON message a\n"
-    "              line); found from the file when left out. A LOBSTER message file is read\n"
-    "              with its orderbook file, and a Tardis book file or a Binance bookTicker\n"
-    "              file with its trades file, when that sits beside it\n"
+    "              line), itch (Nasdaq TotalView-ITCH 5.0, uncompressed, read for the stock\n"
+    "              symbol= names); found from the file when left out. A LOBSTER message\n"
+    "              file is read with its orderbook file, and a Tardis book file or a Binance\n"
+    "              bookTicker file with its trades file, when that sits beside it\n"
     "  name=       the tape's name; from the file name when left out\n"
     "  columns=    a CSV's columns in order, when its header does not say or it has none:\n"
     "              time, price, qty, side, buyer_maker, bid, bid_qty, ask, ask_qty, symbol, -\n"
@@ -187,27 +189,42 @@ void show(const Tape& tape) {
 
 // ---- the commands ---------------------------------------------------------------
 
+// The first `n` bytes of a file, without reading the rest.
+bool read_head(const std::string& file, std::size_t n, std::string& out) {
+    std::ifstream in(file, std::ios::binary);
+    if (!in) return false;
+    out.assign(n, '\0');
+    in.read(out.data(), static_cast<std::streamsize>(n));
+    out.resize(static_cast<std::size_t>(in.gcount()));
+    return !in.bad();
+}
+
 int cmd_add(const std::string& file, const ImportOptions& opts, const std::string& dir) {
     std::string bytes;
     std::error_code ec;
     if (!fs::is_regular_file(file, ec)) return refuse("no file " + file);
-    if (!read_file(file, bytes)) return refuse("cannot read " + file);
-    std::string why;
-    if (!readable(file, bytes, why)) return refuse(file + ": " + why);
-
-    // A second file read with this one, when it sits beside it: LOBSTER's
-    // orderbook file, the trades of a Tardis book file or a Binance bookTicker file.
-    std::string companion, companion_what;
-    for (const Companion& c : companions_of(file, opts.format)) {
-        if (!fs::is_regular_file(c.path, ec)) continue;
-        if (!read_file(c.path, companion)) return refuse("cannot read " + c.path);
-        if (!readable(c.path, companion, why)) return refuse(c.path + ": " + why);
-        companion_what = c.what;
-        break;
-    }
+    std::string head, why;
+    if (!read_head(file, 64 * 1024, head)) return refuse("cannot read " + file);
+    if (!readable(file, head, why)) return refuse(file + ": " + why);
 
     Tape tape;
-    if (!import_file(file, bytes, companion, opts, tape, why)) return refuse(file + ": " + why);
+    std::string companion, companion_what;
+    if (opts.format == "itch" || (opts.format.empty() && detect_format(file, head) == "itch")) {
+        // A day of ITCH is gigabytes: streamed, never held whole.
+        if (!import_itch_file(file, opts, tape, why)) return refuse(file + ": " + why);
+    } else {
+        if (!read_file(file, bytes)) return refuse("cannot read " + file);
+        // A second file read with this one, when it sits beside it: LOBSTER's
+        // orderbook file, the trades of a Tardis book file or a Binance bookTicker file.
+        for (const Companion& c : companions_of(file, opts.format)) {
+            if (!fs::is_regular_file(c.path, ec)) continue;
+            if (!read_file(c.path, companion)) return refuse("cannot read " + c.path);
+            if (!readable(c.path, companion, why)) return refuse(c.path + ": " + why);
+            companion_what = c.what;
+            break;
+        }
+        if (!import_file(file, bytes, companion, opts, tape, why)) return refuse(file + ": " + why);
+    }
 
     const std::string path = tape_path(dir, tape.h.name);
     bool replaced = false;
