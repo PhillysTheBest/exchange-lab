@@ -30,7 +30,7 @@ namespace {
 constexpr const char* kHelp =
     "ingest: bring a market data file into exchange-lab as a tape (docs/DATA.md)\n"
     "\n"
-    "  ingest add FILE [format=csv|lobster] [name=NAME] [columns=ROLES] [time=FORMAT]\n"
+    "  ingest add FILE [format=csv|lobster|databento] [name=NAME] [columns=ROLES] [time=FORMAT]\n"
     "                  [tick=DECIMAL] [symbol=SYMBOL] [instrument=NAME]\n"
     "  ingest list               the tapes in data/\n"
     "  ingest show NAME          what a tape holds, and the statistics calibration matches\n"
@@ -38,7 +38,8 @@ constexpr const char* kHelp =
     "\n"
     "Settings are written name=value (--name=value works too); dir=DIR keeps tapes\n"
     "somewhere other than data/.\n"
-    "  format=     csv or lobster; found from the file when left out\n"
+    "  format=     csv, lobster or databento (CSV or uncompressed DBN); found from the file\n"
+    "              when left out\n"
     "  name=       the tape's name; from the file name when left out\n"
     "  columns=    a CSV's columns in order, when its header does not say or it has none:\n"
     "              time, price, qty, side, buyer_maker, bid, bid_qty, ask, ask_qty, symbol, -\n"
@@ -87,26 +88,6 @@ std::string price_text(const TapeHeader& h, std::int64_t ticks) {
 }
 
 std::string tape_path(const std::string& dir, const std::string& name) { return dir + "/" + name + ".tape"; }
-
-// Refuses files no importer can read, saying what to do instead.
-bool readable(const std::string& file, const std::string& bytes, std::string& why) {
-    auto starts = [&bytes](std::initializer_list<unsigned char> magic) {
-        std::size_t i = 0;
-        for (const unsigned char c : magic) {
-            if (i >= bytes.size() || static_cast<unsigned char>(bytes[i]) != c) return false;
-            ++i;
-        }
-        return true;
-    };
-    if (starts({0x1f, 0x8b})) why = "compressed with gzip: run gzip -dk " + file + " and add the result";
-    else if (starts({0x28, 0xb5, 0x2f, 0xfd})) why = "compressed with zstd: run zstd -d " + file + " and add the result";
-    else if (starts({'P', 'K', 0x03, 0x04})) why = "a zip archive: unzip " + file + " and add the file inside";
-    else if (starts({'D', 'B', 'N'})) why = "a Databento DBN file, which this build cannot read yet: export CSV from Databento";
-    else if (bytes.empty()) why = "the file is empty";
-    else if (bytes.find('\0') < 4096) why = "a binary file; this build reads text formats (" + std::string(kFormats) + ")";
-    else return true;
-    return false;
-}
 
 // ---- show ---------------------------------------------------------------------
 
@@ -361,7 +342,7 @@ int main(int argc, char** argv) {
     }
     if (dir.empty()) return usage("dir= needs a directory");
     while (dir.size() > 1 && dir.back() == '/') dir.pop_back();
-    if (!opts.format.empty() && opts.format != "csv" && opts.format != "lobster")
+    if (!opts.format.empty() && (std::string(" ") + kFormats + " ").find(" " + opts.format + " ") == std::string::npos)
         return usage("format=" + opts.format + ": formats are " + kFormats);
     if (!opts.name.empty() && !valid_name(opts.name))
         return usage("name=" + opts.name + ": lower-case letters, digits, - _ and ., starting with a letter or digit");
