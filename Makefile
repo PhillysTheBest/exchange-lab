@@ -476,6 +476,11 @@ test-data: $(INGEST_BIN) $(CALIBRATE_BIN) $(LAB_BINS) $(REL)/suite$(EXE) $(REL)/
 	$$I add examples/data/databento_mbo.csv dir=$$D > $$D/out || fail "the Databento sample should import"; \
 	grep -q '^databento_mbo: DEMO, 2024-01-02, order by order (L3)$$' $$D/out && grep -q '3 fills' $$D/out \
 	    || fail "it should be read order by order, with its fills counted"; ok; \
+	$$I add examples/data/demo_incremental_book_L2_2024-01-02_DEMO.csv dir=$$D > $$D/out || fail "the Tardis sample should import"; \
+	grep -q '^added demo-demo-2024-01-02 .*(with its trades file beside it)$$' $$D/out && grep -q '4 trades, 15 level updates, 1 reset$$' $$D/out \
+	    || fail "it should be read with its trades file, the second snapshot a reset"; ok; \
+	$$I add examples/data/demo_trades_2024-01-02_DEMO.csv dir=$$D | grep -q '^added demo-demo-2024-01-02-trades ' \
+	    || fail "its trades file alone should be a tape of its own"; ok; \
 	exits 1 $$I add examples/data/quotes_and_trades.csv dir=$$D || fail "a file with no header needs columns="; ok; \
 	$$I add examples/data/quotes_and_trades.csv dir=$$D 'columns=time,price,qty,side,bid,bid_qty,ask,ask_qty' > $$D/out \
 	    || fail "with columns= it should import"; \

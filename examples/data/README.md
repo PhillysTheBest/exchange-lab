@@ -11,6 +11,8 @@ you bring stays where you keep it, and its tape goes in `data/`, which git ignor
 | `DEMO_2012-06-21_34200000_57600000_orderbook_3.csv` | its orderbook file, three levels a side after every message; `/data add` reads it to start the book with the orders resting before the first message |
 | `trades.csv` | 500 trades with a header, epoch-millisecond times and fractional quantities, as a crypto exchange's export looks |
 | `databento_mbo.csv` | Databento's MBO schema as its CSV export writes it: a clear, adds, a modify, a partial cancel, and two trades each followed by the fills and cancels Databento sends for the resting orders |
+| `demo_incremental_book_L2_2024-01-02_DEMO.csv` | Tardis.dev's `incremental_book_L2` file: a snapshot, level updates, and a second snapshot part-way, as when the exchange connection starts again; `/data add` turns that into a reset of the book |
+| `demo_trades_2024-01-02_DEMO.csv` | its `trades` file, which `/data add` reads beside the book file and merges in by arrival time; one trade's side is `unknown` |
 | `quotes_and_trades.csv` | best bid and ask changes and trades in one file, `;`-separated, ISO times and no header: `/data add` needs `columns=time,price,qty,side,bid,bid_qty,ask,ask_qty` |
 
 `tests/test_data.cpp` holds the LOBSTER sample to its orderbook file after every message:
