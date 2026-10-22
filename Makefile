@@ -280,12 +280,12 @@ lab: $(LAB_BINS)
 
 # The standard experiment (docs/RUNNER.md): every candidate in the same seat of
 # the same market on the same named block of seeds, written to runs/.
-#   make compare CANDIDATES=mine,other [BLOCK=smoke] [OUT=dir]
+#   make compare CANDIDATES=mine,other [BLOCK=smoke] [SUITE=wide|busy|all | MARKET=name] [OUT=dir]
 # BLOCK rather than SEEDS, because bench/run_arena_evidence.sh reads a numeric
 # SEEDS from the environment and an exported one would leak in here.
 compare: $(REL)/suite_lab$(EXE)
 	@[ -n '$(CANDIDATES)' ] || { echo "make compare: say which strategies: make compare CANDIDATES=a[,b,...]" >&2; exit 2; }
-	./$(REL)/suite_lab$(EXE) --candidates=$(CANDIDATES) $(if $(BLOCK),--block=$(BLOCK)) $(if $(SUITE),--suite=$(SUITE)) $(if $(OUT),--out=$(OUT))
+	./$(REL)/suite_lab$(EXE) --candidates=$(CANDIDATES) $(if $(BLOCK),--block=$(BLOCK)) $(if $(SUITE),--suite=$(SUITE)) $(if $(MARKET),--market=$(MARKET)) $(if $(OUT),--out=$(OUT))
 
 # Re-run a run directory from its own suite.cfg and compare every file (docs/REPRODUCE.md).
 reproduce: $(REL)/suite_lab$(EXE)
@@ -397,6 +397,8 @@ test-app: $(APP_BIN) $(LAB_BINS) $(REL)/controls$(EXE) $(REPL_BIN) $(INGEST_BIN)
 	    || fail "/data add should import a file"; ok; \
 	$$A -c /data | grep -Eq '^app-test-trades +trades +500 ' || fail "/data should list it"; ok; \
 	$$A -c '/data show app-test-trades' | grep -q '^  print size ' || fail "/data show should show it"; ok; \
+	rc=0; $$A -c '/calibrate app-test-trades' > $$D/out 2>&1 || rc=$$?; \
+	[ $$rc -eq 1 ] && grep -q 'trades-only tape is not calibrated' $$D/out || fail "/calibrate should refuse a trades-only tape"; ok; \
 	$$A -c '/data remove app-test-trades' > /dev/null && [ ! -e data/app-test-trades.tape ] \
 	    || fail "/data remove should remove it"; ok; \
 	[ "$$($$A -c /learn | grep -c '^  [0-9]\.')" -eq 8 ] || fail "/learn should list eight exercises"; ok; \
@@ -411,11 +413,13 @@ test-app: $(APP_BIN) $(LAB_BINS) $(REL)/controls$(EXE) $(REPL_BIN) $(INGEST_BIN)
 #   make data                                 list the tapes in data/
 #   make data FILE=path [OPTS='name=x ...']   import a file into data/NAME.tape
 #   make data SHOW=name                       what a tape holds, and what calibration matches
+#   make calibrate TAPE=name                  data/NAME.tape -> markets/NAME.cfg, for MARKET=name
 #
 # ingest reads a file already on disk and never fetches anything. It links none
 # of the market, so an importer cannot reach a session, a hash or a published
-# number. data/ is git-ignored: a tape made from data you paid for stays yours.
-.PHONY: data test-data
+# number. data/ and markets/ are git-ignored: a tape made from data you paid for
+# stays yours. Only the lab programs read a market (--market=NAME).
+.PHONY: data calibrate test-data
 
 $(INGEST_BIN): $(ROBJ)/marketdata/ingest.o
 	$(call announce,linking,$@)
@@ -431,9 +435,15 @@ data: $(INGEST_BIN)
 	elif [ -n '$(SHOW)' ]; then ./$(INGEST_BIN) show '$(SHOW)'; \
 	else ./$(INGEST_BIN) list; fi
 
+calibrate: $(CALIBRATE_BIN)
+	@[ -n '$(TAPE)' ] || { echo "make calibrate: say which tape: make calibrate TAPE=name (make data lists them)" >&2; exit 2; }
+	./$(CALIBRATE_BIN) '$(TAPE)'
+
 # The command line, run against the samples, in a directory of its own; then
-# the known-answer control, which must hold, with its planted defects, which must break it.
-test-data: $(INGEST_BIN) $(CALIBRATE_BIN)
+# the known-answer control, which must hold, with its planted defects, which must
+# break it; then a market calibrated from the control's own tape, used by the lab
+# programs, refused by the evidence ones, and reproduced without its data.
+test-data: $(INGEST_BIN) $(CALIBRATE_BIN) $(LAB_BINS) $(REL)/suite$(EXE) $(REL)/sweep$(EXE) $(REL)/arena$(EXE)
 	@set -e; \
 	n=0; ok() { n=$$((n+1)); }; fail() { echo "FAIL: $$1"; exit 1; }; \
 	exits() { want=$$1; shift; rc=0; "$$@" > /dev/null 2>&1 || rc=$$?; [ $$rc -eq $$want ]; }; \
@@ -495,7 +505,54 @@ test-data: $(INGEST_BIN) $(CALIBRATE_BIN)
 	[ "$$(echo "$$out" | grep -c 'no, as it must not$$')" -eq 2 ] || fail "both planted defects should break it"; okc; \
 	echo "$$out" | grep -Eq '^  trades .* no$$' || fail "trades alone should not be enough"; okc; \
 	echo "$$out" | grep -E '^  (L3|trades) ' | sed 's/^/  /'; \
-	echo "$$m/$$m control checks passed"
+	echo "$$m/$$m control checks passed"; \
+	echo "== a calibrated market (the control again, then 64 sessions of the health gate)"; \
+	D=$(BUILD)/market-test; rm -rf $$D; mkdir -p $$D; k=0; okm() { k=$$((k+1)); }; \
+	R=./$(REL); M=$$D/markets/known.cfg; \
+	$$I add $$L dir=$$D/data > /dev/null; $$I add examples/data/trades.csv dir=$$D/data > /dev/null; \
+	rc=0; $$C demo-2012-06-21 data=$$D/data markets=$$D/markets > $$D/out 2>&1 || rc=$$?; \
+	[ $$rc -eq 1 ] && grep -q 'too few prints' $$D/out || fail "a short tape should be refused (exit $$rc)"; okm; \
+	rc=0; $$C trades data=$$D/data markets=$$D/markets > $$D/out 2>&1 || rc=$$?; \
+	[ $$rc -eq 1 ] && grep -q 'trades-only tape is not calibrated' $$D/out || fail "a trades-only tape should be refused"; okm; \
+	exits 2 $$C all data=$$D/data || fail "a market cannot take a suite's name"; okm; \
+	exits 1 $$C nosuch data=$$D/data || fail "a missing tape should exit 1"; okm; \
+	$$C --known=known data=$$D/data > /dev/null || fail "--known should write the control's tape"; okm; \
+	$$C known data=$$D/data markets=$$D/markets > $$D/out || { cat $$D/out; fail "the known tape should calibrate"; }; okm; \
+	grep -q '^status=complete$$' $$M && grep -q '^health.passed=64$$' $$M && grep -q '^control.held=1$$' $$M \
+	    || fail "the market should be complete, admissible and say why"; okm; \
+	grep -q '^set.maker.half_spread_ticks=3$$' $$M && grep -Eq '^set.noise.qty=(30|40|50)$$' $$M \
+	    && grep -Eq '^set.noise.timer_ns=(15000|20000|30000)$$' $$M || fail "it should recover the known market"; okm; \
+	sed -n 's/^set\./  /p' $$M; \
+	$$R/suite_lab --market=$$M --candidates=maker --block=smoke --out=$$D/run > /dev/null 2>&1 \
+	    || fail "suite_lab should run on the market"; okm; \
+	grep -q '^calibration.tape_cksum=' $$D/run/suite.cfg && grep -q '^suite.name=known$$' $$D/run/suite.cfg \
+	    || fail "the run should record the market among its conditions"; okm; \
+	$$R/suite --candidates=maker --block=smoke --out=$$D/standard > /dev/null 2>&1; \
+	fp() { sed -n 's/^fingerprint=//p' $$1/outcome.cfg; }; \
+	[ -n "$$(fp $$D/run)" ] && [ "$$(fp $$D/run)" != "$$(fp $$D/standard)" ] || fail "a calibrated market is a suite of its own"; okm; \
+	$$R/suite_lab --reproduce=$$D/run --out=$$D/re > /dev/null 2>&1 || fail "it should reproduce"; okm; \
+	mv $$M $$D/aside.cfg; rm $$D/data/known.tape; \
+	$$R/suite_lab --reproduce=$$D/run --out=$$D/re2 2>/dev/null | grep -q '^  REPRODUCED' \
+	    || fail "it should reproduce from its own record, with no tape and no market file"; okm; \
+	sed 's/^set.noise.qty=.*/set.noise.qty=99/' $$D/aside.cfg > $$M; \
+	rc=0; $$R/suite_lab --reproduce=$$D/run --out=$$D/re3 > $$D/out 2>&1 || rc=$$?; \
+	[ $$rc -eq 2 ] && grep -q 'calibrated again since the run' $$D/out || fail "a market calibrated again should be refused"; okm; \
+	sed 's/^set.noise.qty=.*/set.informed.edge_ticks=9/' $$D/aside.cfg > $$D/bad.cfg; \
+	exits 2 $$R/suite_lab --market=$$D/bad.cfg --candidates=maker --block=smoke --out=$$D/x \
+	    || fail "a market setting what calibration never moves should be refused"; okm; \
+	exits 2 $$R/suite_lab --market=$$D/aside.cfg --suite=wide --candidates=maker --out=$$D/x \
+	    || fail "a market and a family together should be refused"; okm; \
+	exits 2 $$R/suite --market=$$D/aside.cfg --candidates=maker --block=smoke --out=$$D/x \
+	    || fail "the evidence suite must refuse a market"; okm; \
+	exits 2 $$R/suite --reproduce=$$D/run --out=$$D/x || fail "the evidence suite must not reproduce one"; okm; \
+	$$R/sweep_lab --market=$$D/aside.cfg --seeds=1 --requests=2000 --values=10000 --quiet > /dev/null \
+	    || fail "sweep_lab should run on it"; okm; \
+	exits 2 $$R/sweep --market=$$D/aside.cfg --seeds=1 --requests=2000 || fail "the evidence sweep must refuse it"; okm; \
+	$$R/arena_lab --market=$$D/aside.cfg --still=1000000 | grep -q 'market known' || fail "arena_lab should show it"; okm; \
+	exits 2 $$R/arena --market=$$D/aside.cfg --still=1000000 || fail "the evidence viewer must refuse it"; okm; \
+	echo "  fingerprint $$(fp $$D/run) on the market, $$(fp $$D/standard) on standard"; \
+	rm -rf $$D; \
+	echo "$$k/$$k market checks passed"
 
 $(LOBJ)/%.o: %.cpp $(MANIFEST)
 	$(call announce,compiling,$<)

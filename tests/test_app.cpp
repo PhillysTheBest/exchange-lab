@@ -144,6 +144,24 @@ void test_argument_vectors() {
     PX_CHECK(plan("/data fetch x").error.find("add, show or remove") != std::string::npos);
     PX_CHECK(!plan("/book x").error.empty());
 
+    // A calibrated market: /calibrate makes one, market= uses it on the three lab programs.
+    p = plan("/calibrate demo");
+    PX_CHECK(p.program == Program::Calibrate && p.build.back() == "build/release/calibrate" &&
+             (p.run == std::vector<std::string>{"build/release/calibrate", "demo"}));
+    PX_CHECK((plan("/calibrate --known=known").run ==
+              std::vector<std::string>{"build/release/calibrate", "--known=known"}));
+    PX_CHECK((plan("/calibrate --control").run == std::vector<std::string>{"build/release/calibrate", "--control"}));
+    PX_CHECK(!plan("/calibrate").error.empty() && !plan("/calibrate a b").error.empty());
+    PX_CHECK((plan("/compare imbalance smoke market=demo").run ==
+              std::vector<std::string>{"build/release/suite_lab", "--candidates=imbalance", "--block=smoke",
+                                       "--market=demo"}));
+    PX_CHECK(plan("/compare imbalance wide market=demo").error.find("not both") != std::string::npos);
+    PX_CHECK(!plan("/compare imbalance market=").error.empty());
+    PX_CHECK(plan("/compare imbalance seeds=8").error.find("unknown setting") != std::string::npos);
+    PX_CHECK(has(plan("/watch imbalance market=demo").run, "--market=demo"));
+    PX_CHECK((plan("/sweep market=demo --seeds=8").run ==
+              std::vector<std::string>{"build/release/sweep_lab", "--market=demo", "--seeds=8"}));
+
     // A Windows build names its programs and its make differently; nothing else changes.
     Env win;
     win.exe = ".exe";
@@ -173,6 +191,7 @@ void test_exit_meanings() {
     PX_CHECK(exit_meaning(Program::Suite, 3).find("not admissible") != std::string::npos);
     PX_CHECK(exit_meaning(Program::Reproduce, 1).find("NOT REPRODUCED") != std::string::npos);
     PX_CHECK(exit_meaning(Program::Controls, 1).find("control") != std::string::npos);
+    PX_CHECK(exit_meaning(Program::Calibrate, 1).find("nothing was written") != std::string::npos);
     PX_CHECK(exit_meaning(Program::Sweep, 9).find("9") != std::string::npos);
     PX_CHECK(exit_meaning(Program::Ingest, 1).find("refused") != std::string::npos);
     PX_CHECK(exit_meaning(Program::Arena, -1).find("could not be started") != std::string::npos);

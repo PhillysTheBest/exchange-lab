@@ -127,6 +127,10 @@ struct SuiteDef {
     HealthGate health;
     RosterConfig roster;         // every reference participant's parameters
     const char* change = "";     // how the market differs from the default, in --set= names; printed only
+    // A market calibrated from a tape (marketdata/market_file.hpp): its
+    // calibration.* lines, which say which tape, as conditions. Empty for every
+    // built-in suite, so their conditions and fingerprints do not move.
+    std::string calibration = "";
 };
 
 // The one definition. A change to any of it, or to a reference strategy, a
@@ -582,6 +586,7 @@ struct RunInfo {
     std::string user_strategies; // the installed names this binary can see, or "none"
     std::vector<CandidateInfo> candidates;
     BuildInfo build;             // empty commit: not recorded (tests)
+    std::string market_file;     // the markets/NAME.cfg a calibrated suite was read from, or empty
 };
 
 // Exactly what the three raw files hold, so a report is a function of this
@@ -837,6 +842,7 @@ inline void append_participant_rows(std::string& s, const std::vector<Participan
         std::int64_t v = 0;
         if (Session::get_param(sc, k, v)) append_kv(s, k, v);
     }
+    s += def.calibration;
     return s;
 }
 
@@ -874,6 +880,7 @@ inline void append_participant_rows(std::string& s, const std::vector<Participan
         append_kv(s, k + ".timer_ns", c.timer_ns);
         if (!c.digest.empty()) append_kv(s, k + ".digest", c.digest);
     }
+    if (!info.market_file.empty()) append_kv(s, "run.market_file", info.market_file);
     if (!info.build.commit.empty()) {
         s += "# Which build ran it. Not conditions: `suite --reproduce` re-runs on any build.\n";
         append_kv(s, "build.commit", info.build.commit);

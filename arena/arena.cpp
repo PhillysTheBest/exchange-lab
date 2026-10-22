@@ -27,6 +27,9 @@
 #include "arena/session.hpp"
 #include "arena/term.hpp"
 #include "arena/ui.hpp"
+#if defined(PX_ARENA_USER_STRATEGIES)
+#include "marketdata/market_file.hpp" // --market: arena_lab only
+#endif
 
 #include <chrono>
 #include <cstdio>
@@ -56,6 +59,7 @@ struct ViewOptions {
     SimTime maker_reaction_ns = -1;       // <0 = the registry's default
     std::string strategies;                     // empty = the registry's default line-up
     std::string script;                   // a file of orders to play, as a participant
+    std::string market;                   // --market: a calibrated market's name, or empty
 };
 
 std::string fmt_price(Price p) {
@@ -220,8 +224,9 @@ void draw_session(ui::Screen& s, const Rect& r, const Session& sess, const ViewO
     std::snprintf(line, sizeof line, "seed %llu   clock %s   %s", static_cast<unsigned long long>(opt.seed),
                   fmt_ns(sess.now()).c_str(), paused ? "PAUSED" : "running");
     s.text(in.x, in.y, line, pal::ink, pal::panel, in.w);
-    std::snprintf(line, sizeof line, "%zu orders, %llu trades", st.requests,
-                  static_cast<unsigned long long>(st.trades));
+    std::snprintf(line, sizeof line, "%zu orders, %llu trades%s%s", st.requests,
+                  static_cast<unsigned long long>(st.trades), opt.market.empty() ? "" : ", market ",
+                  opt.market.c_str());
     s.text(in.x, in.y + 1, line, pal::dim, pal::panel, in.w);
     std::snprintf(line, sizeof line, "book-value gap %.1f tk (max %llu)", st.mean_gap_ticks(),
                   static_cast<unsigned long long>(st.gap_max_ticks));
@@ -382,7 +387,9 @@ int main(int argc, char** argv) {
                         "                       maker,rival,informed,noise:2,momentum\n"
                         "  --script=PATH        play a file of orders as a participant, in\n"
                         "                       simulated time; see tools/arena_script_demo.txt\n"
-                        "  --still=NS           render one frame at that simulated instant and exit\n\n"
+                        "  --still=NS           render one frame at that simulated instant and exit\n"
+                        "  --market=NAME        a market calibrated from a tape (markets/NAME.cfg;\n"
+                        "                       docs/DATA.md). arena_lab only\n\n"
                         "keys: space pause, + - speed, 1-9 focus, q quit\n"
                         "      f re-reads the --script file from disk and restarts the session,\n"
                         "      so you can edit your orders in another window and watch again\n\n"
@@ -402,6 +409,10 @@ int main(int argc, char** argv) {
         }
         if (a.starts_with("--script=")) {
             opt.script = std::string(a.substr(9));
+            continue;
+        }
+        if (a.starts_with("--market=")) {
+            opt.market = std::string(a.substr(9));
             continue;
         }
         long long v = 0;
@@ -425,6 +436,21 @@ int main(int argc, char** argv) {
     sc.seed = opt.seed;
     sc.max_requests = opt.requests;
     RosterConfig rc;
+    if (!opt.market.empty()) {
+#if defined(PX_ARENA_USER_STRATEGIES)
+        data::MarketFile m;
+        std::string why;
+        if (!data::read_market(opt.market, "markets", m, why)) {
+            std::fprintf(stderr, "--market=%s: %s\n", opt.market.c_str(), why.c_str());
+            return 2;
+        }
+        for (const auto& [k, v] : m.sets) (void)set_roster_param(rc, k, v);
+        opt.market = m.name;
+#else
+        std::fprintf(stderr, "--market: a calibrated market runs in arena_lab only, never in the evidence programs\n");
+        return 2;
+#endif
+    }
     if (opt.maker_reaction_ns >= 0) rc.maker_reaction_ns = opt.maker_reaction_ns;
 
     // The script's orders must outlive the session that plays them.
@@ -454,8 +480,9 @@ int main(int argc, char** argv) {
         compose(screen, sess, opt, 0, true, 0, alert);
         screen.present(stdout);
         std::printf("\x1b[0m\n");
-        std::printf("still at %s, seed %llu, session hash %016llx\n", fmt_ns(sess.now()).c_str(),
-                    static_cast<unsigned long long>(opt.seed), static_cast<unsigned long long>(sess.hash()));
+        std::printf("still at %s, seed %llu, %s%s%ssession hash %016llx\n", fmt_ns(sess.now()).c_str(),
+                    static_cast<unsigned long long>(opt.seed), opt.market.empty() ? "" : "market ",
+                    opt.market.c_str(), opt.market.empty() ? "" : ", ", static_cast<unsigned long long>(sess.hash()));
         return 0;
     }
 
