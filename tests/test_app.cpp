@@ -69,6 +69,9 @@ void test_every_command_is_handled() {
     PX_CHECK(find_command("/nosuch") == nullptr);
     PX_CHECK(plan("/nosuch").error.find("no command /nosuch") != std::string::npos);
     PX_CHECK(plan("compare maker").error.find("start with /") != std::string::npos);
+    PX_CHECK(plan("C:/msys64/compare maker smoke").error.find("MSYS2_ARG_CONV_EXCL") != std::string::npos);
+    PX_CHECK(plan("c:/msys64/help").error.find("MSYS2_ARG_CONV_EXCL") != std::string::npos);
+    PX_CHECK(plan("C:").error.find("start with /") != std::string::npos);
     PX_CHECK(plan("").internal && plan("").error.empty());
 }
 
