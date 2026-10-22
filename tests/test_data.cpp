@@ -670,6 +670,65 @@ void test_tardis() {
     PX_CHECK(!import_file(path, book, bad_trades, ImportOptions{}, t, why) && why.find("the trades file beside it: line 2") == 0);
 }
 
+// Binance: data.binance.vision's files, with and without their headers.
+void test_binance() {
+    std::string book, trades, spot, why;
+    const std::string path = kSamples + "BTCUSDT-bookTicker-2024-01-02.csv";
+    PX_CHECK(read_file(path, book) && read_file(kSamples + "BTCUSDT-trades-2024-01-02.csv", trades) &&
+             read_file(kSamples + "ETHUSDT-trades-2025-01-02.csv", spot));
+    auto first = [](const std::string& x) { return std::string_view(x).substr(0, x.find('\n')); };
+    PX_CHECK(detect_format(path, first(book)) == "binance" && detect_format("x.csv", first(trades)) == "binance");
+    PX_CHECK(detect_format("ETHUSDT-trades-2025-01-02.csv", first(spot)) == "binance");
+    PX_CHECK(detect_format("eth.csv", first(spot)) == "csv"); // no header and no Binance name: the generic reader's
+    const std::vector<Companion> c = companions_of(path, "");
+    PX_CHECK(c.size() == 2 && c[0].path == kSamples + "BTCUSDT-trades-2024-01-02.csv" &&
+             c[1].path == kSamples + "BTCUSDT-aggTrades-2024-01-02.csv");
+    Tape t;
+    PX_CHECK(import_file(path, book, trades, ImportOptions{}, t, why));
+    PX_CHECK(t.h.format == "binance" && t.h.depth == Depth::L2 && t.h.instrument == "BTCUSDT" && t.h.date == "2024-01-02" &&
+             t.h.name == "btcusdt-bookticker-2024-01-02" && t.h.notes == "binance bookTicker, with its trades file");
+    PX_CHECK(t.h.price_scale == 10 && t.h.tick == 1 && t.h.qty_scale == 10);
+    std::string kinds;
+    for (const TapeEvent& e : t.ev) kinds += e.kind;
+    PX_CHECK(kinds == "LLTLTLLLLTL"); // each trade between the quote before it and the quote it left
+    PX_CHECK(t.ev[2].side == 'S' && t.ev[2].price == 420001 && t.ev[2].qty == 3 && t.ev[4].side == 'B');
+    TapeBook b;
+    for (const TapeEvent& e : t.ev) b.apply(e);
+    PX_CHECK((b.top(0, 3) == std::vector<std::pair<std::int64_t, std::int64_t>>{{420002, 1}}));
+    PX_CHECK((b.top(1, 3) == std::vector<std::pair<std::int64_t, std::int64_t>>{{420003, 21}}));
+    PX_CHECK(import_file(path, book, "", ImportOptions{}, t, why) && t.h.notes.find("no trades file beside it") != std::string::npos);
+
+    // Spot: no header, microseconds, is_buyer_maker as True and False.
+    PX_CHECK(import_file(kSamples + "ETHUSDT-trades-2025-01-02.csv", spot, "", ImportOptions{}, t, why));
+    PX_CHECK(t.h.depth == Depth::Trades && t.h.notes == "binance trades (spot, no header)" && t.h.instrument == "ETHUSDT");
+    PX_CHECK(t.ev.size() == 4 && t.ev[0].side == 'S' && t.ev[1].side == 'B' && t.ev[3].t - t.ev[0].t == 250'000'000);
+    // aggTrades, spot and futures; the same rows in milliseconds read the same.
+    const std::string agg = "26129,0.01633102,4.70443515,27781,27781,1498793709153,True,True\n"
+                            "26130,0.01633103,1.00000000,27782,27783,1498793709200,False,True\n";
+    PX_CHECK(import_file("LTCBTC-aggTrades-2017-06-30.csv", agg, "", ImportOptions{}, t, why) && t.ev.size() == 2 &&
+             t.h.notes.find("one taker order's trades at one price") != std::string::npos && t.h.date == "2017-06-30");
+    PX_CHECK(t.ev[1].t - t.ev[0].t == 47'000'000 && t.ev[0].side == 'S');
+    const std::string fagg = "agg_trade_id,price,quantity,first_trade_id,last_trade_id,transact_time,is_buyer_maker\n"
+                             "1,100.5,2,10,11,1704186000000,false\n";
+    PX_CHECK(import_file("x.csv", fagg, "", ImportOptions{}, t, why) && t.h.format == "binance" && t.ev[0].side == 'B');
+    // A spot file renamed is read by its width when the format is named.
+    ImportOptions bin;
+    bin.format = "binance";
+    PX_CHECK(import_file("eth.csv", spot, "", bin, t, why) && t.ev.size() == 4);
+    PX_CHECK(!import_file("eth.csv", "1,2,3\n", "", bin, t, why) && why.find("not a Binance file") == 0);
+
+    // A bad flag or time is refused, naming the line; so is a bad trades file beside a book.
+    std::string bad = spot;
+    bad.replace(bad.find(",False,"), 7, ",Maybe,");
+    PX_CHECK(!import_file("ETHUSDT-trades-2025-01-02.csv", bad, "", ImportOptions{}, t, why) &&
+             why.find("line 2: is_buyer_maker 'Maybe'") == 0);
+    std::string late = trades;
+    late.replace(late.find("1704186000019"), 13, "2024-01-02x");
+    PX_CHECK(!import_file(path, book, late, ImportOptions{}, t, why) && why.find("the trades file beside it: line 3: time") == 0);
+    std::string narrow = book + "1,2,3\n";
+    PX_CHECK(!import_file(path, narrow, "", ImportOptions{}, t, why) && why.find("line 7: 3 fields") == 0);
+}
+
 // A market file round trip, its refusals, and the suite it becomes.
 void test_market_file() {
     namespace su = px::arena::suite;
@@ -779,6 +838,7 @@ int main() {
     test_lobster();
     test_databento();
     test_tardis();
+    test_binance();
     test_stats();
     test_session_tape();
     test_calibration_parts();
