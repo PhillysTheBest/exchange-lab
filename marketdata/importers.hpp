@@ -19,10 +19,12 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <fstream>
 #include <map>
 #include <set>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace px::data {
@@ -2184,6 +2186,286 @@ private:
     return true;
 }
 
+// ---- Nasdaq TotalView-ITCH 5.0 ---------------------------------------------------------
+//
+// Nasdaq's binary feed for a whole day, as its sample files hold it
+// (MMDDYYYY.NASDAQ_ITCH50, uncompressed), from the published specification:
+// each message is a two-byte big-endian length and then the message, which
+// starts with its type, stock locate, tracking number and six bytes of
+// nanoseconds since midnight. Numbers are big-endian; prices have four decimals.
+//
+//   A, F  add order: an A on the tape          E  executed at the order's price: a T naming it
+//   C     executed at another price: a T, or, when Nasdaq marks it not printable
+//         (part of a cross), a C, so it leaves the book without making a print
+//   X     partial cancel: a C                   D  delete: a C of what is left
+//   U     replace: a C of what is left and an A under the new reference
+//   P     a hidden order's execution: a print, with no side (Nasdaq writes B whatever it was)
+//
+// Cross trades (Q) are left out: the orders behind them leave the book as the
+// non-printable executions above. A day's file holds every stock, so it is read
+// for one, named with symbol=, and streamed rather than read whole: a file is
+// gigabytes.
+
+// A message's length by its type in ITCH 5.0; 0 for a type 5.0 does not have.
+[[nodiscard]] inline std::size_t itch_length(unsigned char type) noexcept {
+    switch (type) {
+        case 'S': case 'W': return 12;
+        case 'R': return 39;
+        case 'H': return 25;
+        case 'Y': case 'N': return 20;
+        case 'L': return 26;
+        case 'V': case 'J': case 'U': return 35;
+        case 'K': return 28;
+        case 'h': return 21;
+        case 'A': case 'C': return 36;
+        case 'F': case 'Q': return 40;
+        case 'E': return 31;
+        case 'X': return 23;
+        case 'D': case 'B': return 19;
+        case 'P': return 44;
+        case 'I': return 50;
+        case 'O': return 48;
+        default: return 0;
+    }
+}
+
+// True when the start of a file walks as ITCH 5.0 messages: every length one
+// of the specification's, for the type it carries. A text file never starts
+// with the zero byte a length does.
+[[nodiscard]] inline bool looks_like_itch(std::string_view head) noexcept {
+    std::size_t at = 0, n = 0;
+    while (at + 3 <= head.size() && n < 64) {
+        const std::size_t len = (static_cast<std::size_t>(static_cast<unsigned char>(head[at])) << 8) |
+                                static_cast<unsigned char>(head[at + 1]);
+        if (len == 0 || itch_length(static_cast<unsigned char>(head[at + 2])) != len) return false;
+        at += 2 + len;
+        ++n;
+    }
+    return n >= 2 || (n == 1 && at == head.size());
+}
+
+// The day an ITCH file's name gives: Nasdaq's MMDDYYYY, or YYYYMMDD.
+[[nodiscard]] inline bool itch_date(std::string_view base, std::string& date) {
+    std::size_t at = 0;
+    while (at < base.size() && !is_digit(base[at])) ++at;
+    if (at + 8 > base.size()) return false;
+    for (std::size_t i = at; i < at + 8; ++i)
+        if (!is_digit(base[i])) return false;
+    const std::string d(base.substr(at, 8));
+    auto ok = [](const std::string& y, const std::string& m, const std::string& dd) {
+        return (y.starts_with("19") || y.starts_with("20")) && m >= "01" && m <= "12" && dd >= "01" && dd <= "31";
+    };
+    if (ok(d.substr(4, 4), d.substr(0, 2), d.substr(2, 2))) date = d.substr(4, 4) + "-" + d.substr(0, 2) + "-" + d.substr(2, 2);
+    else if (ok(d.substr(0, 4), d.substr(4, 2), d.substr(6, 2))) date = d.substr(0, 4) + "-" + d.substr(4, 2) + "-" + d.substr(6, 2);
+    else return false;
+    return true;
+}
+
+class ItchReader {
+public:
+    ItchReader(std::string symbol, RawTape& raw) : symbol_(std::move(symbol)), raw_(raw) {}
+
+    // Reads whatever whole messages `chunk` completes; keeps a partial one for the next.
+    bool feed(std::string_view chunk, std::string& why) {
+        if (buf_.empty()) {
+            const std::size_t used = walk(chunk, why);
+            if (used == npos) return false;
+            buf_.assign(chunk.substr(used));
+        } else {
+            buf_.append(chunk);
+            const std::size_t used = walk(buf_, why);
+            if (used == npos) return false;
+            buf_.erase(0, used);
+        }
+        return true;
+    }
+    bool end(std::string& why) {
+        if (!buf_.empty()) {
+            why = "the file is cut short: its last message ends after the file does";
+            return false;
+        }
+        return true;
+    }
+    std::uint64_t messages = 0, not_printable = 0, crosses = 0;
+
+private:
+    static constexpr std::size_t npos = static_cast<std::size_t>(-1);
+    struct Resting {
+        char side;
+        std::uint32_t price, shares;
+    };
+    std::string symbol_;
+    RawTape& raw_;
+    std::string buf_;
+    std::uint64_t offset_ = 0; // of buf_'s first byte in the file
+    std::unordered_map<std::uint64_t, Resting> book_;
+
+    static std::uint64_t be(const unsigned char* p, int n) noexcept {
+        std::uint64_t v = 0;
+        for (int i = 0; i < n; ++i) v = (v << 8) | p[i];
+        return v;
+    }
+    bool ours(const unsigned char* stock) const noexcept {
+        std::size_t n = 8;
+        while (n > 0 && stock[n - 1] == ' ') --n;
+        return symbol_.size() == n && std::equal(symbol_.begin(), symbol_.end(), stock);
+    }
+    void push(std::int64_t t, char kind, char side, std::uint64_t id, std::uint32_t price, std::uint32_t qty) {
+        RawEvent e;
+        e.t = t;
+        e.kind = kind;
+        e.side = side;
+        e.id = id;
+        e.price = Decimal{static_cast<std::int64_t>(price), 4};
+        e.qty = Decimal{static_cast<std::int64_t>(qty), 0};
+        e.line = messages;
+        raw_.ev.push_back(e);
+    }
+    // Takes `n` shares off a resting order, removing it when none are left.
+    void reduce(std::unordered_map<std::uint64_t, Resting>::iterator it, std::uint32_t n) {
+        if (n >= it->second.shares) book_.erase(it);
+        else it->second.shares -= n;
+    }
+    std::size_t walk(std::string_view b, std::string& why) {
+        std::size_t at = 0;
+        while (at + 2 <= b.size()) {
+            const auto* p = reinterpret_cast<const unsigned char*>(b.data() + at);
+            const std::size_t len = (static_cast<std::size_t>(p[0]) << 8) | p[1];
+            if (at + 2 + len > b.size()) break;
+            ++messages;
+            if (len == 0) {
+                why = "byte " + std::to_string(offset_ + at + 1) + ": a message of length zero: not an ITCH 5.0 file";
+                return npos;
+            }
+            const std::size_t want = itch_length(p[2]);
+            if (want != 0 && want != len) {
+                why = "byte " + std::to_string(offset_ + at + 1) + ": a '" + std::string(1, static_cast<char>(p[2])) +
+                      "' message of " + std::to_string(len) + " bytes, where ITCH 5.0's is " + std::to_string(want) +
+                      ": not ITCH 5.0, or the file is damaged";
+                return npos;
+            }
+            if (want == 0) ++raw_.skipped["messages of a type ITCH 5.0 does not have"];
+            else message(p + 2);
+            at += 2 + len;
+        }
+        offset_ += at;
+        return at;
+    }
+    void message(const unsigned char* m) {
+        const auto t = static_cast<std::int64_t>(be(m + 5, 6));
+        switch (m[0]) {
+            case 'A':
+            case 'F': {
+                if (!ours(m + 24)) return;
+                const std::uint64_t ref = be(m + 11, 8);
+                const char side = m[19] == 'B' ? 'B' : 'S';
+                const auto shares = static_cast<std::uint32_t>(be(m + 20, 4)), price = static_cast<std::uint32_t>(be(m + 32, 4));
+                if (shares == 0) return;
+                push(t, 'A', side, ref, price, shares);
+                book_[ref] = Resting{side, price, shares};
+                return;
+            }
+            case 'E':
+            case 'C': {
+                const auto it = book_.find(be(m + 11, 8));
+                if (it == book_.end()) return;
+                const auto n = static_cast<std::uint32_t>(be(m + 19, 4));
+                if (m[0] == 'C' && m[31] == 'N') {
+                    ++not_printable;
+                    push(t, 'C', it->second.side, it->first, it->second.price, n);
+                } else {
+                    const auto price = m[0] == 'C' ? static_cast<std::uint32_t>(be(m + 32, 4)) : it->second.price;
+                    push(t, 'T', it->second.side == 'B' ? 'S' : 'B', it->first, price, n);
+                }
+                reduce(it, n);
+                return;
+            }
+            case 'X': {
+                const auto it = book_.find(be(m + 11, 8));
+                if (it == book_.end()) return;
+                const auto n = std::min(static_cast<std::uint32_t>(be(m + 19, 4)), it->second.shares);
+                push(t, 'C', it->second.side, it->first, it->second.price, n);
+                reduce(it, n);
+                return;
+            }
+            case 'D': {
+                const auto it = book_.find(be(m + 11, 8));
+                if (it == book_.end()) return;
+                push(t, 'C', it->second.side, it->first, it->second.price, it->second.shares);
+                book_.erase(it);
+                return;
+            }
+            case 'U': {
+                const auto it = book_.find(be(m + 11, 8));
+                if (it == book_.end()) return;
+                const Resting r = it->second;
+                push(t, 'C', r.side, it->first, r.price, r.shares);
+                book_.erase(it);
+                const std::uint64_t ref = be(m + 19, 8);
+                const auto shares = static_cast<std::uint32_t>(be(m + 27, 4)), price = static_cast<std::uint32_t>(be(m + 31, 4));
+                if (shares == 0) return;
+                push(t, 'A', r.side, ref, price, shares);
+                book_[ref] = Resting{r.side, price, shares};
+                return;
+            }
+            case 'P': {
+                if (!ours(m + 24)) return;
+                const auto shares = static_cast<std::uint32_t>(be(m + 20, 4));
+                if (shares > 0) push(t, 'T', '-', 0, static_cast<std::uint32_t>(be(m + 32, 4)), shares);
+                return;
+            }
+            case 'Q':
+                if (ours(m + 19)) ++crosses;
+                return;
+            default: return;
+        }
+    }
+};
+
+[[nodiscard]] inline bool itch_start(const std::string& path, const ImportOptions& opts, RawTape& raw, std::string& why) {
+    if (opts.symbol.empty()) {
+        why = "an ITCH file holds every stock the exchange trades: pick one with symbol= (for example symbol=AAPL)";
+        return false;
+    }
+    if (!itch_date(base_name(path), raw.h.date)) {
+        why = "the file's name does not give its day: ITCH times are from midnight, so name the file as Nasdaq does "
+              "(MMDDYYYY.NASDAQ_ITCH50)";
+        return false;
+    }
+    raw.h.format = "itch";
+    raw.h.importer = "itch 1 (TotalView-ITCH 5.0)";
+    raw.h.source_file = base_name(path);
+    raw.h.instrument = opts.symbol;
+    raw.h.depth = Depth::L3;
+    raw.kind = TimeKind::Midnight;
+    return true;
+}
+
+[[nodiscard]] inline bool itch_finish(const ItchReader& r, const ImportOptions& opts, RawTape& raw, std::string& why) {
+    if (raw.ev.empty()) {
+        why = "no orders or trades for symbol=" + opts.symbol + " in " + grouped(static_cast<std::int64_t>(r.messages)) +
+              " messages";
+        return false;
+    }
+    if (r.crosses > 0)
+        raw.skipped["cross trades (the orders behind them leave the book as executions marked not printable)"] = r.crosses;
+    std::string notes = "nasdaq totalview-itch 5.0: " + grouped(static_cast<std::int64_t>(r.messages)) +
+                        " messages read, " + opts.symbol + "'s kept; a day's file starts from an empty book";
+    if (r.not_printable > 0)
+        notes += "; " + grouped(static_cast<std::int64_t>(r.not_printable)) + " execution" +
+                 (r.not_printable == 1 ? "" : "s") + " marked not printable left the book as cancels, with no print";
+    raw.h.notes = notes;
+    return true;
+}
+
+// From bytes in memory (the tests'); ingest streams the file with import_itch_file.
+[[nodiscard]] inline bool import_itch(const std::string& path, std::string_view bytes, const ImportOptions& opts,
+                                      RawTape& raw, std::string& why) {
+    if (!itch_start(path, opts, raw, why)) return false;
+    ItchReader r(opts.symbol, raw);
+    return r.feed(bytes, why) && r.end(why) && itch_finish(r, opts, raw, why);
+}
+
 // ---- companions -------------------------------------------------------------------------
 
 // A second file some formats read beside the first: LOBSTER's orderbook file,
@@ -2224,11 +2506,12 @@ struct Companion {
 
 // ---- detection and the front door ------------------------------------------------------
 
-inline constexpr const char* kFormats = "csv lobster databento tardis binance coinbase kraken";
+inline constexpr const char* kFormats = "csv lobster databento tardis binance coinbase kraken itch";
 
 // Which importer reads this file. `head` is the start of it: its first line
 // decides, except for JSON, which may spread one record over several lines.
 [[nodiscard]] inline std::string detect_format(std::string_view path, std::string_view head) {
+    if (looks_like_itch(head.substr(0, 4096))) return "itch";
     std::string_view first_line = head.substr(0, head.find('\n'));
     if (!first_line.empty() && first_line.back() == '\r') first_line.remove_suffix(1);
     if (first_line.substr(0, 3) == "DBN" || looks_like_databento_csv(first_line)) return "databento";
@@ -2254,11 +2537,26 @@ inline constexpr const char* kFormats = "csv lobster databento tardis binance co
     else if (starts({0x28, 0xb5, 0x2f, 0xfd})) why = "compressed with zstd: run zstd -d " + file + " and add the result";
     else if (starts({'P', 'K', 0x03, 0x04})) why = "a zip archive: unzip " + file + " and add the file inside";
     else if (bytes.empty()) why = "the file is empty";
-    else if (starts({'D', 'B', 'N'})) return true;
+    else if (starts({'D', 'B', 'N'}) || looks_like_itch(bytes.substr(0, 4096))) return true;
     else if (bytes.substr(0, std::min<std::size_t>(bytes.size(), 4096)).find('\0') != std::string_view::npos)
         why = "a binary file of no format this build reads (" + std::string(kFormats) + ")";
     else return true;
     return false;
+}
+
+// What every importer's tape gets last: its name, then finish().
+[[nodiscard]] inline bool name_and_finish(const std::string& path, const std::string& format, const ImportOptions& opts,
+                                          RawTape& raw, Tape& out, std::string& why) {
+    raw.h.name = !opts.name.empty() ? opts.name : name_from_file(path);
+    if ((format == "lobster" || format == "itch") && opts.name.empty())
+        raw.h.name = lower(raw.h.instrument) + "-" + raw.h.date;
+    if (format == "tardis" && opts.name.empty()) raw.h.name = tardis_name(raw);
+    if (!opts.instrument.empty()) raw.h.instrument = opts.instrument;
+    if (!valid_name(raw.h.name)) {
+        why = "'" + raw.h.name + "' cannot be a tape name (lower-case letters, digits, - _ .): give one with name=";
+        return false;
+    }
+    return finish(raw, opts, out, why);
 }
 
 // Imports one file into a tape. `companion` is a second file some formats
@@ -2275,21 +2573,45 @@ inline constexpr const char* kFormats = "csv lobster databento tardis binance co
     else if (format == "binance") ok = import_binance(path, bytes, companion, raw, why);
     else if (format == "coinbase") ok = import_coinbase(path, bytes, opts, raw, why);
     else if (format == "kraken") ok = import_kraken(path, bytes, opts, raw, why);
+    else if (format == "itch") ok = import_itch(path, bytes, opts, raw, why);
     else {
         why = "unknown format " + format + " (formats: " + kFormats + ")";
         return false;
     }
     if (!ok) return false;
     raw.h.source_cksum = cksum_of(bytes);
-    raw.h.name = !opts.name.empty() ? opts.name : name_from_file(path);
-    if (format == "lobster" && opts.name.empty()) raw.h.name = lower(raw.h.instrument) + "-" + raw.h.date;
-    if (format == "tardis" && opts.name.empty()) raw.h.name = tardis_name(raw);
-    if (!opts.instrument.empty()) raw.h.instrument = opts.instrument;
-    if (!valid_name(raw.h.name)) {
-        why = "'" + raw.h.name + "' cannot be a tape name (lower-case letters, digits, - _ .): give one with name=";
+    return name_and_finish(path, format, opts, raw, out, why);
+}
+
+// An ITCH file, streamed from disk a megabyte at a time: a day's file is
+// gigabytes, and only one stock's messages are kept.
+[[nodiscard]] inline bool import_itch_file(const std::string& path, const ImportOptions& opts, Tape& out,
+                                           std::string& why) {
+    RawTape raw;
+    if (!itch_start(path, opts, raw, why)) return false;
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        why = "cannot read " + path;
         return false;
     }
-    return finish(raw, opts, out, why);
+    ItchReader r(opts.symbol, raw);
+    Cksum ck;
+    std::string chunk(1 << 20, '\0');
+    while (in) {
+        in.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+        const auto n = static_cast<std::size_t>(in.gcount());
+        if (n == 0) break;
+        const std::string_view got(chunk.data(), n);
+        ck.add(got);
+        if (!r.feed(got, why)) return false;
+    }
+    if (in.bad()) {
+        why = "cannot read " + path;
+        return false;
+    }
+    if (!r.end(why) || !itch_finish(r, opts, raw, why)) return false;
+    raw.h.source_cksum = ck.text();
+    return name_and_finish(path, "itch", opts, raw, out, why);
 }
 
 } // namespace px::data

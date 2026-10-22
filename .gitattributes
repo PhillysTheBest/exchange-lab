@@ -3,3 +3,4 @@
 # script with CRLF endings does not run under bash).
 * text=auto eol=lf
 *.png binary
+*.NASDAQ_ITCH50 binary
