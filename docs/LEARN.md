@@ -27,15 +27,20 @@ Three rules apply to any arena number:
 1. **It is simulated.** A reaction delay is an input you set, not a measurement, and it
    never mixes with the engine's measured timings in `docs/ENGINE.md`.
 2. **Market health comes first.** A book that has come loose from the fundamental is not a
-   market, and nothing read off it counts (`docs/ARENA.md`, "The experiment").
+   market, and nothing read off it counts ([The experiment](ARENA.md#the-experiment) in `docs/ARENA.md`).
 3. **Report the paired difference, with its standard error.** "Underpowered" and "nothing
    there" are different claims.
 
-**Setup.** You need g++ 13 and GNU make, nothing else. From the repository root, run
-`make app` (on Windows, MSYS2 UCRT64's `mingw32-make app`), then start the app with
-`build/release/exchange-lab`. Lines starting with `>` are typed at its prompt; `/learn N`
-shows exercise N there too, and `/help NAME` explains any command. The other lines run in an
-ordinary shell. Every command was checked on Linux.
+**Setup.** You need g++ 13 and GNU make, nothing else. From the repository root:
+
+```bash
+make app                      # Windows: mingw32-make app, in MSYS2 UCRT64
+build/release/exchange-lab
+```
+
+Lines starting with `>` are typed at the app's prompt; the other lines run in an ordinary
+shell. `/learn N` shows exercise N inside the app, and `/help NAME` explains any command.
+Every command here was checked on Linux.
 
 ## 1. See an order book
 
@@ -63,13 +68,14 @@ position, marked value) and SESSION (the book-value gap), and ends with a seed a
 (`still at 60ms, seed 42, session hash 207af9614ae8f2f4` when written). Run it twice.
 
 **Think about.** Why does the engine cancel participant 3's resting ask rather than let it trade
-with itself? What would two strategies sharing an owner id lose (`docs/ARENA.md`, "The market")?
+with itself? What would two strategies sharing an owner id lose ([The market](ARENA.md#the-market) in `docs/ARENA.md`)?
 **Read next:** [What it does](ENGINE.md#what-it-does) in `docs/ENGINE.md`; `help` inside `/book`.
 
 ## 2. Trade by hand
 
 **Goal:** become a participant. A file of orders in simulated time plays as a strategy called
-`you`; keystrokes cannot, as a wall clock in a session breaks replay (`docs/ARENA.md`).
+`you`. Keystrokes cannot, because a wall clock in a session would break replay
+([Trading by hand](ARENA.md#trading-by-hand)).
 
 ```
 > /watch script=tools/arena_script_demo.txt                  # live: 24-bit colour, 96x32 or larger
@@ -83,10 +89,10 @@ the script and restart from the same seed, `q` back to the prompt; none changes 
 60 ms. The hash and every other row differ from exercise 1's: one more participant changes the
 whole session. An off-grid price in a copy of the script is refused, naming file and line.
 
-**Think about.** Account for your final position order by order, stepping `--still` through the
-first 13 ms with `still=`: on seed 42, is the 99.95 bid still live when `cancel 1` fires at 12 ms, as the
-script's comment expects? Why does an order stamped at `t` see the market as of `t` minus your
-reaction delay (`docs/ARENA.md`)? **Read next:** `docs/ARENA.md` "Trading by hand".
+**Think about.** Account for your final position order by order, stepping through the first
+13 ms with `still=`: on seed 42, is the 99.95 bid still live when `cancel 1` fires at 12 ms, as
+the script's comment expects? Why does an order stamped at `t` see the market as of `t` minus your
+reaction delay (`docs/ARENA.md`)? **Read next:** [Trading by hand](ARENA.md#trading-by-hand) in `docs/ARENA.md`.
 
 ## 3. Read a strategy against its contract
 
@@ -99,23 +105,25 @@ less arena/strategy.hpp examples/strategies/imbalance.hpp arena/strategies/fader
 
 **Look for.** The wake set: own events, a touch change, a timer, a signal; a burst inside one
 reaction window collapses into one decision (`arena/strategy.hpp`). `MarketView::book` is
-the market as of `now_ns - reaction_ns` . Both examples wait while `in_flight`, the
-count of unacknowledged orders, is non-zero (`arena/strategy.hpp`, `imbalance.hpp`, `fader.hpp`).
-`signal` is 0 for all but the informed participant . No floating point anywhere.
+the market as of `now_ns - reaction_ns`. Both examples wait while `in_flight`, the count of
+unacknowledged orders, is non-zero. `signal` is 0 for all but the informed participant. No
+floating point anywhere.
 
 **Think about.** What would `imbalance` do if it ignored `in_flight`? Why is the ban on floating
 point a replay rule, not a style rule (`docs/ARENA.md`)? Both examples are uninformed and
 take liquidity: what sign do you predict for their spread earned? **Read next:**
-`docs/ARENA.md` "The reaction model" and "Writing a strategy".
+[The reaction model](ARENA.md#the-reaction-model) and [Writing a strategy](ARENA.md#writing-a-strategy) in `docs/ARENA.md`.
 
 ## 4. Write and install a first strategy
 
-**Goal:** a strategy of your own, in the lab programs only. `/add` copies it into the
-git-ignored `arena/strategies/user/` and rebuilds them; the evidence programs and the tests
-never contain it (`Makefile`; `build/release/suite --candidates=imbalance` is refused as unknown). `<name>.hpp` defines
-struct `<Name>` in `px::arena::strategies`, not a built-in name (`imbalance.hpp`). A start
-that joins the touch on both sides and pulls what it leaves behind; save it as
-`$HOME/strategies/joiner.hpp`:
+**Goal:** a strategy of your own. `/add` copies it into the git-ignored
+`arena/strategies/user/` and rebuilds the lab programs. The evidence programs and the tests
+never contain it: `build/release/suite --candidates=imbalance` is refused as unknown. The
+convention is in `imbalance.hpp`: `<name>.hpp` defines struct `<Name>` in
+`px::arena::strategies`, and the name must not be a built-in one.
+
+Here is a start that joins the touch on both sides and pulls what it leaves behind. Save it
+as `$HOME/strategies/joiner.hpp`:
 
 ```cpp
 #pragma once
@@ -192,7 +200,7 @@ seeds, beside a placebo arm whose seat never acts, every session replayed.
 can print "separated" (try `/compare joiner,maker smoke`): which do you
 trust? Why does the suite fix the seat's delay (`docs/RUNNER.md`)? The joiner's maker
 share is not quite 100%: how does a stale view make a passive quote cross? **Read next:**
-`docs/REPORT.md`; `docs/RUNNER.md` "The seat" and "The health gate".
+[`docs/REPORT.md`](REPORT.md); [The seat](RUNNER.md#the-seat) and [The health gate](RUNNER.md#the-health-gate) in `docs/RUNNER.md`.
 
 ## 6. Change one thing
 
@@ -217,7 +225,7 @@ over 24 seeds: an effect below the resolvable size. The 1 ms row separates even 
 **Think about.** When the maker slows from 1 µs to 1 ms, whose row picks up its flow? A `/sweep`
 session ends after 200,000 requests: with busier noise, does it cover the same simulated time,
 and why does the suite end on 25 ms instead (`docs/ARENA.md`)? **Read next:**
-`docs/ARENA.md` "The experiment" and "Comparing strategies".
+[The experiment](ARENA.md#the-experiment) and [Comparing strategies](ARENA.md#comparing-strategies) in `docs/ARENA.md`.
 
 ## 7. The controls
 
@@ -233,7 +241,7 @@ trader. Remove the informed trader and 96% of the 1 ms effect remains; the ledge
 maker's loss to the rival ([the ledger](RESULTS.md#and-the-ledger-says-where-the-money-went) in `docs/RESULTS.md`). Then a positive control tried to
 build a stale quoter on purpose and all three designs failed the health line, so the post-fill
 column's sensitivity is **not established**; its near-zero reading rests on an argument (the
-fundamental is a martingale), not a calibration (`docs/ARENA.md`, "The positive control, and the limitation it found").
+fundamental is a martingale), not a calibration ([The positive control, and the limitation it found](ARENA.md#the-positive-control-and-the-limitation-it-found)).
 
 **Look for.** Health first: at 1 µs this null run printed a gap of 38.72 ticks, against 4.97 in
 exercise 6's run; the published null shows 41–47 ([What else is in results/arena-windows/](RESULTS.md#what-else-is-in-resultsarena-windows)). `/controls` ends
@@ -245,8 +253,9 @@ control has a planted defect in `test_arena` that makes it fail (`docs/CONTROLS.
 (`docs/RUNNER.md`), and dropped its null family because the placebo failed that gate on
 56 of 64 seeds (`docs/REPORT.md`). How much weight can the 96% bear, and how would you
 test it? Why is a null control not enough alone (`docs/ARENA.md`)? **Read next:**
-`docs/ARENA.md`, "What the evidence actually says" to "Four things that were wrong first";
-`docs/CONTROLS.md`.
+[What the evidence actually says](ARENA.md#what-the-evidence-actually-says) to
+[Four things that were wrong first](ARENA.md#four-things-that-were-wrong-first-and-what-they-cost)
+in `docs/ARENA.md`; [`docs/CONTROLS.md`](CONTROLS.md).
 
 ## 8. Reproduce a run
 
@@ -270,7 +279,7 @@ changed since the run (checksum ... then, ... now): not the same strategy`.
 **Think about.** Why are `suite.cfg`'s `run.*` and `build.*` lines recorded but never conditions
 (`docs/REPRODUCE.md`)? Cross-platform replay of an installed strategy is checked, not
 promised (`docs/REPRODUCE.md`): what in your header could break it? **Read next:**
-`docs/REPRODUCE.md`.
+[`docs/REPRODUCE.md`](REPRODUCE.md).
 
 ## Where to go from here
 

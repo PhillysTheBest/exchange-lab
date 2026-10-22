@@ -1,33 +1,27 @@
 # The matching engine
 
-The market runs on a real matching engine, and the engine is measured like one. This file
-holds its design, how it is measured, the results and how its correctness is tested. The
-README carries the headline numbers; every one of them, and every table here, is printed
-from `results/` by `python bench/summarize_results.py`.
+The market runs on a real exchange matching engine, measured like one. This file is its
+design, how it is timed, the results, and how its correctness is tested.
 
-The market runs on a real matching engine, and the engine is measured like one. It is a
-single-threaded exchange matching core fed by a lock-free single-producer/single-consumer
-ring, with **no heap allocation after start-up**, int64 fixed-point prices and a
-price-ordered level index. The measurement and test machinery that backs every number
-below comes with it.
+> **These numbers are measured, on hardware.** The arena's are simulated, and the two kinds
+> of number must not be read together.
 
-> **These numbers are measured, on hardware; the arena's are simulated.** The two kinds of
-> number must not be read together.
-
-**The engine's numbers.** Measured on a laptop (i5-12450H, Windows 11, on battery, Balanced power
-plan) over five 1M-order streams per profile. Matching latency here means the time from
-dequeuing an order to writing its last resulting event to the outbound ring.
+**In short:** a single-threaded matching core fed by a lock-free single-producer,
+single-consumer ring, with no heap allocation after start-up and int64 fixed-point prices.
+On a laptop (i5-12450H, Windows 11, on battery, Balanced power plan), over five 1M-order
+streams per book:
 
 | Book | p50 | p99.9 | Under 2 µs | Slowest order |
 |---|---|---|---|---|
 | Deep (about 1,500 price levels per side) | 278 ns | 1.2 µs | 99.95% | 158 µs |
 | Thin | 154 ns | 891 ns | 99.96% | — |
 
-**Determinism.** Replays are bit-identical: the same input gives the same event stream,
-on Windows and on Linux. On Windows no order is slow on every replay; each order's
-best-of-5 time is under 1 µs. So the tail there comes from the machine, not the engine's
-work. The sections below show how that was established rather than assumed, and the
-one case where the engine itself goes over 2 µs.
+That is **service time**: from dequeuing an order to writing its last event to the
+outbound ring. Replays are bit-identical on Windows and Linux. On Windows no order is slow
+on every replay, and each order's best-of-5 time is under 1 µs, so the tail there comes from
+the machine, not the engine's work. The sections below show how that was established, and
+the one case where the engine itself goes over 2 µs. Every table is printed from `results/`
+by `python bench/summarize_results.py`.
 
 ## What it does
 
@@ -119,8 +113,8 @@ before and after the fix, using the same seed-42 hash.
   cannot move work across them. Both stamps come from the same core, so no cross-core
   clock comparison is involved.
 - **What is not timed.** Time spent waiting in the inbound ring is excluded: this is
-  the engine's *service time*, not wire-to-wire tick-to-trade. There is no network, no
-  parsing and no NIC.
+  the engine's *service time*, not a time from wire to wire. There is no network, no
+  parsing and no network card.
 - **Timer floor.** The empty timestamp bracket costs about 32 ns. It is printed with
   every run and never subtracted.
 - **Workload** ([order_stream.hpp](../sim/order_stream.hpp)). A seeded, pre-generated
@@ -258,11 +252,7 @@ g++ 13.3, same commands; raw output in [results/wsl2/](../results/wsl2/).
 - **Containers and ring.** The pool, hash map and level index are checked against
   standard-library models over millions of random operations. The SPSC ring is checked
   with 10M sequenced messages across two pinned threads.
-- **The arena** ([test_arena.cpp](../tests/test_arena.cpp)): 1,429 checks. They cover the
-  suite, the report and the controls, each control against its planted defect. A participant's
-  book, rebuilt from the event stream alone, is held against the engine's own ladder
-  after every one of 200,000 requests — the same differential shape as the fuzzer, with
-  the engine as oracle. Plus the scheduler's total order under heavy timestamp
-  collision, queue position by hand through a cancel and a partial fill, bit-identical
-  replay from a seed, and the closed-world identity: cash, position and marked value
-  each sum to **exactly zero** across participants, in integers.
+- **The arena's tests** ([test_arena.cpp](../tests/test_arena.cpp), 1,429 checks) include
+  the same differential shape: a participant's book, rebuilt from the event stream alone,
+  is held against the engine's own after every one of 200,000 requests.
+  [`ARENA.md`](ARENA.md) covers the rest.
