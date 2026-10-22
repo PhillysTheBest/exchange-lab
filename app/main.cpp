@@ -404,6 +404,22 @@ std::vector<std::string> complete(const std::string& line, std::size_t& start) {
         else options.insert(options.end(), {"seed=", "still=", "script=", "lineup="});
         return keep_prefixed(options, word);
     }
+    if (cmd == "/data") {
+        if (first_words.size() == 1) return keep_prefixed({"add", "show", "remove"}, word);
+        if (first_words[1] == "add") {
+            if (first_words.size() == 2) return complete_path(word); // the file, then its settings
+            return keep_prefixed({"format=", "name=", "columns=", "time=", "tick=", "symbol=", "instrument="}, word);
+        }
+        if (first_words.size() == 2 && (first_words[1] == "show" || first_words[1] == "remove")) {
+            std::vector<std::string> names;
+            std::error_code ec;
+            for (const fs::directory_entry& e : fs::directory_iterator("data", ec))
+                if (e.path().extension() == ".tape") names.push_back(e.path().stem().string());
+            std::sort(names.begin(), names.end());
+            return keep_prefixed(names, word);
+        }
+        return {};
+    }
     if (cmd == "/controls") return keep_prefixed({"smoke"}, word);
     if (cmd == "/learn") {
         std::vector<std::string> numbers;

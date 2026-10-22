@@ -63,6 +63,15 @@ inline constexpr CommandInfo kCommands[] = {
      "Runs sweep_lab with the flags as given; /sweep --help lists them.\n"
      "  /sweep --seeds=8 --values=1000,1000000\n"
      "  /sweep --null --seeds=8"},
+    {"/data", "[add FILE [SETTINGS] | show NAME | remove NAME]",
+     "bring a market data file in as a tape, and see what it holds",
+     "Runs ingest. A file you already have is read from disk, never fetched, and written to\n"
+     "data/NAME.tape, which git ignores. /data alone lists the tapes. Settings, when the\n"
+     "file does not say: format=csv|lobster name= columns= time= tick= symbol= instrument=\n"
+     "  /data add examples/data/DEMO_2012-06-21_34200000_57600000_message_3.csv\n"
+     "  /data add examples/data/trades.csv name=demo-trades\n"
+     "  /data add quotes.csv columns=time,bid,bid_qty,ask,ask_qty\n"
+     "  /data show demo-2012-06-21"},
     {"/controls", "[smoke]", "check the evaluator itself against answers known in advance",
      "Runs controls: eight controls, each of which the tests show can fail."},
     {"/book", "", "an order book you drive by hand (type help inside)",
@@ -139,7 +148,7 @@ struct Env {
     std::string latest_run;            // the newest complete run directory, or empty
 };
 
-enum class Program { None, Make, Suite, Reproduce, Controls, Arena, Sweep, Repl };
+enum class Program { None, Make, Suite, Reproduce, Controls, Arena, Sweep, Repl, Ingest };
 
 // What one command will do. Internal commands (help, learn, strategies, runs,
 // report, quit) leave build and run empty and are answered by main.cpp.
@@ -292,6 +301,38 @@ struct Plan {
         return p;
     }
 
+    if (cmd == "/data") {
+        p.build = make_target(env, program_path(env, "ingest"));
+        p.run = {program_path(env, "ingest")};
+        p.program = Program::Ingest;
+        if (args.empty()) {
+            p.run.push_back("list");
+            return p;
+        }
+        const std::string& sub = args[0];
+        std::vector<std::string> names, settings;
+        for (std::size_t i = 1; i < args.size(); ++i)
+            (args[i].find('=') != std::string::npos ? settings : names).push_back(args[i]);
+        if (sub == "add") {
+            if (names.size() != 1) {
+                p.error = "say one file: /data add FILE [name=NAME ...]";
+                return p;
+            }
+        } else if (sub == "show" || sub == "remove") {
+            if (names.size() != 1 || !settings.empty()) {
+                p.error = "say one tape: /data " + sub + " NAME; /data lists them";
+                return p;
+            }
+        } else {
+            p.error = "say add, show or remove, or nothing to list the tapes; /help data";
+            return p;
+        }
+        p.run.push_back(sub);
+        p.run.push_back(names[0]);
+        p.run.insert(p.run.end(), settings.begin(), settings.end());
+        return p;
+    }
+
     if (cmd == "/controls") {
         if (args.size() > 1 || (args.size() == 1 && args[0] != "smoke")) {
             p.error = "/controls takes nothing, or smoke";
@@ -337,6 +378,10 @@ struct Plan {
         break;
     case Program::Controls:
         if (status == 1) return "a control did not hold: do not trust the evaluator on this build";
+        if (status == 2) return "the command was refused; the message above says why";
+        break;
+    case Program::Ingest:
+        if (status == 1) return "refused; the message above says why";
         if (status == 2) return "the command was refused; the message above says why";
         break;
     case Program::Arena:

@@ -1,0 +1,16 @@
+# Sample market data
+
+Every file here is synthetic: made up for the tests by a script, from no real market, so
+it carries no licence and can be committed. Real data never goes in the repository; a file
+you bring stays where you keep it, and its tape goes in `data/`, which git ignores
+(`docs/DATA.md`).
+
+| File | What it shows |
+|---|---|
+| `DEMO_2012-06-21_34200000_57600000_message_3.csv` | LOBSTER's message format: 700 orders, cancels and executions for an invented instrument, `DEMO`, with one auction trade and a halt |
+| `DEMO_2012-06-21_34200000_57600000_orderbook_3.csv` | its orderbook file, three levels a side after every message; `/data add` reads it to start the book with the orders resting before the first message |
+| `trades.csv` | 500 trades with a header, epoch-millisecond times and fractional quantities, as a crypto exchange's export looks |
+| `quotes_and_trades.csv` | best bid and ask changes and trades in one file, `;`-separated, ISO times and no header: `/data add` needs `columns=time,price,qty,side,bid,bid_qty,ask,ask_qty` |
+
+`tests/test_data.cpp` holds the LOBSTER sample to its orderbook file after every message:
+the book a tape rebuilds must be the book LOBSTER's own file says it was.

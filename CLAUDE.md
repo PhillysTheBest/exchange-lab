@@ -81,7 +81,7 @@ Linux. No CMake, no package manager, no third-party libraries — keep it that w
 
 ```bash
 mingw32-make app        # the terminal app, build/release/exchange-lab, and every program it runs
-mingw32-make test       # debug (-Og, PX_DEBUG invariants, _GLIBCXX_ASSERTIONS): builds and runs all 8 tests
+mingw32-make test       # debug (-Og, PX_DEBUG invariants, _GLIBCXX_ASSERTIONS): builds and runs all 9 tests
 mingw32-make bench      # release (-O3 -march=native -flto): builds and runs all 3 benchmarks
 mingw32-make latency    # only the 1M-order matching-latency benchmark
 mingw32-make repl       # then: build/release/repl.exe < tools/repl_demo.txt
@@ -91,7 +91,9 @@ mingw32-make compare CANDIDATES=a,b   # the standard experiment, written to runs
 mingw32-make controls   # the evaluator's own controls on the standard block (docs/CONTROLS.md)
 mingw32-make reproduce RUN=runs/x   # re-run a run from its suite.cfg, compare every file (docs/REPRODUCE.md)
 mingw32-make test-app   # the app driven through its commands (writes runs/maker-smoke)
-mingw32-make all        # tests, command-line, lab and app checks, benchmarks, REPL, arena
+mingw32-make data FILE=path [OPTS='name=x']   # bring a market data file in as data/NAME.tape (docs/DATA_PLAN.md)
+mingw32-make test-data  # the ingest program's command line, against the synthetic samples in examples/data/
+mingw32-make all        # tests, command-line, lab, app and data checks, benchmarks, REPL, arena
 mingw32-make clean
 ```
 
