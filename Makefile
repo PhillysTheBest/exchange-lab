@@ -75,8 +75,10 @@ REPL_BIN   := $(REL)/repl$(EXE)
 # consumers of the same MatchingEngine the benchmarks measure, so neither can
 # affect a latency number.
 ARENA_BINS := $(REL)/sweep$(EXE) $(REL)/arena$(EXE) $(REL)/suite$(EXE) $(REL)/controls$(EXE)
-# Bringing market data in (docs/DATA.md). It links none of the market.
+# Bringing market data in (docs/DATA.md). ingest links none of the market;
+# calibrate runs the reference market, and pins nothing.
 INGEST_BIN := $(REL)/ingest$(EXE)
+CALIBRATE_BIN := $(REL)/calibrate$(EXE)
 
 .PHONY: all test bench latency repl arena sweep controls reproduce clean
 
@@ -349,7 +351,7 @@ APP_BIN := $(REL)/exchange-lab$(EXE)
 
 .PHONY: app test-app
 
-app: $(APP_BIN) $(LAB_BINS) $(REL)/controls$(EXE) $(REPL_BIN) $(INGEST_BIN)
+app: $(APP_BIN) $(LAB_BINS) $(REL)/controls$(EXE) $(REPL_BIN) $(INGEST_BIN) $(CALIBRATE_BIN)
 
 $(APP_BIN): $(ROBJ)/app/main.o
 	$(CXX) $(RELEASE_FLAGS) $^ -o $@ $(LDLIBS)
@@ -361,7 +363,7 @@ $(ROBJ)/app/main.o: INCLUDES += -I$(GEN)
 # /compare maker smoke would for anyone; everything else goes under $(BUILD)/app-test.
 # MSYS2_ARG_CONV_EXCL stops an MSYS2 shell rewriting `-c /help` into a Windows path,
 # and tr drops the carriage returns a Windows program writes before a line ends.
-test-app: $(APP_BIN) $(LAB_BINS) $(REL)/controls$(EXE) $(REPL_BIN) $(INGEST_BIN)
+test-app: $(APP_BIN) $(LAB_BINS) $(REL)/controls$(EXE) $(REPL_BIN) $(INGEST_BIN) $(CALIBRATE_BIN)
 	@set -e; export MSYS2_ARG_CONV_EXCL='*'; \
 	n=0; ok() { n=$$((n+1)); }; fail() { echo "FAIL: $$1"; exit 1; }; \
 	A=./$(APP_BIN); D=$(BUILD)/app-test; rm -rf $$D; mkdir -p $$D; \
@@ -419,14 +421,19 @@ $(INGEST_BIN): $(ROBJ)/marketdata/ingest.o
 	$(call announce,linking,$@)
 	$(CXX) $(RELEASE_FLAGS) $^ -o $@ $(LDLIBS)
 
+$(CALIBRATE_BIN): $(ROBJ)/marketdata/calibrate.o $(LIB_REL)
+	$(call announce,linking,$@)
+	$(CXX) $(RELEASE_FLAGS) $^ -o $@ $(LDLIBS)
+
 data: $(INGEST_BIN)
 	@set -e; \
 	if [ -n '$(FILE)' ]; then ./$(INGEST_BIN) add '$(FILE)' $(OPTS); \
 	elif [ -n '$(SHOW)' ]; then ./$(INGEST_BIN) show '$(SHOW)'; \
 	else ./$(INGEST_BIN) list; fi
 
-# The command line, run against the samples, in a directory of its own.
-test-data: $(INGEST_BIN)
+# The command line, run against the samples, in a directory of its own; then
+# the known-answer control, which must hold, with its planted defects, which must break it.
+test-data: $(INGEST_BIN) $(CALIBRATE_BIN)
 	@set -e; \
 	n=0; ok() { n=$$((n+1)); }; fail() { echo "FAIL: $$1"; exit 1; }; \
 	exits() { want=$$1; shift; rc=0; "$$@" > /dev/null 2>&1 || rc=$$?; [ $$rc -eq $$want ]; }; \
@@ -477,7 +484,18 @@ test-data: $(INGEST_BIN)
 	exits 1 $$I remove trades dir=$$D || fail "removing it twice should exit 1"; ok; \
 	[ -f examples/data/trades.csv ] || fail "remove must never touch the source"; ok; \
 	rm -rf $$D; \
-	echo "$$n/$$n ingest checks passed"
+	echo "$$n/$$n ingest checks passed"; \
+	echo "== the known-answer control (a few hundred simulated markets; under a minute)"; \
+	C=./$(CALIBRATE_BIN); m=0; okc() { m=$$((m+1)); }; \
+	$$C --help > /dev/null || fail "calibrate --help should succeed"; okc; \
+	exits 2 $$C --bogus || fail "calibrate: an unknown flag should exit 2"; okc; \
+	out=$$($$C --control) || { echo "$$out"; fail "the control should hold and both defects break it"; }; okc; \
+	echo "$$out" | grep -Eq '^  L3 +as written +3 / (30|40|50) / (15000|20000|30000) +yes$$' \
+	    || { echo "$$out"; fail "order by order, the truth should come back within one grid step"; }; okc; \
+	[ "$$(echo "$$out" | grep -c 'no, as it must not$$')" -eq 2 ] || fail "both planted defects should break it"; okc; \
+	echo "$$out" | grep -Eq '^  trades .* no$$' || fail "trades alone should not be enough"; okc; \
+	echo "$$out" | grep -E '^  (L3|trades) ' | sed 's/^/  /'; \
+	echo "$$m/$$m control checks passed"
 
 $(LOBJ)/%.o: %.cpp $(MANIFEST)
 	$(call announce,compiling,$<)
