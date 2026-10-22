@@ -559,6 +559,14 @@ struct ArmHealth {
     if (d.change[0] == '\0') std::snprintf(b, sizeof b, "  market    %s, every parameter at its default\n", d.lineup);
     else std::snprintf(b, sizeof b, "  market    %s, every parameter at its default except: %s\n", d.lineup, d.change);
     s += b;
+    if (!d.calibration.empty()) {
+        // A calibrated market: say which tape, and how little that means.
+        std::snprintf(b, sizeof b, "            calibrated from the tape %s (%s): like it in %s, and in nothing else\n",
+                      cfg_value(d.calibration, "calibration.tape").c_str(),
+                      cfg_value(d.calibration, "calibration.depth").c_str(),
+                      cfg_value(d.calibration, "calibration.matched").c_str());
+        s += b;
+    }
     std::snprintf(b, sizeof b, "  seat      #%zu (owner %zu), appended last, never informed; reaction %s ns, set by the suite\n",
                   seat, seat + 1, with_commas(d.seat_reaction_ns).c_str());
     s += b;

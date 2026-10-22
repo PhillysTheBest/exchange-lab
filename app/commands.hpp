@@ -37,30 +37,34 @@ inline constexpr CommandInfo kCommands[] = {
      "Runs make strategy STRATEGY=PATH: checks the name, copies the header into\n"
      "arena/strategies/user/ and rebuilds the lab programs, the only ones that can see it.\n"
      "  /add examples/strategies/imbalance.hpp"},
-    {"/compare", "NAME[,NAME...] [smoke] [wide|busy|all]",
+    {"/compare", "NAME[,NAME...] [smoke] [wide|busy|all|market=M]",
      "score strategies in the standard seat against an empty one, then show the report",
      "Runs suite_lab. Every candidate sits in the same seat of the same market on the same\n"
      "64 seeds (smoke: 4), beside a placebo arm whose seat never acts. wide and busy are\n"
-     "scenario families; all runs every family, side by side, never pooled.\n"
+     "scenario families; all runs every family, side by side, never pooled. market= runs\n"
+     "on a market made by /calibrate instead: a family of its own.\n"
      "  /compare imbalance smoke\n"
      "  /compare imbalance,maker\n"
-     "  /compare imbalance all"},
+     "  /compare imbalance all\n"
+     "  /compare imbalance market=demo"},
     {"/runs", "", "the run directories in runs/, newest first", ""},
     {"/report", "[RUN]", "show a run's report; the newest run by default", "/report imbalance-standard"},
     {"/reproduce", "[RUN]", "re-run a run from its own record and compare every file",
      "Runs suite_lab --reproduce. It refuses before running if the conditions or a strategy\n"
      "changed since the run. The newest run by default.\n"
      "  /reproduce imbalance-standard"},
-    {"/watch", "[NAME,...] [seed=N] [still=NS] [script=PATH] [lineup=SPEC]",
+    {"/watch", "[NAME,...] [seed=N] [still=NS] [script=PATH] [lineup=SPEC] [market=M]",
      "watch a market trade live, full screen; q comes back here",
      "Runs arena_lab. Names are added to the default line-up; lineup= replaces it.\n"
-     "still= draws one frame at that simulated instant; script= plays a file of orders as you.\n"
+     "still= draws one frame at that simulated instant; script= plays a file of orders as you;\n"
+     "market= watches a market made by /calibrate.\n"
      "  /watch\n"
      "  /watch imbalance seed=43\n"
      "  /watch still=60000000\n"
      "  /watch script=tools/arena_script_demo.txt"},
-    {"/sweep", "[FLAGS...]", "explore: run one market many times, changing one thing",
-     "Runs sweep_lab with the flags as given; /sweep --help lists them.\n"
+    {"/sweep", "[FLAGS...] [market=M]", "explore: run one market many times, changing one thing",
+     "Runs sweep_lab with the flags as given; /sweep --help lists them. market= starts from\n"
+     "a market made by /calibrate.\n"
      "  /sweep --seeds=8 --values=1000,1000000\n"
      "  /sweep --null --seeds=8"},
     {"/data", "[add FILE [SETTINGS] | show NAME | remove NAME]",
@@ -72,6 +76,15 @@ inline constexpr CommandInfo kCommands[] = {
      "  /data add examples/data/trades.csv name=demo-trades\n"
      "  /data add quotes.csv columns=time,bid,bid_qty,ask,ask_qty\n"
      "  /data show demo-2012-06-21"},
+    {"/calibrate", "NAME", "set the market to resemble a tape, and check that it is still a market",
+     "Runs calibrate. It first runs the known-answer control, then moves the market's spread,\n"
+     "order size and pace until its statistics match the tape's, then runs the health gate on\n"
+     "64 seeds, and only then writes markets/NAME.cfg for /compare, /watch and /sweep market=NAME.\n"
+     "A trades-only tape is refused: the control does not hold from trades alone.\n"
+     "--known=NAME writes a tape whose answer is known, to try the whole path on.\n"
+     "  /calibrate --known=known\n"
+     "  /calibrate known\n"
+     "  /calibrate --control"},
     {"/controls", "[smoke]", "check the evaluator itself against answers known in advance",
      "Runs controls: eight controls, each of which the tests show can fail."},
     {"/book", "", "an order book you drive by hand (type help inside)",
@@ -148,7 +161,7 @@ struct Env {
     std::string latest_run;            // the newest complete run directory, or empty
 };
 
-enum class Program { None, Make, Suite, Reproduce, Controls, Arena, Sweep, Repl, Ingest };
+enum class Program { None, Make, Suite, Reproduce, Controls, Arena, Sweep, Repl, Ingest, Calibrate };
 
 // What one command will do. Internal commands (help, learn, strategies, runs,
 // report, quit) leave build and run empty and are answered by main.cpp.
@@ -218,7 +231,7 @@ struct Plan {
     }
 
     if (cmd == "/compare") {
-        std::string candidates, block, suite;
+        std::string candidates, block, suite, market;
         for (const std::string& a : args) {
             if (a == "smoke") {
                 block = "smoke";
@@ -228,6 +241,15 @@ struct Plan {
                     return p;
                 }
                 suite = a;
+            } else if (starts_with(a, "market=")) {
+                market = a.substr(7);
+                if (market.empty()) {
+                    p.error = "say which market: market=NAME; /calibrate makes one";
+                    return p;
+                }
+            } else if (a.find('=') != std::string::npos) {
+                p.error = "unknown setting " + a + "; /help compare";
+                return p;
             } else {
                 if (!candidates.empty()) candidates += ',';
                 candidates += a;
@@ -237,10 +259,15 @@ struct Plan {
             p.error = "say which strategies: /compare NAME[,NAME...]; /strategies lists them";
             return p;
         }
+        if (!market.empty() && !suite.empty()) {
+            p.error = "a calibrated market is a family of its own: give market= or " + suite + ", not both";
+            return p;
+        }
         p.build = make_target(env, program_path(env, "suite_lab"));
         p.run = {program_path(env, "suite_lab"), "--candidates=" + candidates};
         if (!block.empty()) p.run.push_back("--block=" + block);
         if (!suite.empty()) p.run.push_back("--suite=" + suite);
+        if (!market.empty()) p.run.push_back("--market=" + market);
         p.program = Program::Suite;
         return p;
     }
@@ -264,12 +291,13 @@ struct Plan {
     }
 
     if (cmd == "/watch") {
-        std::string extra, lineup, seed, still, script;
+        std::string extra, lineup, seed, still, script, market;
         for (const std::string& a : args) {
             if (starts_with(a, "seed=")) seed = a.substr(5);
             else if (starts_with(a, "still=")) still = a.substr(6);
             else if (starts_with(a, "script=")) script = a.substr(7);
             else if (starts_with(a, "lineup=")) lineup = a.substr(7);
+            else if (starts_with(a, "market=")) market = a.substr(7);
             else if (a.find('=') != std::string::npos) {
                 p.error = "unknown setting " + a + "; /help watch";
                 return p;
@@ -289,6 +317,7 @@ struct Plan {
         if (!seed.empty()) p.run.push_back("--seed=" + seed);
         if (!still.empty()) p.run.push_back("--still=" + still);
         if (!script.empty()) p.run.push_back("--script=" + script);
+        if (!market.empty()) p.run.push_back("--market=" + market);
         p.program = Program::Arena;
         return p;
     }
@@ -296,7 +325,7 @@ struct Plan {
     if (cmd == "/sweep") {
         p.build = make_target(env, program_path(env, "sweep_lab"));
         p.run = {program_path(env, "sweep_lab")};
-        p.run.insert(p.run.end(), args.begin(), args.end());
+        for (const std::string& a : args) p.run.push_back(starts_with(a, "market=") ? "--" + a : a);
         p.program = Program::Sweep;
         return p;
     }
@@ -330,6 +359,21 @@ struct Plan {
         p.run.push_back(sub);
         p.run.push_back(names[0]);
         p.run.insert(p.run.end(), settings.begin(), settings.end());
+        return p;
+    }
+
+    if (cmd == "/calibrate") {
+        // A tape's name, or the program's own flags as given: --known=, --control, --robustness.
+        std::size_t names = 0;
+        for (const std::string& a : args) names += starts_with(a, "-") ? 0 : 1;
+        if (args.empty() || names > 1) {
+            p.error = "say which tape: /calibrate NAME; /data lists them";
+            return p;
+        }
+        p.build = make_target(env, program_path(env, "calibrate"));
+        p.run = {program_path(env, "calibrate")};
+        p.run.insert(p.run.end(), args.begin(), args.end());
+        p.program = Program::Calibrate;
         return p;
     }
 
@@ -382,6 +426,10 @@ struct Plan {
         break;
     case Program::Ingest:
         if (status == 1) return "refused; the message above says why";
+        if (status == 2) return "the command was refused; the message above says why";
+        break;
+    case Program::Calibrate:
+        if (status == 1) return "refused, and nothing was written; the message above says why";
         if (status == 2) return "the command was refused; the message above says why";
         break;
     case Program::Arena:

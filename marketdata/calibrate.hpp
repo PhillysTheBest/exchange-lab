@@ -7,9 +7,12 @@
 // measured the data (marketdata/stats.hpp), read at the data's depth. It then
 // moves three parameters until the two sets of statistics agree:
 //
-//   spread  maker.half_spread_ticks and rival.half_spread_ticks, to the median spread
-//   size    noise.qty, to the median print against the touch depth
+//   spread  maker.half_spread_ticks and rival.half_spread_ticks, to the mean spread
+//   size    noise.qty, to the mean print against the mean touch depth
 //   pace    noise.timer_ns, to the prints it takes the mid to move one tick
+//
+// Means rather than medians: a median spread or print is a whole number of
+// ticks or lots, and moves in jumps the search cannot steer by.
 //
 // Everything else keeps the reference market's value: the price grid, the
 // fundamental's pace (calibration matches ratios, not the clock), and above all
@@ -38,6 +41,7 @@
 #pragma once
 
 #include "arena/suite.hpp"
+#include "marketdata/market_file.hpp"
 #include "marketdata/session_tape.hpp"
 #include "marketdata/stats.hpp"
 
@@ -93,7 +97,7 @@ inline constexpr Knob kKnobs[] = {Knob::Spread, Knob::Size, Knob::Pace};
 [[nodiscard]] inline const char* knob_stat(Knob k) noexcept {
     switch (k) {
         case Knob::Spread: return "mean spread, hundredths of a tick";
-        case Knob::Size: return "median print / touch depth, thousandths";
+        case Knob::Size: return "mean print / mean touch depth, thousandths";
         case Knob::Pace: return "prints per one-tick move, hundredths";
     }
     return "?";
@@ -429,6 +433,136 @@ struct ControlResult {
         out.recovered[i] = want >= 0 && got >= 0 && (got > want ? got - want : want - got) <= 1;
     }
     return true;
+}
+
+// ---- a calibrated market, checked and written down ----------------------------
+
+// The health gate on every seed of a block, for the market with no seat: the
+// suite's own rule (arena/suite.hpp), applied before the market is written, so a
+// market whose book comes loose from the fundamental is never offered.
+struct HealthResult {
+    std::string block;
+    std::uint32_t seeds = 0;
+    std::uint32_t passed = 0;
+    std::vector<std::pair<std::uint64_t, arena::suite::Health>> failing; // seed, reason
+    std::int64_t worst_gap_x100 = 0; // the largest mean |mid - V| of any seed, hundredths of a tick
+    std::uint64_t worst_seed = 0;
+    [[nodiscard]] bool held() const noexcept { return seeds > 0 && passed == seeds; }
+};
+
+[[nodiscard]] inline bool health_check(const arena::suite::SuiteDef& def, const arena::suite::SeedBlock& block,
+                                       HealthResult& out, std::string& why) {
+    out = HealthResult{};
+    out.block = block.name;
+    for (std::uint32_t k = 0; k < block.count; ++k) {
+        const std::uint64_t seed = block.first + k;
+        arena::Roster roster;
+        arena::suite::Origin origin{};
+        arena::suite::ArmRecord rec;
+        if (!arena::suite::build_arm_roster(def, "", roster, origin, why) ||
+            !arena::suite::run_arm(def, block, seed, "none", origin, std::move(roster), rec, why))
+            return false;
+        ++out.seeds;
+        if (rec.session.healthy()) ++out.passed;
+        else out.failing.emplace_back(seed, rec.session.health);
+        const std::uint64_t n = rec.session.gap_samples;
+        const auto gap = n == 0 ? std::int64_t{0} : static_cast<std::int64_t>(rec.session.gap_sum_ticks * 100 / n);
+        if (k == 0 || gap > out.worst_gap_x100) {
+            out.worst_gap_x100 = gap;
+            out.worst_seed = seed;
+        }
+    }
+    return true;
+}
+
+// "3 / 40 / 20000": spread, size and pace, the order every table uses.
+[[nodiscard]] inline std::string knobs_text(const MarketParams& p) {
+    return std::to_string(p.half_spread_ticks) + " / " + std::to_string(p.noise_qty) + " / " +
+           std::to_string(p.noise_timer_ns);
+}
+
+[[nodiscard]] inline std::string matched_text(const Calibration& c) {
+    std::string s;
+    for (const Knob k : kKnobs) {
+        if (!c.fits[static_cast<std::size_t>(k)].used) continue;
+        if (!s.empty()) s += ", ";
+        s += knob_name(k);
+    }
+    return s.empty() ? "nothing" : s;
+}
+
+// markets/NAME.cfg, as marketdata/market_file.hpp reads it. The calibration.*
+// lines become conditions of every run on the market; set.* are its values;
+// the rest is there to be read, and the control and health lines are what the
+// reader insists on before the market may be used.
+[[nodiscard]] inline std::string market_file_text(const std::string& name, const Tape& tape,
+                                                  const std::string& tape_cksum, const Calibration& c,
+                                                  const ControlResult& control, const HealthResult& health) {
+    std::string s;
+    auto kv = [&s](std::string_view k, std::string_view v) {
+        s += k;
+        s += '=';
+        s += v;
+        s += '\n';
+    };
+    s += "# exchange-lab market, calibrated from a tape (docs/DATA.md). Simulated, not measured:\n";
+    s += "# it resembles the tape in the statistics below and in nothing else. The lab programs\n";
+    s += "# read it: /compare STRATEGY market=" + name + ", /watch market=" + name + ", /sweep market=" + name + ".\n";
+    s += "# Which tape, and how: conditions of every run on this market.\n";
+    kv("calibration.version", std::to_string(kMarketVersion));
+    kv("calibration.market", name);
+    kv("calibration.base", "standard");
+    kv("calibration.tape", tape.h.name);
+    kv("calibration.tape_cksum", tape_cksum);
+    kv("calibration.source_cksum", tape.h.source_cksum.empty() ? "-" : tape.h.source_cksum);
+    kv("calibration.depth", depth_name(tape.h.depth));
+    kv("calibration.matched", matched_text(c));
+    s += "# What it sets. Every other parameter is the standard market's.\n";
+    kv("set.maker.half_spread_ticks", std::to_string(c.params.half_spread_ticks));
+    kv("set.rival.half_spread_ticks", std::to_string(c.params.half_spread_ticks));
+    kv("set.noise.qty", std::to_string(c.params.noise_qty));
+    kv("set.noise.timer_ns", std::to_string(c.params.noise_timer_ns));
+    s += "# The tape it came from.\n";
+    kv("tape.format", tape.h.format);
+    kv("tape.file", tape.h.source_file);
+    kv("tape.instrument", tape.h.instrument.empty() ? "-" : tape.h.instrument);
+    kv("tape.date", tape.h.date.empty() ? "-" : tape.h.date);
+    kv("tape.events", std::to_string(tape.ev.size()));
+    kv("tape.span_ns", std::to_string(tape.ev.empty() ? 0 : tape.ev.back().t));
+    s += "# Each statistic: the tape's, the market's, and how far apart as a ratio, in thousandths.\n";
+    s += "# unreachable=1: no value on the grid comes closer, so the market is as near as it gets.\n";
+    for (const Fit& f : c.fits) {
+        const std::string k = std::string("stat.") + knob_name(f.knob);
+        kv(k + ".measures", knob_stat(f.knob));
+        kv(k + ".matched", f.used ? "1" : "0");
+        kv(k + ".tape", std::to_string(f.target));
+        kv(k + ".market", std::to_string(f.achieved));
+        kv(k + ".apart", f.used ? std::to_string(f.distance) : "-");
+        kv(k + ".unreachable", f.unreachable ? "1" : "0");
+    }
+    s += "# How it was searched for: the reference market, no seat, seeds of calibration's own.\n";
+    kv("search.seeds", std::to_string(kCalibrationSeeds[0]) + "-" +
+                           std::to_string(kCalibrationSeeds[std::size(kCalibrationSeeds) - 1]));
+    kv("search.session_ns", std::to_string(arena::suite::standard_suite().session_ns));
+    s += "# Why it may be used: the known-answer control held on the build that made it, and\n";
+    s += "# the book stayed with the fundamental on every seed of the block, with no seat.\n";
+    kv("control.depth", depth_name(control.depth));
+    kv("control.truth", knobs_text(control.truth));
+    kv("control.recovered", knobs_text(control.calibration.params));
+    kv("control.held", control.held() ? "1" : "0");
+    kv("health.block", health.block);
+    kv("health.seeds", std::to_string(health.seeds));
+    kv("health.passed", std::to_string(health.passed));
+    std::string failing;
+    for (const auto& [seed, h] : health.failing) {
+        if (!failing.empty()) failing += ',';
+        failing += std::to_string(seed) + ":" + arena::suite::health_name(h);
+    }
+    kv("health.failing", failing.empty() ? "-" : failing);
+    kv("health.worst_mean_gap_x100", std::to_string(health.worst_gap_x100));
+    kv("health.worst_seed", std::to_string(health.worst_seed));
+    kv("status", "complete");
+    return s;
 }
 
 } // namespace px::data

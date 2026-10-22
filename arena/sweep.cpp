@@ -50,6 +50,9 @@
 //            the fundamental is not a market and nothing read off it counts.
 #include "arena/session.hpp"
 #include "px/types.hpp"
+#if defined(PX_ARENA_USER_STRATEGIES)
+#include "marketdata/market_file.hpp" // --market: sweep_lab only
+#endif
 
 #include <algorithm>
 #include <cstdio>
@@ -76,6 +79,7 @@ struct Options {
     std::string label = "sweep";
     std::string strategies; // empty: the registry's default line-up
     std::vector<std::pair<std::string, std::int64_t>> overrides;
+    std::string market;     // --market: a calibrated market's name, or empty
 };
 
 void usage() {
@@ -89,6 +93,8 @@ void usage() {
         "  --strategies=SPEC     compose the line-up by name, e.g. maker,rival,informed,noise:2\n"
         "  --set=NAME=VALUE      fix any other field; may be repeated\n"
         "  --null                shorthand for --set=informed.enabled=0\n"
+        "  --market=NAME         start from a market calibrated from a tape (markets/NAME.cfg;\n"
+        "                        docs/DATA.md); --set= still applies on top. sweep_lab only\n"
         "  --csv=PATH            one row per participant per session\n"
         "  --summary-csv=PATH    one row per swept point\n"
         "  --label=NAME          a name for the run, written into both CSVs\n"
@@ -365,6 +371,8 @@ int main(int argc, char** argv) {
                 return 2;
             }
             opt.overrides.emplace_back(std::string(kv.substr(0, eq)), n);
+        } else if (a.starts_with("--market=")) {
+            opt.market = std::string(a.substr(9));
         } else {
             std::fprintf(stderr, "unknown argument: %.*s (try --help)\n", static_cast<int>(a.size()), a.data());
             return 2;
@@ -373,6 +381,26 @@ int main(int argc, char** argv) {
     if (opt.values.empty()) {
         std::fprintf(stderr, "nothing to sweep\n");
         return 2;
+    }
+    std::string market_note;
+    if (!opt.market.empty()) {
+#if defined(PX_ARENA_USER_STRATEGIES)
+        // The market's values go first, so a --set= given beside it still wins.
+        data::MarketFile m;
+        std::string why;
+        if (!data::read_market(opt.market, "markets", m, why)) {
+            std::fprintf(stderr, "--market=%s: %s\n", opt.market.c_str(), why.c_str());
+            return 2;
+        }
+        opt.overrides.insert(opt.overrides.begin(), m.sets.begin(), m.sets.end());
+        market_note = m.name + ", calibrated from the tape " +
+                      arena::suite::cfg_value(m.calibration, "calibration.tape") + " (" +
+                      arena::suite::cfg_value(m.calibration, "calibration.depth") + "): like it in " +
+                      arena::suite::cfg_value(m.calibration, "calibration.matched") + ", and in nothing else";
+#else
+        std::fprintf(stderr, "--market: a calibrated market runs in sweep_lab only, never in the evidence programs\n");
+        return 2;
+#endif
     }
 
     std::FILE* csv = nullptr;
@@ -392,6 +420,7 @@ int main(int argc, char** argv) {
         std::printf("arena sweep — simulated, not measured. The engine's latency is in README.md.\n");
         std::printf("  sweeping %s over %zu points, %d shared seeds each, %zu requests per session\n",
                     opt.param.c_str(), opt.values.size(), opt.seeds, opt.requests);
+        if (!market_note.empty()) std::printf("  market   %s\n", market_note.c_str());
         for (const auto& o : opt.overrides) {
             std::printf("  fixed    %s = %lld\n", o.first.c_str(), static_cast<long long>(o.second));
         }

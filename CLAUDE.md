@@ -92,7 +92,9 @@ mingw32-make controls   # the evaluator's own controls on the standard block (do
 mingw32-make reproduce RUN=runs/x   # re-run a run from its suite.cfg, compare every file (docs/REPRODUCE.md)
 mingw32-make test-app   # the app driven through its commands (writes runs/maker-smoke)
 mingw32-make data FILE=path [OPTS='name=x']   # bring a market data file in as data/NAME.tape (docs/DATA_PLAN.md)
-mingw32-make test-data  # the ingest program's command line, against the synthetic samples in examples/data/
+mingw32-make calibrate TAPE=name   # data/NAME.tape -> markets/NAME.cfg; then compare/sweep_lab/arena_lab take a market
+mingw32-make compare CANDIDATES=a MARKET=name  # the standard experiment on a calibrated market (suite_lab only)
+mingw32-make test-data  # ingest on the samples, the known-answer control, a calibrated market end to end (~90 s)
 mingw32-make all        # tests, command-line, lab, app and data checks, benchmarks, REPL, arena
 mingw32-make clean
 ```

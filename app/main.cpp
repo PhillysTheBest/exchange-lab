@@ -365,6 +365,16 @@ std::vector<std::string> keep_prefixed(const std::vector<std::string>& all, cons
     return out;
 }
 
+// The names of the files in `dir` with extension `ext`, sorted: tapes or markets.
+std::vector<std::string> names_in(const char* dir, const char* ext) {
+    std::vector<std::string> names;
+    std::error_code ec;
+    for (const fs::directory_entry& e : fs::directory_iterator(dir, ec))
+        if (e.path().extension() == ext) names.push_back(e.path().stem().string());
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
 std::vector<std::string> complete(const std::string& line, std::size_t& start) {
     const std::size_t space = line.find_last_of(" \t");
     start = space == std::string::npos ? 0 : space + 1;
@@ -393,6 +403,16 @@ std::vector<std::string> complete(const std::string& line, std::size_t& start) {
         start += 7;
         return complete_path(word.substr(7));
     }
+    if ((cmd == "/compare" || cmd == "/watch" || cmd == "/sweep") && word.rfind("market=", 0) == 0) {
+        start += 7;
+        return keep_prefixed(names_in("markets", ".cfg"), word.substr(7));
+    }
+    if (cmd == "/calibrate") {
+        std::vector<std::string> options = names_in("data", ".tape");
+        options.insert(options.end(), {"--known=", "--control", "--robustness"});
+        return keep_prefixed(options, word);
+    }
+    if (cmd == "/sweep") return keep_prefixed({"market="}, word);
     if (cmd == "/compare" || cmd == "/watch") {
         const std::size_t comma = word.rfind(',');
         if (comma != std::string::npos) {
@@ -400,8 +420,8 @@ std::vector<std::string> complete(const std::string& line, std::size_t& start) {
             return keep_prefixed(strategy_names(), word.substr(comma + 1));
         }
         std::vector<std::string> options = strategy_names();
-        if (cmd == "/compare") options.insert(options.end(), {"smoke", "wide", "busy", "all"});
-        else options.insert(options.end(), {"seed=", "still=", "script=", "lineup="});
+        if (cmd == "/compare") options.insert(options.end(), {"smoke", "wide", "busy", "all", "market="});
+        else options.insert(options.end(), {"seed=", "still=", "script=", "lineup=", "market="});
         return keep_prefixed(options, word);
     }
     if (cmd == "/data") {
@@ -410,14 +430,8 @@ std::vector<std::string> complete(const std::string& line, std::size_t& start) {
             if (first_words.size() == 2) return complete_path(word); // the file, then its settings
             return keep_prefixed({"format=", "name=", "columns=", "time=", "tick=", "symbol=", "instrument="}, word);
         }
-        if (first_words.size() == 2 && (first_words[1] == "show" || first_words[1] == "remove")) {
-            std::vector<std::string> names;
-            std::error_code ec;
-            for (const fs::directory_entry& e : fs::directory_iterator("data", ec))
-                if (e.path().extension() == ".tape") names.push_back(e.path().stem().string());
-            std::sort(names.begin(), names.end());
-            return keep_prefixed(names, word);
-        }
+        if (first_words.size() == 2 && (first_words[1] == "show" || first_words[1] == "remove"))
+            return keep_prefixed(names_in("data", ".tape"), word);
         return {};
     }
     if (cmd == "/controls") return keep_prefixed({"smoke"}, word);

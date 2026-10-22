@@ -439,6 +439,104 @@ void test_calibration_parts() {
     PX_CHECK(tape_text(d) == tape_text(t));
 }
 
+// A market file round trip, its refusals, and the suite it becomes.
+void test_market_file() {
+    namespace su = px::arena::suite;
+    std::string why;
+    Calibration c;
+    c.params = MarketParams{3, 40, 20'000};
+    for (const Knob k : kKnobs) {
+        Fit& f = c.fits[static_cast<std::size_t>(k)];
+        f.knob = k;
+        f.used = true;
+        f.target = 100;
+        f.achieved = 103;
+        f.distance = 30;
+    }
+    ControlResult control;
+    control.truth = control_truth();
+    control.calibration.params = control_truth();
+    for (bool& r : control.recovered) r = true;
+    HealthResult health;
+    health.block = "standard";
+    health.seeds = health.passed = 64;
+    const std::string text = market_file_text("demo", small_tape(), "1 2", c, control, health);
+
+    MarketFile m;
+    PX_CHECK(parse_market(text, m, why) && m.name == "demo");
+    PX_CHECK(m.sets.size() == 4 && m.sets[0] == std::make_pair(std::string("maker.half_spread_ticks"), std::int64_t{3}) &&
+             m.sets[1].second == 3 && m.sets[2].second == 40 && m.sets[3].second == 20'000);
+    PX_CHECK(m.calibration.find("calibration.tape_cksum=1 2\n") != std::string::npos);
+    PX_CHECK(m.calibration.find("set.") == std::string::npos && m.calibration.find("stat.") == std::string::npos);
+
+    // The suite it becomes: the standard one with four values moved, named for the market.
+    su::SuiteDef def = su::standard_suite();
+    PX_CHECK(market_suite(m, def, why) && std::string(def.name) == "demo");
+    PX_CHECK(def.roster.maker_half_spread_ticks == 3 && def.roster.rival_half_spread_ticks == 3 &&
+             def.roster.noise_qty == 40 && def.roster.noise_timer_ns == 20'000);
+    PX_CHECK(std::string(def.change) ==
+             "maker.half_spread_ticks=3, rival.half_spread_ticks=3, noise.qty=40, noise.timer_ns=20000");
+    const su::SeedBlock& block = su::kSeedBlocks[1];
+    const std::string cond = su::conditions_text(def, block);
+    PX_CHECK(cond.find("calibration.market=demo\n") != std::string::npos);
+    // A built-in suite's conditions carry no calibration line, so its pinned fingerprint cannot move.
+    for (const std::string& n : su::split_names(su::kSuiteNames)) {
+        su::SuiteDef b = su::standard_suite();
+        PX_CHECK(su::find_suite(n, b) && su::conditions_text(b, block).find("calibration.") == std::string::npos);
+    }
+    // A run's own record gives the same market back, without the file or the tape.
+    su::RunInfo info;
+    info.market_file = "markets/demo.cfg";
+    const std::string cfg = su::suite_cfg_text(def, block, info);
+    PX_CHECK(cfg.find("run.market_file=markets/demo.cfg\n") != std::string::npos);
+    MarketFile r;
+    su::SuiteDef again = su::standard_suite();
+    PX_CHECK(market_from_record(cfg, r, why) && market_suite(r, again, why));
+    PX_CHECK(su::condition_lines(su::suite_cfg_text(again, block, {})) == su::condition_lines(cfg));
+    PX_CHECK(su::condition_lines(su::suite_cfg_text(su::standard_suite(), block, {})) != su::condition_lines(cfg));
+    PX_CHECK(!market_from_record(su::suite_cfg_text(su::standard_suite(), block, {}), r, why));
+
+    // The standard values move nothing, and say so.
+    Calibration same = c;
+    same.params = reference_params();
+    PX_CHECK(parse_market(market_file_text("plain", small_tape(), "1 2", same, control, health), m, why) &&
+             market_suite(m, def, why) && *def.change == '\0');
+
+    // What the reader refuses.
+    auto with = [&](std::string from, std::string to) {
+        std::string t = text;
+        const std::size_t at = t.find(from);
+        PX_CHECK(at != std::string::npos);
+        if (at != std::string::npos) t.replace(at, from.size(), to);
+        return t;
+    };
+    const std::pair<std::string, std::string> refused[] = {
+        {"status=complete\n", ""},                                                   // incomplete
+        {"control.held=1", "control.held=0"},                                       // the control failed
+        {"health.passed=64", "health.passed=63"},                                   // a seed failed the gate
+        {"set.noise.qty=40", "set.informed.edge_ticks=9"},                          // a parameter calibration never moves
+        {"set.noise.qty=40\n", ""},                                                 // one missing
+        {"set.noise.qty=40\n", "set.noise.qty=40\nset.noise.qty=41\n"},            // one set twice
+        {"set.noise.qty=40", "set.noise.qty=0"},                                    // not a value
+        {"calibration.base=standard", "calibration.base=wide"},                     // another suite
+        {"calibration.version=1", "calibration.version=2"},                         // another format
+        {"calibration.market=demo", "calibration.market=standard"},                 // a suite's name
+        {"calibration.tape_cksum=1 2\n", ""},                                       // which tape, unsaid
+    };
+    for (const auto& [from, to] : refused) PX_CHECK(!parse_market(with(from, to), m, why) && !why.empty());
+    PX_CHECK(!market_name_ok("all", why) && !market_name_ok("Bad", why) && market_name_ok("aapl-2012", why));
+
+    // Calibration moves exactly the parameters a market may set, and nothing else.
+    const su::SuiteDef base = su::standard_suite();
+    const su::SuiteDef moved = market_with(base, MarketParams{7, 11, 13});
+    std::string listed = std::string(" ") + kMarketParamNames + " ";
+    for (const std::string& k : su::split_names(px::arena::kRosterParamNames)) {
+        std::int64_t a = 0, b = 0;
+        PX_CHECK(px::arena::get_roster_param(base.roster, k, a) && px::arena::get_roster_param(moved.roster, k, b));
+        PX_CHECK((a != b) == (listed.find(" " + k + " ") != std::string::npos));
+    }
+}
+
 } // namespace
 
 int main() {
@@ -451,5 +549,6 @@ int main() {
     test_stats();
     test_session_tape();
     test_calibration_parts();
+    test_market_file();
     PX_TEST_REPORT_AND_RETURN();
 }
