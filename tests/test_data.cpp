@@ -593,6 +593,83 @@ void test_databento() {
     PX_CHECK(!readable("x.bin", std::string("ab\0cd", 5), why) && why.find("binary") != std::string::npos);
 }
 
+// Tardis: a book file and its trades file, merged by arrival time.
+void test_tardis() {
+    std::string book, trades, why;
+    const std::string path = kSamples + "demo_incremental_book_L2_2024-01-02_DEMO.csv";
+    PX_CHECK(read_file(path, book) && read_file(kSamples + "demo_trades_2024-01-02_DEMO.csv", trades));
+    PX_CHECK(detect_format(path, std::string_view(book).substr(0, book.find('\n'))) == "tardis");
+    const std::vector<Companion> c = companions_of(path, "");
+    PX_CHECK(c.size() == 1 && c[0].path == kSamples + "demo_trades_2024-01-02_DEMO.csv");
+    Tape t;
+    PX_CHECK(import_file(path, book, trades, ImportOptions{}, t, why));
+    PX_CHECK(t.h.format == "tardis" && t.h.depth == Depth::L2 && t.h.instrument == "DEMO" &&
+             t.h.date == "2024-01-02" && t.h.name == "demo-demo-2024-01-02" && t.h.origin_kind == TimeKind::Epoch);
+    PX_CHECK(t.h.notes == "demo incremental_book_L2, with its trades file");
+    PX_CHECK(t.h.price_scale == 10 && t.h.tick == 5 && t.h.qty_scale == 100); // prices in ticks of 0.5
+    // The first snapshot starts the book; the second, after updates, resets it.
+    // Each trade sits where it arrived, between the book's rows.
+    std::string kinds;
+    for (const TapeEvent& e : t.ev) kinds += e.kind;
+    PX_CHECK(kinds == "LLLLLTLTLLRLLLLTLLTL");
+    PX_CHECK(t.ev[5].side == 'B' && t.ev[5].price == 84002 && t.ev[5].qty == 100 && t.ev[5].id == 0);
+    PX_CHECK(t.ev[15].side == 'S' && t.ev[18].side == '-' && t.ev[8].qty == 0);
+    TapeBook b;
+    for (const TapeEvent& e : t.ev) b.apply(e);
+    PX_CHECK((b.top(0, 3) == std::vector<std::pair<std::int64_t, std::int64_t>>{{84001, 75}, {84000, 200}}));
+    PX_CHECK((b.top(1, 3) == std::vector<std::pair<std::int64_t, std::int64_t>>{{84003, 200}, {84004, 75}}));
+    // Without its trades file: the book, and a note that there are no prints.
+    PX_CHECK(import_file(path, book, "", ImportOptions{}, t, why) &&
+             t.h.notes.find("no trades file beside it") != std::string::npos && t.ev.size() == 16);
+    // The trades file alone is a trades-only tape.
+    PX_CHECK(import_file("demo_trades_2024-01-02_DEMO.csv", trades, "", ImportOptions{}, t, why) &&
+             t.h.depth == Depth::Trades && t.ev.size() == 4 && t.h.name == "demo-demo-2024-01-02-trades");
+
+    // book_snapshot_N and quotes: one snapshot a row, made level updates.
+    const std::string snap =
+        "exchange,symbol,timestamp,local_timestamp,asks[0].price,asks[0].amount,bids[0].price,bids[0].amount,"
+        "asks[1].price,asks[1].amount,bids[1].price,bids[1].amount\n"
+        "deribit,BTC-PERPETUAL,1704186000000000,1704186000000500,42001,10,42000,20,42002,5,41999,7\n"
+        "deribit,BTC-PERPETUAL,1704186000001000,1704186000001500,42001,4,42000,20,42002,5,41999,7\n"
+        "deribit,BTC-PERPETUAL,1704186000002000,1704186000002500,42002,5,42000,20,42003,1,41999,7\n";
+    PX_CHECK(import_file("deribit_book_snapshot_2_2024-01-02_BTC-PERPETUAL.csv", snap, "", ImportOptions{}, t, why));
+    PX_CHECK(t.h.notes.find("book_snapshot, 2 levels a side; no trades file") == 8 && t.h.name == "deribit-btc-perpetual-2024-01-02");
+    kinds.clear();
+    for (const TapeEvent& e : t.ev) kinds += e.kind;
+    PX_CHECK(kinds == "LLLLLLL"); // four levels, the ask's new size, then the touch gone and a new level behind
+    PX_CHECK(t.ev[4].price == 42001 && t.ev[4].qty == 4 && t.ev[5].price == 42001 && t.ev[5].qty == 0 && t.ev[6].price == 42003);
+    const std::string quotes = "exchange,symbol,timestamp,local_timestamp,ask_amount,ask_price,bid_price,bid_amount\n"
+                               "kraken,XBT/USD,1704186000000000,1704186000000500,2,42001,42000,3\n"
+                               "kraken,XBT/USD,1704186000001000,1704186000001500,2,42001,42000.5,1\n";
+    PX_CHECK(import_file("kraken_quotes_2024-01-02_XBT-USD.csv", quotes, "", ImportOptions{}, t, why));
+    PX_CHECK(t.h.name == "kraken-xbt-usd-2024-01-02" && t.h.notes.find("1 level a side") != std::string::npos);
+    kinds.clear();
+    for (const TapeEvent& e : t.ev) kinds += e.kind;
+    PX_CHECK(kinds == "LLLL" && t.ev[2].qty == 0 && t.ev[3].price == 84001 && t.ev[3].qty == 1);
+
+    // The companion each book file names; a LOBSTER file names its orderbook.
+    PX_CHECK(companions_of("d/x_quotes_2024-01-02_A.csv", "")[0].path == "d/x_trades_2024-01-02_A.csv");
+    PX_CHECK(companions_of("x_book_snapshot_25_2024-01-02_A.csv", "tardis")[0].path == "x_trades_2024-01-02_A.csv");
+    PX_CHECK(companions_of("x_trades_2024-01-02_A.csv", "").empty());
+    PX_CHECK(companions_of("A_1_2_3_message_5.csv", "tardis").empty() &&
+             companions_of("A_1_2_3_message_5.csv", "")[0].path == "A_1_2_3_orderbook_5.csv");
+
+    // Several symbols need symbol=; a bad side or a type with no book is refused.
+    std::string two = trades + "demo,OTHER,1704186001400000,1704186001400000,1005,buy,1.0,1\n";
+    PX_CHECK(!import_file("x.csv", two, "", ImportOptions{}, t, why) && why.find("2 symbols (DEMO, OTHER)") != std::string::npos);
+    ImportOptions other;
+    other.symbol = "OTHER";
+    PX_CHECK(import_file("x.csv", two, "", other, t, why) && t.ev.size() == 1 && t.h.skipped == 4);
+    std::string bad = book;
+    bad.replace(bad.find(",true,ask,"), 10, ",true,mid,");
+    PX_CHECK(!import_file(path, bad, "", ImportOptions{}, t, why) && why.find("line 2: side 'mid'") == 0);
+    PX_CHECK(!import_file("x.csv", "exchange,symbol,timestamp,local_timestamp,funding_rate\n", "", ImportOptions{}, t, why) &&
+             why.find("no book or trades") != std::string::npos);
+    std::string bad_trades = trades;
+    bad_trades.replace(bad_trades.find("42001.0"), 7, "42oo1.0");
+    PX_CHECK(!import_file(path, book, bad_trades, ImportOptions{}, t, why) && why.find("the trades file beside it: line 2") == 0);
+}
+
 // A market file round trip, its refusals, and the suite it becomes.
 void test_market_file() {
     namespace su = px::arena::suite;
@@ -701,6 +778,7 @@ int main() {
     test_generic_csv();
     test_lobster();
     test_databento();
+    test_tardis();
     test_stats();
     test_session_tape();
     test_calibration_parts();

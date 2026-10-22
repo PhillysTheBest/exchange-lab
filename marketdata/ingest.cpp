@@ -30,7 +30,7 @@ namespace {
 constexpr const char* kHelp =
     "ingest: bring a market data file into exchange-lab as a tape (docs/DATA.md)\n"
     "\n"
-    "  ingest add FILE [format=csv|lobster|databento] [name=NAME] [columns=ROLES] [time=FORMAT]\n"
+    "  ingest add FILE [format=csv|lobster|databento|tardis] [name=NAME] [columns=ROLES] [time=FORMAT]\n"
     "                  [tick=DECIMAL] [symbol=SYMBOL] [instrument=NAME]\n"
     "  ingest list               the tapes in data/\n"
     "  ingest show NAME          what a tape holds, and the statistics calibration matches\n"
@@ -38,8 +38,9 @@ constexpr const char* kHelp =
     "\n"
     "Settings are written name=value (--name=value works too); dir=DIR keeps tapes\n"
     "somewhere other than data/.\n"
-    "  format=     csv, lobster or databento (CSV or uncompressed DBN); found from the file\n"
-    "              when left out\n"
+    "  format=     csv, lobster, databento (CSV or uncompressed DBN) or tardis; found from\n"
+    "              the file when left out. A LOBSTER message file is read with its orderbook\n"
+    "              file, and a Tardis book file with its trades file, when it sits beside it\n"
     "  name=       the tape's name; from the file name when left out\n"
     "  columns=    a CSV's columns in order, when its header does not say or it has none:\n"
     "              time, price, qty, side, buyer_maker, bid, bid_qty, ask, ask_qty, symbol, -\n"
@@ -111,13 +112,13 @@ void show(const Tape& tape) {
     std::string parts;
     auto part = [&parts](std::uint64_t n, const char* what) {
         if (n == 0) return;
-        parts += (parts.empty() ? "" : ", ") + grouped(static_cast<std::int64_t>(n)) + " " + what;
+        parts += (parts.empty() ? "" : ", ") + grouped(static_cast<std::int64_t>(n)) + " " + what + (n == 1 ? "" : "s");
     };
-    part(st.adds, "adds");
-    part(st.cancels, "cancels");
-    part(st.trades, "trades");
-    part(st.levels, "level updates");
-    part(st.resets, "resets");
+    part(st.adds, "add");
+    part(st.cancels, "cancel");
+    part(st.trades, "trade");
+    part(st.levels, "level update");
+    part(st.resets, "reset");
     say("  events        " + grouped(static_cast<std::int64_t>(st.events)) + (parts.empty() ? "" : ": " + parts));
     if (h.skipped > 0) say("  skipped       " + h.skipped_why);
     say("  prices        " + price_text(h, lo) + " to " + price_text(h, hi) + ", tick " + price_text(h, 1));
@@ -192,14 +193,15 @@ int cmd_add(const std::string& file, const ImportOptions& opts, const std::strin
     std::string why;
     if (!readable(file, bytes, why)) return refuse(file + ": " + why);
 
-    // LOBSTER's orderbook file, when it sits beside the message file.
-    std::string companion;
-    const std::string base = base_name(file);
-    const std::size_t m = base.find("_message_");
-    if (m != std::string::npos && (opts.format.empty() || opts.format == "lobster")) {
-        const std::string ob = file.substr(0, file.size() - base.size()) + base.substr(0, m) + "_orderbook_" +
-                               base.substr(m + 9);
-        if (fs::is_regular_file(ob, ec) && !read_file(ob, companion)) return refuse("cannot read " + ob);
+    // A second file read with this one, when it sits beside it: LOBSTER's
+    // orderbook file, the trades of a Tardis book file.
+    std::string companion, companion_what;
+    for (const Companion& c : companions_of(file, opts.format)) {
+        if (!fs::is_regular_file(c.path, ec)) continue;
+        if (!read_file(c.path, companion)) return refuse("cannot read " + c.path);
+        if (!readable(c.path, companion, why)) return refuse(c.path + ": " + why);
+        companion_what = c.what;
+        break;
     }
 
     Tape tape;
@@ -227,7 +229,7 @@ int cmd_add(const std::string& file, const ImportOptions& opts, const std::strin
     if (ec) return refuse("cannot write " + path + ": " + ec.message());
 
     say(std::string(replaced ? "replaced " : "added ") + tape.h.name + " -> " + path +
-        (companion.empty() ? "" : " (with the orderbook file beside it)"));
+        (companion.empty() ? "" : " (with " + companion_what + " beside it)"));
     say("");
     show(tape);
     return 0;

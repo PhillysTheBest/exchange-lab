@@ -1143,13 +1143,235 @@ inline constexpr std::int64_t kDbUndefPrice = 9'223'372'036'854'775'807LL; // IN
     return true;
 }
 
+// ---- Tardis ---------------------------------------------------------------------------
+//
+// Tardis.dev's downloadable CSV files, one data type a file, from its
+// published documentation of them; checked against hand-made samples:
+//
+//   incremental_book_L2  exchange,symbol,timestamp,local_timestamp,is_snapshot,side,price,amount:
+//                        the new total at a price, 0 when the level is gone. Snapshot
+//                        rows after updates mean the book starts again.
+//   book_snapshot_N      the top N levels a side after each change (asks[0].price, asks[0].amount, ...)
+//   quotes               the best bid and ask after each change
+//   trades               exchange,symbol,timestamp,local_timestamp,id,side,price,amount, where
+//                        side is the taker's: buy, sell or unknown
+//
+// Times are microseconds since the epoch. local_timestamp, when the message
+// arrived, orders the rows: every file is sorted by it, and it is what puts two
+// files' rows in one order. A book file is read together with the trades file
+// of the same exchange, day and symbol when that sits beside it.
+
+[[nodiscard]] inline bool looks_like_tardis(std::string_view first_line) {
+    return first_line.starts_with("exchange,symbol,timestamp,local_timestamp,");
+}
+
+struct TardisFile {
+    std::string type; // incremental_book_L2, book_snapshot, quotes or trades
+    int levels = 0;
+    std::string exchange;
+    std::set<std::string> symbols;
+    std::vector<RawEvent> ev;
+};
+
+[[nodiscard]] inline bool read_tardis(std::string_view text, const ImportOptions& opts, TardisFile& out,
+                                      std::map<std::string, std::uint64_t>& skipped, std::string& why) {
+    const std::vector<std::string_view> lines = lines_of(text);
+    std::vector<std::string> f;
+    if (lines.empty() || !looks_like_tardis(lines[0]) || !split_csv(lines[0], ',', f)) {
+        why = "not a Tardis CSV file: the first line should start exchange,symbol,timestamp,local_timestamp";
+        return false;
+    }
+    std::map<std::string, int> col;
+    for (std::size_t i = 0; i < f.size(); ++i) col[std::string(trim(f[i]))] = static_cast<int>(i);
+    auto has = [&col](const std::string& k) { return col.count(k) != 0; };
+    if (has("is_snapshot") && has("side") && has("price") && has("amount")) out.type = "incremental_book_L2";
+    else if (has("asks[0].price")) out.type = "book_snapshot";
+    else if (has("ask_price") && has("bid_price")) out.type = "quotes";
+    else if (has("id") && has("side") && has("price") && has("amount")) out.type = "trades";
+    else {
+        why = "a Tardis file of a type with no book or trades in it (columns: " + std::string(lines[0]) +
+              "); add its incremental_book_L2, book_snapshot, quotes or trades file";
+        return false;
+    }
+    if (out.type == "book_snapshot")
+        while (has("asks[" + std::to_string(out.levels) + "].price")) ++out.levels;
+    if (out.type == "quotes") out.levels = 1;
+    LevelDiff diff;
+    bool in_snapshot = false, any_update = false;
+    for (std::size_t li = 1; li < lines.size(); ++li) {
+        if (trim(lines[li]).empty()) continue;
+        const std::uint64_t line = li + 1;
+        if (!split_csv(lines[li], ',', f) || f.size() < col.size()) {
+            why = line_ref(line) + std::to_string(f.size()) + " fields, expected " + std::to_string(col.size());
+            return false;
+        }
+        auto field = [&](const std::string& k) { return trim(f[static_cast<std::size_t>(col[k])]); };
+        const std::string sym(field("symbol"));
+        if (!opts.symbol.empty() && sym != opts.symbol) {
+            ++skipped["rows for other symbols"];
+            continue;
+        }
+        out.symbols.insert(sym);
+        if (out.exchange.empty()) out.exchange = std::string(field("exchange"));
+        RawEvent e;
+        e.line = line;
+        TimeKind kind{};
+        if (!parse_time(field("local_timestamp"), TimeFormat::Micros, e.t, kind) &&
+            !parse_time(field("local_timestamp"), TimeFormat::Auto, e.t, kind)) {
+            why = line_ref(line) + "local_timestamp '" + std::string(field("local_timestamp")) + "' is not a time";
+            return false;
+        }
+        auto number = [&](const std::string& k, Decimal& d) {
+            if (parse_decimal(field(k), d)) return true;
+            why = line_ref(line) + k + " '" + std::string(field(k)) + "' is not a number";
+            return false;
+        };
+        if (out.type == "incremental_book_L2") {
+            const bool snap = lower(field("is_snapshot")) == "true";
+            if (snap && !in_snapshot && any_update) out.ev.push_back(RawEvent{e.t, 'R', '-', 0, {}, {}, line});
+            in_snapshot = snap;
+            any_update = any_update || !snap;
+            const std::string side = lower(field("side"));
+            if (side != "bid" && side != "ask") {
+                why = line_ref(line) + "side '" + side + "' is not bid or ask";
+                return false;
+            }
+            e.kind = 'L';
+            e.side = side == "bid" ? 'B' : 'S';
+            if (!number("price", e.price) || !number("amount", e.qty)) return false;
+            out.ev.push_back(e);
+        } else if (out.type == "trades") {
+            e.kind = 'T';
+            e.side = side_from_text(field("side"));
+            if (!number("price", e.price) || !number("amount", e.qty)) return false;
+            if (e.qty.mantissa <= 0) {
+                ++skipped["trades of size zero"];
+                continue;
+            }
+            out.ev.push_back(e);
+        } else {
+            // One snapshot a row: the levels it holds become level updates.
+            RawTape scratch;
+            for (const char side : {'B', 'S'}) {
+                LevelDiff::Levels now;
+                for (int i = 0; i < out.levels; ++i) {
+                    const std::string p = out.type == "quotes" ? (side == 'B' ? "bid_price" : "ask_price")
+                                                               : std::string(side == 'B' ? "bids[" : "asks[") +
+                                                                     std::to_string(i) + "].price";
+                    const std::string q = out.type == "quotes" ? (side == 'B' ? "bid_amount" : "ask_amount")
+                                                               : std::string(side == 'B' ? "bids[" : "asks[") +
+                                                                     std::to_string(i) + "].amount";
+                    if (field(p).empty() || !has(q) || field(q).empty()) continue;
+                    Decimal pd{}, qd{};
+                    if (!number(p, pd) || !number(q, qd)) return false;
+                    now.emplace_back(pd, qd);
+                }
+                diff.side(scratch, e.t, line, side, now);
+            }
+            for (RawEvent& x : scratch.ev) out.ev.push_back(x);
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] inline bool import_tardis(const std::string& path, std::string_view text, std::string_view trades,
+                                        const ImportOptions& opts, RawTape& raw, std::string& why) {
+    TardisFile main;
+    if (!read_tardis(text, opts, main, raw.skipped, why)) return false;
+    TardisFile other;
+    if (!trades.empty() && main.type != "trades") {
+        if (!read_tardis(trades, opts, other, raw.skipped, why)) {
+            why = "the trades file beside it: " + why;
+            return false;
+        }
+        if (other.type != "trades") other = TardisFile{};
+    }
+    std::set<std::string> symbols = main.symbols;
+    symbols.insert(other.symbols.begin(), other.symbols.end());
+    if (symbols.size() > 1) {
+        std::string list;
+        std::size_t n = 0;
+        for (const std::string& x : symbols) {
+            if (n++ == 4) {
+                list += ", ...";
+                break;
+            }
+            list += (list.empty() ? "" : ", ") + x;
+        }
+        why = "the files hold " + std::to_string(symbols.size()) + " symbols (" + list + "): pick one with symbol=";
+        return false;
+    }
+    // Both files are in local_timestamp order: merge them, the book's row first on a tie.
+    raw.ev.reserve(main.ev.size() + other.ev.size());
+    std::merge(main.ev.begin(), main.ev.end(), other.ev.begin(), other.ev.end(), std::back_inserter(raw.ev),
+               [](const RawEvent& a, const RawEvent& b) { return a.t < b.t; });
+    raw.h.format = "tardis";
+    raw.h.importer = "tardis 1";
+    raw.h.source_file = base_name(path);
+    raw.h.instrument = symbols.empty() ? "" : *symbols.begin();
+    raw.kind = TimeKind::Epoch;
+    raw.h.depth = main.type == "trades" ? Depth::Trades : Depth::L2;
+    if (!raw.ev.empty()) raw.h.date = time_text(raw.ev.front().t, TimeKind::Epoch).substr(0, 10);
+    std::string notes = main.exchange + " " + main.type;
+    if (main.levels > 0) notes += ", " + std::to_string(main.levels) + " level" + (main.levels == 1 ? "" : "s") + " a side";
+    if (!other.ev.empty()) notes += ", with its trades file";
+    else if (main.type != "trades") notes += "; no trades file beside it, so no prints";
+    raw.h.notes = notes;
+    return true;
+}
+
+// The tape name a Tardis file gets: exchange, symbol and day, with anything a
+// name cannot hold ("XBT/USD") made a hyphen. A trades file read on its own is
+// named apart from its book file's tape.
+[[nodiscard]] inline std::string tardis_name(const RawTape& raw) {
+    const std::string ex = raw.h.notes.substr(0, raw.h.notes.find(' '));
+    std::string n = lower(ex + "-" + raw.h.instrument + "-" + raw.h.date) + (raw.h.depth == Depth::Trades ? "-trades" : "");
+    for (char& c : n)
+        if (!((c >= 'a' && c <= 'z') || is_digit(c) || c == '-' || c == '_' || c == '.')) c = '-';
+    return n;
+}
+
+// ---- companions -------------------------------------------------------------------------
+
+// A second file some formats read beside the first: LOBSTER's orderbook file,
+// a Tardis book file's trades. Candidates, best first; ingest reads the first
+// that exists.
+struct Companion {
+    std::string path;
+    std::string what; // "the orderbook file"
+};
+
+[[nodiscard]] inline std::vector<Companion> companions_of(const std::string& path, const std::string& format) {
+    std::vector<Companion> out;
+    const std::string base = base_name(path);
+    const std::string dir = path.substr(0, path.size() - base.size());
+    const std::size_t m = base.find("_message_");
+    if (m != std::string::npos && (format.empty() || format == "lobster"))
+        out.push_back({dir + base.substr(0, m) + "_orderbook_" + base.substr(m + 9), "the orderbook file"});
+    if (format.empty() || format == "tardis") {
+        for (const char* type : {"_incremental_book_L2_", "_quotes_", "_book_snapshot_"}) {
+            const std::size_t at = base.find(type);
+            if (at == std::string::npos) continue;
+            std::size_t end = at + std::string_view(type).size();
+            if (std::string_view(type) == "_book_snapshot_") { // _book_snapshot_25_
+                while (end < base.size() && is_digit(base[end])) ++end;
+                if (end >= base.size() || base[end] != '_') continue;
+                ++end;
+            }
+            out.push_back({dir + base.substr(0, at) + "_trades_" + base.substr(end), "its trades file"});
+        }
+    }
+    return out;
+}
+
 // ---- detection and the front door ------------------------------------------------------
 
-inline constexpr const char* kFormats = "csv lobster databento";
+inline constexpr const char* kFormats = "csv lobster databento tardis";
 
 // Which importer reads this file. `first_line` is the file's first line.
 [[nodiscard]] inline std::string detect_format(std::string_view path, std::string_view first_line) {
     if (first_line.substr(0, 3) == "DBN" || looks_like_databento_csv(first_line)) return "databento";
+    if (looks_like_tardis(first_line)) return "tardis";
     if (looks_like_lobster(path, first_line)) return "lobster";
     return "csv";
 }
@@ -1187,6 +1409,7 @@ inline constexpr const char* kFormats = "csv lobster databento";
     if (format == "csv") ok = import_csv(path, bytes, opts, raw, why);
     else if (format == "lobster") ok = import_lobster(path, bytes, companion, opts, raw, why);
     else if (format == "databento") ok = import_databento(path, bytes, opts, raw, why);
+    else if (format == "tardis") ok = import_tardis(path, bytes, companion, opts, raw, why);
     else {
         why = "unknown format " + format + " (formats: " + kFormats + ")";
         return false;
@@ -1195,6 +1418,7 @@ inline constexpr const char* kFormats = "csv lobster databento";
     raw.h.source_cksum = cksum_of(bytes);
     raw.h.name = !opts.name.empty() ? opts.name : name_from_file(path);
     if (format == "lobster" && opts.name.empty()) raw.h.name = lower(raw.h.instrument) + "-" + raw.h.date;
+    if (format == "tardis" && opts.name.empty()) raw.h.name = tardis_name(raw);
     if (!opts.instrument.empty()) raw.h.instrument = opts.instrument;
     if (!valid_name(raw.h.name)) {
         why = "'" + raw.h.name + "' cannot be a tape name (lower-case letters, digits, - _ .): give one with name=";
