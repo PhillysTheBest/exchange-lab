@@ -489,6 +489,9 @@ test-data: $(INGEST_BIN) $(CALIBRATE_BIN) $(LAB_BINS) $(REL)/suite$(EXE) $(REL)/
 	$$I add examples/data/coinbase_feed.jsonl dir=$$D > $$D/out || fail "the Coinbase sample should import"; \
 	grep -q '^coinbase_feed: BTC-USD, 2024-01-02, price levels (L2)$$' $$D/out && grep -q '2 trades, 8 level updates$$' $$D/out \
 	    || fail "a captured feed should be read as JSON, a message a line"; ok; \
+	$$I add examples/data/XBTUSD.csv dir=$$D > $$D/out || fail "the Kraken sample should import"; \
+	grep -q '^xbtusd: XBTUSD, 2024-01-02, trades only$$' $$D/out && grep -q 'read as kraken' $$D/out \
+	    || fail "Kraken's trade history should be found by its name and shape"; ok; \
 	exits 1 $$I add examples/data/quotes_and_trades.csv dir=$$D || fail "a file with no header needs columns="; ok; \
 	$$I add examples/data/quotes_and_trades.csv dir=$$D 'columns=time,price,qty,side,bid,bid_qty,ask,ask_qty' > $$D/out \
 	    || fail "with columns= it should import"; \

@@ -844,6 +844,52 @@ void test_coinbase() {
              why == "no message carries a time");
 }
 
+// Kraken: the trade history, REST trades and a WebSocket v2 feed.
+void test_kraken() {
+    std::string hist, why;
+    const std::string path = kSamples + "XBTUSD.csv";
+    PX_CHECK(read_file(path, hist));
+    PX_CHECK(detect_format(path, hist) == "kraken" && detect_format("xbtusd.csv", hist) == "csv" &&
+             detect_format("XBTUSD_60.csv", "1704186000,1,2,3,4,5,6") == "csv");
+    Tape t;
+    PX_CHECK(import_file(path, hist, "", ImportOptions{}, t, why));
+    PX_CHECK(t.h.format == "kraken" && t.h.depth == Depth::Trades && t.h.instrument == "XBTUSD" && t.h.name == "xbtusd" &&
+             t.h.date == "2024-01-02" && t.ev.size() == 5 && t.ev[0].side == '-' && t.ev[4].t - t.ev[0].t == 7'000'000'000);
+    PX_CHECK(t.h.notes.find("prints have no side") != std::string::npos);
+    ImportOptions kr;
+    kr.format = "kraken";
+    PX_CHECK(!import_file("XBTUSD_60.csv", "1704186000,1,2,3,4,5,6\n", "", kr, t, why) && why.find("OHLCVT bars") != std::string::npos);
+
+    const std::string rest = R"({"error":[],"result":{"XXBTZUSD":[["42000.10000","0.01000000",1704186000.1234,"b","m","",101],)"
+                             R"(["41999.90000","0.50000000",1704186000.5,"s","l","",102]],"last":"1704186000500000000"}})";
+    PX_CHECK(detect_format("trades.json", rest) == "kraken");
+    PX_CHECK(import_file("trades.json", rest, "", ImportOptions{}, t, why) && t.h.instrument == "XXBTZUSD" && t.ev.size() == 2);
+    PX_CHECK(t.ev[0].side == 'B' && t.ev[1].side == 'S' && t.ev[1].t - t.ev[0].t == 376'600'000);
+    PX_CHECK(!import_file("e.json", R"({"error":["EQuery:Unknown asset pair"],"result":{}})", "", ImportOptions{}, t, why) &&
+             why == "Kraken returned an error: EQuery:Unknown asset pair");
+
+    const std::string feed =
+        R"({"method":"subscribe","result":{"channel":"book","symbol":"BTC/USD"},"success":true})" "\n"
+        R"({"channel":"book","type":"snapshot","data":[{"symbol":"BTC/USD","bids":[{"price":42000.0,"qty":1.5}],"asks":[{"price":42000.1,"qty":0.5}],"checksum":1}]})" "\n"
+        R"({"channel":"trade","type":"update","data":[{"symbol":"BTC/USD","side":"buy","price":42000.1,"qty":0.2,"ord_type":"market","trade_id":7,"timestamp":"2024-01-02T09:00:00.200000Z"}]})" "\n"
+        R"({"channel":"book","type":"update","data":[{"symbol":"BTC/USD","bids":[],"asks":[{"price":42000.1,"qty":0.3}],"checksum":2,"timestamp":"2024-01-02T09:00:00.200100Z"}]})" "\n"
+        R"({"channel":"heartbeat"})" "\n"
+        R"({"channel":"book","type":"snapshot","data":[{"symbol":"BTC/USD","bids":[{"price":42000.0,"qty":1.0}],"asks":[{"price":42000.2,"qty":2}],"checksum":3}]})" "\n"
+        R"({"channel":"book","type":"update","data":[{"symbol":"BTC/USD","bids":[{"price":42000.0,"qty":0}],"asks":[],"checksum":4,"timestamp":"2024-01-02T09:00:01Z"}]})" "\n";
+    PX_CHECK(detect_format("k.jsonl", feed) == "kraken");
+    PX_CHECK(import_file("k.jsonl", feed, "", ImportOptions{}, t, why));
+    PX_CHECK(t.h.depth == Depth::L2 && t.h.instrument == "BTC/USD" && t.h.skipped == 2);
+    std::string kinds;
+    for (const TapeEvent& e : t.ev) kinds += e.kind;
+    PX_CHECK(kinds == "LLTLRLLL" && t.ev[2].side == 'B');
+    PX_CHECK(t.ev[0].t == t.ev[2].t && t.ev[4].t == t.ev[7].t); // untimed snapshots take the next time
+    TapeBook b;
+    for (const TapeEvent& e : t.ev) b.apply(e);
+    PX_CHECK(b.top(0, 3).empty() && (b.top(1, 3) == std::vector<std::pair<std::int64_t, std::int64_t>>{{420002, 20}}));
+    std::string two = feed + R"({"channel":"trade","type":"update","data":[{"symbol":"ETH/USD","side":"sell","price":1,"qty":1,"trade_id":1,"timestamp":"2024-01-02T09:00:02Z"}]})" "\n";
+    PX_CHECK(!import_file("k.jsonl", two, "", ImportOptions{}, t, why) && why.find("2 symbols (BTC/USD, ETH/USD)") != std::string::npos);
+}
+
 // A market file round trip, its refusals, and the suite it becomes.
 void test_market_file() {
     namespace su = px::arena::suite;
@@ -956,6 +1002,7 @@ int main() {
     test_binance();
     test_json();
     test_coinbase();
+    test_kraken();
     test_stats();
     test_session_tape();
     test_calibration_parts();

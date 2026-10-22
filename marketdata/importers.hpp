@@ -1914,6 +1914,276 @@ private:
     return true;
 }
 
+// ---- Kraken ----------------------------------------------------------------------------
+//
+// Kraken's trades and feed, from its published documentation; checked against
+// hand-made samples:
+//
+//   trade history     the CSV files Kraken offers for download, one a pair (XBTUSD.csv):
+//                     timestamp,price,volume, no header, seconds since the epoch, no side
+//   REST Trades       {"error": [], "result": {"XXBTZUSD": [[price, volume, time, "b"|"s",
+//                     "m"|"l", misc, trade_id], ...], "last": "..."}}; b and s are the taker's side
+//   a captured feed   WebSocket v2, one JSON message a line: book (snapshot, update) and
+//                     trade (snapshot, update), where side is the taker's
+//
+// The trade history cannot say which side crossed the spread, so its prints have
+// no side, and it is found by its shape: a file named for its pair, holding
+// three numbers a line.
+
+[[nodiscard]] inline bool looks_like_kraken_history(std::string_view path, std::string_view first_line) {
+    const std::string base = base_name(path);
+    if (base.size() < 5 || base.substr(base.size() - 4) != ".csv") return false;
+    for (std::size_t i = 0; i + 4 < base.size(); ++i)
+        if (!((base[i] >= 'A' && base[i] <= 'Z') || is_digit(base[i]))) return false;
+    std::vector<std::string> f;
+    if (!split_csv(first_line, ',', f) || f.size() != 3 || trim(f[0]).size() != 10) return false;
+    for (const std::string& x : f) {
+        Decimal d{};
+        if (!parse_decimal(trim(x), d)) return false;
+    }
+    return true;
+}
+
+[[nodiscard]] inline bool looks_like_kraken_json(std::string_view head) {
+    const std::size_t at = head.find_first_not_of(" \t\r\n");
+    if (at == std::string_view::npos || head[at] != '{') return false;
+    if (head.find("\"error\"") != std::string_view::npos && head.find("\"result\"") != std::string_view::npos) return true;
+    return head.find("\"channel\"") != std::string_view::npos && head.find("\"symbol\"") != std::string_view::npos &&
+           head.find("\"product_id\"") == std::string_view::npos;
+}
+
+[[nodiscard]] inline bool import_kraken(const std::string& path, std::string_view text, const ImportOptions& opts,
+                                        RawTape& raw, std::string& why) {
+    raw.h.format = "kraken";
+    raw.h.importer = "kraken 1";
+    raw.h.source_file = base_name(path);
+    raw.kind = TimeKind::Epoch;
+    auto date = [&raw] {
+        if (!raw.ev.empty()) {
+            std::int64_t first = raw.ev.front().t;
+            for (const RawEvent& e : raw.ev) first = std::min(first, e.t);
+            raw.h.date = time_text(first, TimeKind::Epoch).substr(0, 10);
+        }
+    };
+    auto when = [&why](std::string_view v, std::uint64_t line, std::int64_t& t) {
+        TimeKind kind{};
+        if (parse_time(v, TimeFormat::Auto, t, kind) && kind == TimeKind::Epoch) return true;
+        why = line_ref(line) + "time '" + std::string(v) + "' is not a time since the epoch";
+        return false;
+    };
+    const std::size_t at = text.find_first_not_of(" \t\r\n");
+    if (at == std::string_view::npos) {
+        why = "the file is empty";
+        return false;
+    }
+    const std::vector<std::string_view> lines = lines_of(text);
+    if (text[at] != '{') {
+        // The trade history: timestamp, price, volume.
+        std::vector<std::string> f;
+        for (std::size_t li = 0; li < lines.size(); ++li) {
+            if (trim(lines[li]).empty()) continue;
+            const std::uint64_t line = li + 1;
+            if (!split_csv(lines[li], ',', f) || f.size() != 3) {
+                why = line_ref(line) + std::to_string(f.size()) + " fields: Kraken's trade history has three " +
+                      "(timestamp, price, volume)" + (f.size() == 7 ? "; seven is its OHLCVT bars, which are not trades" : "");
+                return false;
+            }
+            RawEvent e;
+            e.line = line;
+            e.kind = 'T';
+            if (!when(trim(f[0]), line, e.t)) return false;
+            if (!parse_decimal(trim(f[1]), e.price) || !parse_decimal(trim(f[2]), e.qty)) {
+                why = line_ref(line) + "price '" + std::string(trim(f[1])) + "' or volume '" + std::string(trim(f[2])) +
+                      "' is not a number";
+                return false;
+            }
+            raw.ev.push_back(e);
+        }
+        const std::string base = base_name(path);
+        raw.h.instrument = base.substr(0, base.find('.'));
+        raw.h.depth = Depth::Trades;
+        raw.h.notes = "kraken trade history; it does not say which side crossed the spread, so prints have no side";
+        date();
+        return true;
+    }
+
+    Json doc;
+    std::string first_why;
+    if (JsonReader(text).parse(doc, first_why) && doc.get("result") != nullptr) {
+        // REST Trades: one pair, under its own key.
+        const Json* res = doc.get("result");
+        const Json* errs = doc.get("error");
+        if (errs != nullptr && errs->is_array() && !errs->items.empty()) {
+            why = "Kraken returned an error: " + errs->items[0].text;
+            return false;
+        }
+        const Json* list = nullptr;
+        if (res->is_object())
+            for (std::size_t i = 0; i < res->keys.size(); ++i)
+                if (res->keys[i] != "last" && res->items[i].is_array()) {
+                    if (list != nullptr) {
+                        why = "the response holds more than one pair";
+                        return false;
+                    }
+                    list = &res->items[i];
+                    raw.h.instrument = res->keys[i];
+                }
+        if (list == nullptr) {
+            why = "a Kraken response with no trades in it";
+            return false;
+        }
+        std::uint64_t n = 0;
+        for (const Json& tr : list->items) {
+            ++n;
+            if (!tr.is_array() || tr.items.size() < 4) {
+                why = "trade " + std::to_string(n) + ": not [price, volume, time, side, ...]";
+                return false;
+            }
+            RawEvent e;
+            e.line = n;
+            e.kind = 'T';
+            if (!when(tr.items[2].text, n, e.t)) return false;
+            if (!parse_decimal(tr.items[0].text, e.price) || !parse_decimal(tr.items[1].text, e.qty)) {
+                why = "trade " + std::to_string(n) + ": price or volume is not a number";
+                return false;
+            }
+            e.side = side_from_text(tr.items[3].text);
+            raw.ev.push_back(e);
+        }
+        raw.h.depth = Depth::Trades;
+        raw.h.notes = "kraken REST trades; the side given is the taker's";
+        date();
+        return true;
+    }
+
+    // A captured WebSocket v2 feed.
+    struct Book {
+        std::vector<RawEvent> ev;
+        std::vector<std::size_t> pending; // rows of an untimed snapshot: they take the next time seen
+        std::int64_t last_t = 0;
+        bool timed = false, any_update = false, in_snapshot = false;
+        void time(std::int64_t t) {
+            for (const std::size_t i : pending) ev[i].t = t;
+            pending.clear();
+            last_t = t;
+            timed = true;
+        }
+    };
+    std::map<std::string, Book> books;
+    std::set<std::string> trade_ids;
+    for (std::size_t li = 0; li < lines.size(); ++li) {
+        if (trim(lines[li]).empty()) continue;
+        const std::uint64_t line = li + 1;
+        Json m;
+        if (!parse_json(lines[li], m, why)) {
+            why = line_ref(line) + why + " (a feed is read one JSON message a line)";
+            return false;
+        }
+        const std::string channel(m.str("channel")), type(m.str("type"));
+        if (channel != "book" && channel != "trade") {
+            ++raw.skipped[(channel.empty() ? std::string(m.str("method")).empty() ? "other" : "method" : channel) +
+                          " messages"];
+            continue;
+        }
+        const Json* data = m.get("data");
+        if (data == nullptr || !data->is_array()) {
+            why = line_ref(line) + "a " + channel + " message with no data";
+            return false;
+        }
+        for (const Json& d : data->items) {
+            const std::string sym(d.str("symbol"));
+            Book& b = books[sym];
+            if (channel == "trade") {
+                if (type == "snapshot") {
+                    ++raw.skipped["trade snapshots (trades from before the capture began)"];
+                    continue;
+                }
+                if (!d.str("trade_id").empty() && !trade_ids.insert(sym + "/" + std::string(d.str("trade_id"))).second)
+                    continue;
+                RawEvent e;
+                e.line = line;
+                e.kind = 'T';
+                if (!when(d.str("timestamp"), line, e.t)) return false;
+                if (!parse_decimal(d.str("price"), e.price) || !parse_decimal(d.str("qty"), e.qty)) {
+                    why = line_ref(line) + "price '" + std::string(d.str("price")) + "' or qty '" +
+                          std::string(d.str("qty")) + "' is not a number";
+                    return false;
+                }
+                e.side = side_from_text(d.str("side"));
+                b.time(e.t);
+                b.ev.push_back(e);
+                continue;
+            }
+            // book: a snapshot carrying no time takes the next one this book sees.
+            std::int64_t t = b.last_t;
+            const bool timed = !d.str("timestamp").empty();
+            if (timed) {
+                if (!when(d.str("timestamp"), line, t)) return false;
+                b.time(t);
+            }
+            const std::size_t from = b.ev.size();
+            if (type == "snapshot") {
+                if (b.any_update && !b.in_snapshot) b.ev.push_back(RawEvent{t, 'R', '-', 0, {}, {}, line});
+                b.in_snapshot = true;
+            } else {
+                b.in_snapshot = false;
+                b.any_update = true;
+            }
+            for (const char side : {'B', 'S'}) {
+                const Json* levels = d.get(side == 'B' ? "bids" : "asks");
+                if (levels == nullptr) continue;
+                for (const Json& l : levels->items) {
+                    RawEvent e;
+                    e.t = t;
+                    e.line = line;
+                    e.kind = 'L';
+                    e.side = side;
+                    if (!parse_decimal(l.str("price"), e.price) || !parse_decimal(l.str("qty"), e.qty)) {
+                        why = line_ref(line) + "a level whose price '" + std::string(l.str("price")) + "' or qty '" +
+                              std::string(l.str("qty")) + "' is not a number";
+                        return false;
+                    }
+                    b.ev.push_back(e);
+                }
+            }
+            if (!timed)
+                for (std::size_t i = from; i < b.ev.size(); ++i) b.pending.push_back(i);
+        }
+    }
+    std::set<std::string> symbols;
+    for (const auto& [sym, b] : books)
+        if (!b.ev.empty()) symbols.insert(sym);
+    if (opts.symbol.empty() && symbols.size() > 1) {
+        std::string list;
+        for (const std::string& x : symbols) list += (list.empty() ? "" : ", ") + x;
+        why = "the file holds " + std::to_string(symbols.size()) + " symbols (" + list + "): pick one with symbol=";
+        return false;
+    }
+    const std::string chosen = !opts.symbol.empty() ? opts.symbol : symbols.empty() ? "" : *symbols.begin();
+    if (!opts.symbol.empty() && symbols.count(chosen) == 0) {
+        why = "nothing for symbol=" + chosen;
+        return false;
+    }
+    for (const auto& [sym, b] : books)
+        if (sym != chosen && !b.ev.empty()) raw.skipped["messages for other symbols"] += b.ev.size();
+    Book& b = books[chosen];
+    if (!b.pending.empty()) {
+        if (!b.timed) {
+            why = "no message carries a time";
+            return false;
+        }
+        b.time(b.last_t);
+    }
+    raw.ev = std::move(b.ev);
+    raw.h.instrument = chosen;
+    bool levels = false;
+    for (const RawEvent& e : raw.ev) levels = levels || e.kind == 'L';
+    raw.h.depth = levels ? Depth::L2 : Depth::Trades;
+    raw.h.notes = "kraken feed (WebSocket v2); a trade's side is the taker's";
+    date();
+    return true;
+}
+
 // ---- companions -------------------------------------------------------------------------
 
 // A second file some formats read beside the first: LOBSTER's orderbook file,
@@ -1954,7 +2224,7 @@ struct Companion {
 
 // ---- detection and the front door ------------------------------------------------------
 
-inline constexpr const char* kFormats = "csv lobster databento tardis binance coinbase";
+inline constexpr const char* kFormats = "csv lobster databento tardis binance coinbase kraken";
 
 // Which importer reads this file. `head` is the start of it: its first line
 // decides, except for JSON, which may spread one record over several lines.
@@ -1963,6 +2233,7 @@ inline constexpr const char* kFormats = "csv lobster databento tardis binance co
     if (!first_line.empty() && first_line.back() == '\r') first_line.remove_suffix(1);
     if (first_line.substr(0, 3) == "DBN" || looks_like_databento_csv(first_line)) return "databento";
     if (looks_like_coinbase(head.substr(0, 4096))) return "coinbase";
+    if (looks_like_kraken_json(head.substr(0, 4096)) || looks_like_kraken_history(path, first_line)) return "kraken";
     if (looks_like_tardis(first_line)) return "tardis";
     if (looks_like_binance(path, first_line)) return "binance";
     if (looks_like_lobster(path, first_line)) return "lobster";
@@ -2003,6 +2274,7 @@ inline constexpr const char* kFormats = "csv lobster databento tardis binance co
     else if (format == "tardis") ok = import_tardis(path, bytes, companion, opts, raw, why);
     else if (format == "binance") ok = import_binance(path, bytes, companion, raw, why);
     else if (format == "coinbase") ok = import_coinbase(path, bytes, opts, raw, why);
+    else if (format == "kraken") ok = import_kraken(path, bytes, opts, raw, why);
     else {
         why = "unknown format " + format + " (formats: " + kFormats + ")";
         return false;
