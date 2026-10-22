@@ -455,6 +455,9 @@ test-data: $(INGEST_BIN) $(CALIBRATE_BIN) $(LAB_BINS) $(REL)/suite$(EXE) $(REL)/
 	exits 2 $$I fetch x || fail "an unknown command should exit 2"; ok; \
 	exits 2 $$I add $$L dir=$$D colour=red || fail "an unknown setting should exit 2"; ok; \
 	exits 2 $$I add $$L dir=$$D format=parquet || fail "an unknown format should exit 2"; ok; \
+	printf 'DBN\001' > $$D/x.dbn; \
+	rc=0; $$I add $$D/x.dbn dir=$$D > $$D/out 2>&1 || rc=$$?; \
+	[ $$rc -eq 1 ] && grep -q 'metadata is cut short' $$D/out || fail "a DBN file cut short should be refused"; ok; \
 	exits 2 $$I add $$L dir=$$D name=Bad/Name || fail "a bad name should exit 2"; ok; \
 	$$I list dir=$$D | grep -q 'no tapes yet' || fail "an empty list should say so"; ok; \
 	$$I add $$L dir=$$D > $$D/out || fail "the LOBSTER sample should import"; \
@@ -470,6 +473,9 @@ test-data: $(INGEST_BIN) $(CALIBRATE_BIN) $(LAB_BINS) $(REL)/suite$(EXE) $(REL)/
 	$$I add examples/data/trades.csv dir=$$D name=demo-2012-06-21 > $$D/out 2>&1 && fail "a name taken by another file should be refused"; \
 	grep -q 'already exists, made from another file' $$D/out || fail "and say why"; ok; \
 	$$I add examples/data/trades.csv dir=$$D > /dev/null || fail "the trades sample should import"; ok; \
+	$$I add examples/data/databento_mbo.csv dir=$$D > $$D/out || fail "the Databento sample should import"; \
+	grep -q '^databento_mbo: DEMO, 2024-01-02, order by order (L3)$$' $$D/out && grep -q '3 fills' $$D/out \
+	    || fail "it should be read order by order, with its fills counted"; ok; \
 	exits 1 $$I add examples/data/quotes_and_trades.csv dir=$$D || fail "a file with no header needs columns="; ok; \
 	$$I add examples/data/quotes_and_trades.csv dir=$$D 'columns=time,price,qty,side,bid,bid_qty,ask,ask_qty' > $$D/out \
 	    || fail "with columns= it should import"; \

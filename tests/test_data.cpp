@@ -439,6 +439,160 @@ void test_calibration_parts() {
     PX_CHECK(tape_text(d) == tape_text(t));
 }
 
+// DBN bytes for the tests: the prefix, a metadata block, then records.
+struct DbnWriter {
+    std::string b;
+    explicit DbnWriter(unsigned version = 2) {
+        b = "DBN";
+        b += static_cast<char>(version);
+        std::string meta(100, '\0');
+        meta.replace(0, 9, "XNAS.ITCH");
+        put(meta.size(), 4);
+        b += meta;
+    }
+    void put(std::uint64_t v, int n) {
+        for (int i = 0; i < n; ++i) b += static_cast<char>((v >> (8 * i)) & 0xFF);
+    }
+    // The 16-byte header: length in words, rtype, publisher, instrument, ts_event.
+    void header(std::size_t len, unsigned rtype, std::uint32_t inst, std::uint64_t ts) {
+        put(len / 4, 1);
+        put(rtype, 1);
+        put(1, 2);
+        put(inst, 4);
+        put(ts, 8);
+    }
+    void mbo(std::uint64_t ts, char action, char side, std::int64_t price, std::uint32_t size, std::uint64_t id,
+             std::uint32_t inst = 7) {
+        header(56, 0xA0, inst, ts - 10);
+        put(id, 8);
+        put(static_cast<std::uint64_t>(price), 8);
+        put(size, 4);
+        put(0, 1); // flags
+        put(0, 1); // channel
+        b += action;
+        b += side;
+        put(ts, 8); // ts_recv
+        put(0, 4);
+        put(0, 4);
+    }
+    void mbp1(std::uint64_t ts, char action, char side, std::int64_t price, std::uint32_t size, std::int64_t bid,
+              std::uint32_t bid_sz, std::int64_t ask, std::uint32_t ask_sz) {
+        header(80, 0x01, 7, ts - 10);
+        put(static_cast<std::uint64_t>(price), 8);
+        put(size, 4);
+        b += action;
+        b += side;
+        put(0, 1);
+        put(0, 1);
+        put(ts, 8);
+        put(0, 4);
+        put(0, 4);
+        put(static_cast<std::uint64_t>(bid), 8);
+        put(static_cast<std::uint64_t>(ask), 8);
+        put(bid_sz, 4);
+        put(ask_sz, 4);
+        put(1, 4);
+        put(1, 4);
+    }
+};
+
+void test_databento() {
+    std::string text, why;
+    const std::string path = kSamples + "databento_mbo.csv";
+    PX_CHECK(read_file(path, text));
+    std::string_view first = std::string_view(text).substr(0, text.find('\n'));
+    PX_CHECK(detect_format(path, first) == "databento");
+    Tape t;
+    PX_CHECK(import_file(path, text, "", ImportOptions{}, t, why));
+    PX_CHECK(t.h.format == "databento" && t.h.depth == Depth::L3 && t.h.instrument == "DEMO" &&
+             t.h.origin_kind == TimeKind::Epoch && t.h.name == "databento_mbo");
+    PX_CHECK(t.h.price_scale == 100 && t.h.tick == 1);
+    PX_CHECK(t.h.skipped == 4 && t.h.skipped_why.find("3 fills") == 0 && t.h.skipped_why.find("1 records with no action") != std::string::npos);
+    // The clear, five adds, the modify as a cancel and an add, a partial cancel,
+    // a trade that leaves the book alone and the cancels that follow it.
+    std::string kinds;
+    for (const TapeEvent& e : t.ev) kinds += e.kind;
+    PX_CHECK(kinds == "RAAAAACACTCCATC");
+    PX_CHECK(t.ev[6].id == 2 && t.ev[6].qty == 20 && t.ev[6].price == 9999 && t.ev[7].price == 9998 && t.ev[7].qty == 25);
+    PX_CHECK(t.ev[9].side == 'S' && t.ev[9].id == 0 && t.ev[9].price == 10000 && t.ev[9].qty == 12);
+    PX_CHECK(t.ev[13].side == 'B' && t.ev[13].price == 10001);
+    TapeBook b;
+    for (const TapeEvent& e : t.ev) b.apply(e);
+    PX_CHECK((b.top(0, 3) == std::vector<std::pair<std::int64_t, std::int64_t>>{{10000, 5}, {9998, 25}}));
+    PX_CHECK((b.top(1, 3) == std::vector<std::pair<std::int64_t, std::int64_t>>{{10002, 15}, {10003, 3}}));
+
+    // MBP-1 as CSV, pretty: decimal prices and ISO times, levels from snapshots.
+    const std::string mbp =
+        "ts_recv,ts_event,rtype,publisher_id,instrument_id,action,side,depth,price,size,flags,ts_in_delta,sequence,"
+        "bid_px_00,ask_px_00,bid_sz_00,ask_sz_00,bid_ct_00,ask_ct_00\n"
+        "2024-01-02T14:30:00.000000000Z,2024-01-02T14:30:00.000000000Z,1,1,7,A,B,0,10.00,5,0,0,1,10.00,,5,0,1,0\n"
+        "2024-01-02T14:30:00.001000000Z,2024-01-02T14:30:00.001000000Z,1,1,7,A,A,0,10.02,4,0,0,2,10.00,10.02,5,4,1,1\n"
+        "2024-01-02T14:30:00.002000000Z,2024-01-02T14:30:00.002000000Z,1,1,7,T,A,0,10.00,2,0,0,3,10.00,10.02,5,4,1,1\n"
+        "2024-01-02T14:30:00.002000000Z,2024-01-02T14:30:00.002000000Z,1,1,7,C,B,0,10.00,2,0,0,4,10.00,10.02,3,4,1,1\n"
+        "2024-01-02T14:30:00.003000000Z,2024-01-02T14:30:00.003000000Z,1,1,7,A,B,0,10.01,1,0,0,5,10.01,10.02,1,4,1,1\n";
+    PX_CHECK(import_file("glbx.mbp-1.csv", mbp, "", ImportOptions{}, t, why));
+    PX_CHECK(t.h.depth == Depth::L2 && t.h.notes.find("1 price level a side") != std::string::npos);
+    kinds.clear();
+    for (const TapeEvent& e : t.ev) kinds += e.kind;
+    PX_CHECK(kinds == "LLTLLL"); // bid, ask, the print, the bid's new size, then the bid moving up
+    PX_CHECK(t.ev[2].side == 'S' && t.ev[2].qty == 2 && t.ev[4].qty == 0 && t.ev[4].price == 1000 && t.ev[5].price == 1001);
+
+    // Trades, raw: prints only.
+    const std::string trades =
+        "ts_recv,ts_event,rtype,publisher_id,instrument_id,action,side,depth,price,size,flags,ts_in_delta,sequence\n"
+        "1704205800000000000,1704205800000000000,0,1,7,T,B,0,10010000000,3,0,0,1\n"
+        "1704205800000500000,1704205800000500000,0,1,7,T,N,0,10000000000,1,0,0,2\n";
+    PX_CHECK(import_file("x.trades.csv", trades, "", ImportOptions{}, t, why) && t.h.depth == Depth::Trades &&
+             t.ev.size() == 2 && t.ev[0].side == 'B' && t.ev[1].side == '-' && t.h.instrument == "instrument_id 7");
+
+    // Several instruments need symbol=; bars and a bad field are refused.
+    std::string two = trades + "1704205800000600000,1704205800000600000,0,1,8,T,B,0,10010000000,3,0,0,3\n";
+    PX_CHECK(!import_file("x.csv", two, "", ImportOptions{}, t, why) && why.find("pick one with symbol=") != std::string::npos);
+    ImportOptions eight;
+    eight.symbol = "8";
+    PX_CHECK(import_file("x.csv", two, "", eight, t, why) && t.ev.size() == 1 && t.h.skipped == 2);
+    PX_CHECK(!import_file("x.csv", "ts_event,rtype,publisher_id,instrument_id,open,high,low,close,volume\n", "",
+                          ImportOptions{}, t, why) &&
+             why.find("OHLCV") != std::string::npos);
+    std::string bad = trades;
+    bad.replace(bad.find(",T,B,"), 5, ",T,Q,");
+    PX_CHECK(!import_file("x.csv", bad, "", ImportOptions{}, t, why) && why.find("line 2: side") == 0);
+
+    // DBN: the same records, binary. Prices in 10^-9, little-endian.
+    const std::int64_t D = 1'000'000'000;
+    DbnWriter w;
+    w.mbo(1'704'205'800'000'000'000ULL, 'A', 'B', 100 * D, 10, 1);
+    w.mbo(1'704'205'800'000'001'000ULL, 'A', 'A', 101 * D, 4, 2);
+    w.mbo(1'704'205'800'000'002'000ULL, 'T', 'B', 101 * D, 4, 0);
+    w.mbo(1'704'205'800'000'002'000ULL, 'F', 'A', 101 * D, 4, 2);
+    w.mbo(1'704'205'800'000'002'000ULL, 'C', 'A', 101 * D, 4, 2);
+    PX_CHECK(readable("x.dbn", w.b, why) && detect_format("x.dbn", w.b.substr(0, w.b.find('\n'))) == "databento");
+    PX_CHECK(import_file("xnas-itch-20240102.mbo.dbn", w.b, "", ImportOptions{}, t, why));
+    PX_CHECK(t.h.depth == Depth::L3 && t.h.importer == "databento 1 (DBN v2)" && t.h.notes.find("XNAS.ITCH") != std::string::npos);
+    kinds.clear();
+    for (const TapeEvent& e : t.ev) kinds += e.kind;
+    PX_CHECK(kinds == "AATC" && t.ev[2].side == 'B' && t.ev[2].id == 0 && t.h.tick == 1 && t.h.price_scale == 1);
+    PX_CHECK(t.h.name == "xnas-itch-20240102" && t.h.instrument == "instrument_id 7");
+    // A record of a type not read is skipped by its length; one cut short is refused.
+    DbnWriter m;
+    m.header(16, 0x16, 7, 1); // a symbol mapping with no body
+    m.mbp1(1'704'205'800'000'000'000ULL, 'A', 'B', 10 * D, 5, 10 * D, 5, kDbUndefPrice, 0);
+    m.mbp1(1'704'205'800'000'001'000ULL, 'T', 'A', 10 * D, 2, 10 * D, 3, 11 * D, 1);
+    PX_CHECK(import_file("x.dbn", m.b, "", ImportOptions{}, t, why) && t.h.depth == Depth::L2 && t.h.skipped == 1);
+    kinds.clear();
+    for (const TapeEvent& e : t.ev) kinds += e.kind;
+    PX_CHECK(kinds == "LTLL");
+    PX_CHECK(!import_file("x.dbn", m.b.substr(0, m.b.size() - 3), "", ImportOptions{}, t, why) &&
+             why.find("cut short") != std::string::npos);
+    m.mbo(1'704'205'800'000'002'000ULL, 'A', 'B', 10 * D, 1, 9);
+    PX_CHECK(!import_file("x.dbn", m.b, "", ImportOptions{}, t, why) && why.find("mixes schemas") != std::string::npos);
+    PX_CHECK(!import_file("x.dbn", DbnWriter(4).b, "", ImportOptions{}, t, why) && why.find("version 4") != std::string::npos);
+
+    // What cannot be read is refused with what to do instead.
+    PX_CHECK(!readable("x.dbn.zst", std::string("\x28\xb5\x2f\xfd rest"), why) && why.find("zstd -d") != std::string::npos);
+    PX_CHECK(!readable("x.bin", std::string("ab\0cd", 5), why) && why.find("binary") != std::string::npos);
+}
+
 // A market file round trip, its refusals, and the suite it becomes.
 void test_market_file() {
     namespace su = px::arena::suite;
@@ -546,6 +700,7 @@ int main() {
     test_tape_round_trip();
     test_generic_csv();
     test_lobster();
+    test_databento();
     test_stats();
     test_session_tape();
     test_calibration_parts();
