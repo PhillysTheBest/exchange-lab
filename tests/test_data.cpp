@@ -729,6 +729,121 @@ void test_binance() {
     PX_CHECK(!import_file(path, narrow, "", ImportOptions{}, t, why) && why.find("line 7: 3 fields") == 0);
 }
 
+// JSON, read without floating point: numbers stay text.
+void test_json() {
+    Json j;
+    std::string why;
+    PX_CHECK(parse_json(R"( {"a": [1, -2.50, "x\"yé"], "b": {"c": null, "d": true}, "e": 1e3} )", j, why));
+    PX_CHECK(j.is_object() && j.get("a")->items.size() == 3 && j.get("a")->items[1].text == "-2.50");
+    PX_CHECK(j.get("a")->items[2].text == "x\"y\xc3\xa9" && j.get("b")->str("d") == "true" && j.get("b")->str("c").empty());
+    PX_CHECK(j.str("e") == "1e3" && j.get("nope") == nullptr);
+    PX_CHECK(!parse_json("{\"a\": 1,}", j, why) && why.find("JSON: ") == 0);
+    PX_CHECK(!parse_json("[1] 2", j, why) && why.find("after the value") != std::string::npos);
+    PX_CHECK(!parse_json("\"abc", j, why) && why.find("no closing quote") != std::string::npos);
+    PX_CHECK(!parse_json(std::string(100, '[') + std::string(100, ']'), j, why) && why.find("too deep") != std::string::npos);
+}
+
+// Coinbase: a captured feed, the full channel, REST trades, Advanced Trade.
+void test_coinbase() {
+    std::string feed, why;
+    const std::string path = kSamples + "coinbase_feed.jsonl";
+    PX_CHECK(read_file(path, feed));
+    PX_CHECK(detect_format(path, feed) == "coinbase");
+    Tape t;
+    PX_CHECK(import_file(path, feed, "", ImportOptions{}, t, why));
+    PX_CHECK(t.h.format == "coinbase" && t.h.depth == Depth::L2 && t.h.instrument == "BTC-USD" && t.h.date == "2024-01-02");
+    PX_CHECK(t.h.skipped == 3 && t.h.skipped_why.find("1 last_match messages") != std::string::npos);
+    std::string kinds;
+    for (const TapeEvent& e : t.ev) kinds += e.kind;
+    PX_CHECK(kinds == "LLLLLTLTLL");
+    // The side a match gives is the resting order's: a resting sell was lifted by a buyer.
+    PX_CHECK(t.ev[5].side == 'B' && t.ev[5].price == 4200002 && t.ev[5].qty == 25 && t.ev[7].side == 'S');
+    PX_CHECK(t.ev[0].t == t.ev[4].t); // the snapshot carries no time: it takes the next message's
+    TapeBook b;
+    for (const TapeEvent& e : t.ev) b.apply(e);
+    PX_CHECK((b.top(0, 3) == std::vector<std::pair<std::int64_t, std::int64_t>>{{4200000, 150}}));
+    PX_CHECK((b.top(1, 3) == std::vector<std::pair<std::int64_t, std::int64_t>>{{4200002, 50}, {4200005, 200}}));
+    // The same match on two channels counts once.
+    std::string twice = feed + feed.substr(feed.find("{\"type\":\"match\""), feed.find('\n', feed.find("{\"type\":\"match\"")) -
+                                                                                  feed.find("{\"type\":\"match\"") + 1);
+    PX_CHECK(import_file(path, twice, "", ImportOptions{}, t, why) && t.ev.size() == 10);
+
+    // The full channel: order by order, its level2 rows left out.
+    const std::string full =
+        R"({"type":"received","time":"2024-01-02T09:00:00.000000Z","product_id":"ETH-USD","order_id":"o1","size":"1.0","price":"2300.00","side":"buy","order_type":"limit"})"
+        "\n"
+        R"({"type":"open","time":"2024-01-02T09:00:00.000100Z","product_id":"ETH-USD","order_id":"o1","price":"2300.00","remaining_size":"1.0","side":"buy"})"
+        "\n"
+        R"({"type":"open","time":"2024-01-02T09:00:00.000200Z","product_id":"ETH-USD","order_id":"o2","price":"2300.50","remaining_size":"2.0","side":"sell"})"
+        "\n"
+        R"({"type":"match","time":"2024-01-02T09:00:00.000300Z","product_id":"ETH-USD","trade_id":1,"maker_order_id":"o2","taker_order_id":"t9","side":"sell","size":"0.5","price":"2300.50"})"
+        "\n"
+        R"({"type":"done","time":"2024-01-02T09:00:00.000300Z","product_id":"ETH-USD","order_id":"t9","reason":"filled","side":"buy"})"
+        "\n"
+        R"({"type":"change","time":"2024-01-02T09:00:00.000400Z","product_id":"ETH-USD","order_id":"o2","new_size":"1.0","old_size":"1.5","price":"2300.50","side":"sell"})"
+        "\n"
+        R"({"type":"change","time":"2024-01-02T09:00:00.000500Z","product_id":"ETH-USD","order_id":"o1","new_price":"2300.25","old_price":"2300.00","new_size":"1.0","old_size":"1.0","side":"buy"})"
+        "\n"
+        R"({"type":"done","time":"2024-01-02T09:00:00.000600Z","product_id":"ETH-USD","order_id":"zz","reason":"canceled","remaining_size":"3","price":"2299","side":"buy"})"
+        "\n"
+        R"({"type":"done","time":"2024-01-02T09:00:00.000700Z","product_id":"ETH-USD","order_id":"o2","reason":"canceled","remaining_size":"1.0","price":"2300.50","side":"sell"})"
+        "\n"
+        R"({"type":"snapshot","time":"2024-01-02T09:00:00.000800Z","product_id":"ETH-USD","bids":[["2300.25","1.0"]],"asks":[["2301","4"]]})"
+        "\n";
+    PX_CHECK(import_file("eth.jsonl", full, "", ImportOptions{}, t, why));
+    PX_CHECK(t.h.depth == Depth::L3 && t.h.notes.find("order by order") != std::string::npos &&
+             t.h.notes.find("1 message about orders resting before the capture began") != std::string::npos);
+    PX_CHECK(t.h.skipped_why.find("2 level2 rows") != std::string::npos);
+    kinds.clear();
+    for (const TapeEvent& e : t.ev) kinds += e.kind;
+    PX_CHECK(kinds == "AATCCAC"); // a smaller size keeps its place; a new price leaves and comes back
+    PX_CHECK(t.ev[2].id == t.ev[1].id && t.ev[2].side == 'B' && t.ev[3].qty == 5 && t.ev[4].id == t.ev[0].id);
+    TapeBook l3;
+    for (const TapeEvent& e : t.ev) l3.apply(e);
+    PX_CHECK((l3.top(0, 3) == std::vector<std::pair<std::int64_t, std::int64_t>>{{9201, 10}}) && l3.top(1, 3).empty()); // 2300.25, in ticks of 0.25
+
+    // REST trades from Exchange, newest first; the side is the maker's.
+    const std::string rest = "[\n  {\"time\": \"2024-01-02T09:00:01.000Z\", \"trade_id\": 3, \"price\": \"100.02\", "
+                             "\"size\": \"1\", \"side\": \"sell\"},\n  {\"time\": \"2024-01-02T09:00:00.500Z\", "
+                             "\"trade_id\": 2, \"price\": \"100.00\", \"size\": \"2\", \"side\": \"buy\"}\n]\n";
+    PX_CHECK(detect_format("trades.json", rest) == "coinbase");
+    PX_CHECK(import_file("trades.json", rest, "", ImportOptions{}, t, why) && t.h.depth == Depth::Trades && t.ev.size() == 2);
+    PX_CHECK(t.ev[0].side == 'S' && t.ev[1].side == 'B' && t.ev[1].price - t.ev[0].price == 1 && t.h.tick == 2 &&
+             t.h.notes.find("the aggressor is the other") != std::string::npos);
+    // Advanced Trade: REST and feed; its trade side is not read.
+    const std::string at_rest = R"({"trades":[{"trade_id":"9","product_id":"BTC-USD","price":"42000","size":"0.1","time":"2024-01-02T09:00:00Z","side":"BUY","bid":"","ask":"","exchange":"coinbase"}],"best_bid":"41999","best_ask":"42001"})";
+    PX_CHECK(import_file("t.json", at_rest, "", ImportOptions{}, t, why) && t.ev.size() == 1 && t.ev[0].side == '-' &&
+             t.h.instrument == "BTC-USD" && t.h.notes.find("advanced trade") != std::string::npos);
+    const std::string at_feed =
+        R"({"channel":"l2_data","client_id":"","timestamp":"2024-01-02T09:00:00.000000001Z","sequence_num":0,"events":[{"type":"snapshot","product_id":"BTC-USD","updates":[{"side":"bid","event_time":"1970-01-01T00:00:00Z","price_level":"42000.00","new_quantity":"1.5"},{"side":"offer","event_time":"1970-01-01T00:00:00Z","price_level":"42000.10","new_quantity":"0.5"}]}]})"
+        "\n"
+        R"({"channel":"market_trades","client_id":"","timestamp":"2024-01-02T09:00:00.100Z","sequence_num":1,"events":[{"type":"snapshot","trades":[{"trade_id":"1","product_id":"BTC-USD","price":"41999","size":"1","side":"BUY","time":"2024-01-02T08:59:00Z"}]}]})"
+        "\n"
+        R"({"channel":"market_trades","client_id":"","timestamp":"2024-01-02T09:00:00.200Z","sequence_num":2,"events":[{"type":"update","trades":[{"trade_id":"2","product_id":"BTC-USD","price":"42000.10","size":"0.2","side":"BUY","time":"2024-01-02T09:00:00.199Z"}]}]})"
+        "\n"
+        R"({"channel":"l2_data","client_id":"","timestamp":"2024-01-02T09:00:00.201Z","sequence_num":3,"events":[{"type":"update","product_id":"BTC-USD","updates":[{"side":"offer","event_time":"2024-01-02T09:00:00.199Z","price_level":"42000.10","new_quantity":"0.3"}]}]})"
+        "\n"
+        R"({"channel":"heartbeats","client_id":"","timestamp":"2024-01-02T09:00:00.300Z","sequence_num":4,"events":[{"current_time":"x","heartbeat_counter":"1"}]})"
+        "\n";
+    PX_CHECK(import_file("at.jsonl", at_feed, "", ImportOptions{}, t, why) && t.h.depth == Depth::L2 && t.h.skipped == 2);
+    kinds.clear();
+    for (const TapeEvent& e : t.ev) kinds += e.kind;
+    PX_CHECK(kinds == "LLTL" && t.ev[2].side == '-');
+
+    // Two products need symbol=; a broken line is refused with its number.
+    std::string two = feed + R"({"type":"match","trade_id":7,"maker_order_id":"x","taker_order_id":"y","side":"buy","size":"1","price":"10","product_id":"ETH-USD","time":"2024-01-02T09:00:01Z"})" "\n";
+    PX_CHECK(!import_file(path, two, "", ImportOptions{}, t, why) && why.find("2 products (BTC-USD, ETH-USD)") != std::string::npos);
+    ImportOptions eth;
+    eth.symbol = "ETH-USD";
+    PX_CHECK(import_file(path, two, "", eth, t, why) && t.ev.size() == 1 && t.h.instrument == "ETH-USD");
+    std::string broken = feed;
+    broken.insert(broken.find("{\"type\":\"heartbeat\""), "{\"type\":");
+    PX_CHECK(!import_file(path, broken, "", ImportOptions{}, t, why) && why.find("line 7: JSON") == 0);
+    PX_CHECK(!import_file(path, "{\"type\":\"snapshot\",\"product_id\":\"A\",\"bids\":[],\"asks\":[[\"1\",\"1\"]]}\n", "",
+                          ImportOptions{}, t, why) &&
+             why == "no message carries a time");
+}
+
 // A market file round trip, its refusals, and the suite it becomes.
 void test_market_file() {
     namespace su = px::arena::suite;
@@ -839,6 +954,8 @@ int main() {
     test_databento();
     test_tardis();
     test_binance();
+    test_json();
+    test_coinbase();
     test_stats();
     test_session_tape();
     test_calibration_parts();

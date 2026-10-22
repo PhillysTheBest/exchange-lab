@@ -486,6 +486,9 @@ test-data: $(INGEST_BIN) $(CALIBRATE_BIN) $(LAB_BINS) $(REL)/suite$(EXE) $(REL)/
 	    || fail "a bookTicker file should be read with its trades file"; ok; \
 	$$I add examples/data/ETHUSDT-trades-2025-01-02.csv dir=$$D > $$D/out || fail "a spot trades file with no header should import"; \
 	grep -q 'read as binance' $$D/out && grep -q 'binance trades (spot, no header)' $$D/out || fail "and be read as Binance's"; ok; \
+	$$I add examples/data/coinbase_feed.jsonl dir=$$D > $$D/out || fail "the Coinbase sample should import"; \
+	grep -q '^coinbase_feed: BTC-USD, 2024-01-02, price levels (L2)$$' $$D/out && grep -q '2 trades, 8 level updates$$' $$D/out \
+	    || fail "a captured feed should be read as JSON, a message a line"; ok; \
 	exits 1 $$I add examples/data/quotes_and_trades.csv dir=$$D || fail "a file with no header needs columns="; ok; \
 	$$I add examples/data/quotes_and_trades.csv dir=$$D 'columns=time,price,qty,side,bid,bid_qty,ask,ask_qty' > $$D/out \
 	    || fail "with columns= it should import"; \
