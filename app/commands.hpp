@@ -172,8 +172,16 @@ struct Plan {
     const std::string& name = words[0];
     const CommandInfo* info = find_command(name);
     if (info == nullptr) {
-        p.error = name.empty() || name[0] != '/' ? "commands start with /; type /help for the list"
-                                                 : "no command " + name + "; type /help for the list";
+        // An MSYS2 shell rewrites an argument starting with / into a Windows path before a
+        // Windows program sees it, so `exchange-lab -c /help` arrives as C:/msys64/help.
+        const bool drive = name.size() >= 3 && name[1] == ':' && name[2] == '/' &&
+                           ((name[0] >= 'A' && name[0] <= 'Z') || (name[0] >= 'a' && name[0] <= 'z'));
+        if (drive)
+            p.error = name + " looks like a / command that the MSYS2 shell turned into a Windows path; "
+                             "run export MSYS2_ARG_CONV_EXCL='*' first, or type the command at the prompt";
+        else
+            p.error = name.empty() || name[0] != '/' ? "commands start with /; type /help for the list"
+                                                     : "no command " + name + "; type /help for the list";
         return p;
     }
     const std::string cmd = info->name;

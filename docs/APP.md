@@ -86,7 +86,9 @@ just "3". After a complete `/compare`, the app says where the run was saved.
 - **Other ways in:** when input is not a terminal, it reads one command per line and echoes
   each as `> command`, so a file of commands can be piped in; lines starting with `#` are
   comments. `exchange-lab -c '/compare maker smoke'` runs one command and exits with its
-  status: the child's, or 2 for a refused command.
+  status: the child's, or 2 for a refused command. From an MSYS2 shell, run
+  `export MSYS2_ARG_CONV_EXCL='*'` first: MSYS2 rewrites an argument that starts with `/`
+  into a Windows path before the app sees it, and the app says so when it gets one.
 - **The banner:** build commit and dirty flag (from the generated `px_build_info.hpp`) and
   strategy counts, in colour on a terminal and plain otherwise or under `NO_COLOR`.
 - **It must be run from the repository root**, like `make`. Anywhere else it refuses and says

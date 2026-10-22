@@ -348,8 +348,10 @@ $(ROBJ)/app/main.o: INCLUDES += -I$(GEN)
 
 # Commands typed into the real binary. It writes runs/maker-smoke, as
 # /compare maker smoke would for anyone; everything else goes under $(BUILD)/app-test.
+# MSYS2_ARG_CONV_EXCL stops an MSYS2 shell rewriting `-c /help` into a Windows path,
+# and tr drops the carriage returns a Windows program writes before a line ends.
 test-app: $(APP_BIN) $(LAB_BINS) $(REL)/controls$(EXE) $(REPL_BIN)
-	@set -e; \
+	@set -e; export MSYS2_ARG_CONV_EXCL='*'; \
 	n=0; ok() { n=$$((n+1)); }; fail() { echo "FAIL: $$1"; exit 1; }; \
 	A=./$(APP_BIN); D=$(BUILD)/app-test; rm -rf $$D; mkdir -p $$D; \
 	echo "== exchange-lab app"; \
@@ -367,7 +369,7 @@ test-app: $(APP_BIN) $(LAB_BINS) $(REL)/controls$(EXE) $(REPL_BIN)
 	$$A -c '/compare maker smoke' > $$D/compare 2>/dev/null || fail "/compare maker smoke should complete"; \
 	grep -q '^status=complete' runs/maker-smoke/outcome.cfg && grep -q 'Saved in runs/maker-smoke' $$D/compare \
 	    || fail "/compare should write a complete run and say where"; ok; \
-	$$A -c /runs | grep -Eq '^maker-smoke +complete +standard +smoke +maker$$' || fail "/runs should list it"; ok; \
+	$$A -c /runs | tr -d '\r' | grep -Eq '^maker-smoke +complete +standard +smoke +maker$$' || fail "/runs should list it"; ok; \
 	$$A -c '/report maker-smoke' | grep -q 'arena suite' || fail "/report should show it"; ok; \
 	cp -r runs/maker-smoke $$D/run; \
 	$$A -c "/reproduce $$D/run" 2>/dev/null | grep -q '^  REPRODUCED' || fail "/reproduce should reproduce it"; ok; \
