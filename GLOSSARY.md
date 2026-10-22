@@ -1,6 +1,6 @@
 # Glossary
 
-The terms a reader meets in exchange-lab, defined the way this project uses them, for students and researchers of market microstructure and controlled experiments. Where the project's meaning is narrower than the textbook one, the entry says so.
+The terms you meet in exchange-lab, defined the way this project uses them. Where the project's meaning is narrower than the textbook one, the entry says so. Two things to keep in mind throughout:
 
 - **Everything in `arena/` is simulated.** A session makes up its own nanoseconds, and its market is invented, not fitted to data, so its numbers describe this instrument and not trading.
 - **The main result is negative.** 10 µs of reaction delay is worth less than 24 seeds can resolve; 1 ms costs real money, but a null run with nobody informed keeps 96% of that effect, and a positive control meant to calibrate the post-fill column failed outright. The README's [The first result is a negative one](README.md#the-first-result-is-a-negative-one) has the numbers.
@@ -64,9 +64,9 @@ Terms are grouped and sorted alphabetically within each group.
 
 ## Strategies and the reference market
 
-**Built-in and installed strategies** — Built-in ones are compiled into every program and listed in `kStrategyNames`; installed ones are headers added with `make strategy`, compiled only into the lab programs.
+**Built-in and installed strategies** — Built-in ones are compiled into every program and listed in `kStrategyNames`; installed ones are headers added with `/add` (`make strategy`), compiled only into the lab programs.
 
-**Candidate** — A strategy being scored by `make compare`, in the seat on every seed of a block.
+**Candidate** — A strategy being scored by `/compare`, in the seat on every seed of a block.
 
 **Fader** — The worked example of a strategy: it fades prints that stray far from a slow average. *Where:* `arena/strategies/fader.hpp`.
 
@@ -124,7 +124,7 @@ Terms are grouped and sorted alphabetically within each group.
 
 **Simulated time** — Nanoseconds made up by the session; no wall clock is read inside one.
 
-**Viewer** — The terminal renderer, `arena`. It only reads a session, so watching never changes the hash.
+**Viewer** — The terminal renderer behind `/watch`, the `arena` program. It only reads a session, so watching never changes the hash.
 
 **Wake** — A call to a strategy: for its own event, a touch change, its timer, a signal move or the open. Bursts within one reaction window collapse into one wake.
 
@@ -166,6 +166,8 @@ Terms are grouped and sorted alphabetically within each group.
 
 **Book-to-fundamental gap (market health)** — The mean |mid − V| in ticks, printed first: a book loose from the fundamental is not a market.
 
+**Calibration (planned)** — Measuring statistics from a real data file you bring and setting the simulated market's parameters to match them. The market stays simulated, so it is still not a backtester. *Where:* `docs/DATA_PLAN.md`.
+
 **Common close** — Every arm on a seed closes at the same fundamental, which makes pairing valid.
 
 **Controls** — The evaluator's checks with known answers, each paired with a planted defect that must make it fail. *Where:* `docs/CONTROLS.md`.
@@ -184,7 +186,7 @@ Terms are grouped and sorted alphabetically within each group.
 
 **Noise floor** — The seat at 9,999 ns against 10,000 ns must not separate; differences under about two currency units a session are not skill.
 
-**Null run** — `sweep --null`, with nobody informed. It kept 96% of the 1 ms effect, so the cost is competition for uninformed flow.
+**Null run** — `/sweep --null`, with nobody informed. It kept 96% of the 1 ms effect, so the cost is competition for uninformed flow.
 
 **Paired difference** — A difference taken seed by seed, which cancels most of the noise.
 
@@ -200,7 +202,7 @@ Terms are grouped and sorted alphabetically within each group.
 
 **Replay check** — Re-running a session from fresh instances and requiring the same hash.
 
-**Reproduce** — `make reproduce RUN=runs/x` re-runs a run from its `suite.cfg` and compares every file. *Where:* `docs/REPRODUCE.md`.
+**Reproduce** — `/reproduce` (`make reproduce RUN=runs/x`) re-runs a run from its `suite.cfg` and compares every file. *Where:* `docs/REPRODUCE.md`.
 
 **`results/` and `runs/`** — `results/` is committed, script-generated evidence; `runs/` is git-ignored suite output, never moved into `results/`.
 
@@ -219,6 +221,8 @@ Terms are grouped and sorted alphabetically within each group.
 **Suite** — A named, versioned set of conditions defined in code; a different set is a new suite, never a flag.
 
 **Sweep** — One parameter varied over several values on shared seeds.
+
+**Tape (planned)** — The one internal format every imported data file is converted to: integer columns of time, event, order id, side, price and quantity. *Where:* `docs/DATA_PLAN.md`.
 
 **Underpowered** — Smaller than the seeds could resolve: "not established", not "nothing there".
 

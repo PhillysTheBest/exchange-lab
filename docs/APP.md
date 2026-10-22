@@ -16,9 +16,6 @@ exchange-lab · a simulated market on a real matching engine, re-run exactly · 
 > /watch imbalance
 ```
 
-This file was the plan, written before building as `CLAUDE.md` asks (decided 2026-10-22),
-and is now the design.
-
 ## A front door, not a merger
 
 The app **runs the existing programs as child processes**. It does not link the market into
@@ -119,7 +116,8 @@ the prompt and during a sweep, `/watch` and back on `q`); that check is not auto
 
 - A browser, a web server, a desktop window or mouse support.
 - An AI model or natural-language commands.
-- Live trading, a network API or market data. Calibrating the market to real data is a
-  separate decision, still open.
+- Live trading or a network API of any kind.
+- Bringing your own market data. It is planned in [`DATA_PLAN.md`](DATA_PLAN.md): the app
+  will read files you already have from disk and never fetch anything.
 - Paging long reports: `/report` prints the whole file and the terminal scrolls.
 - Changing what any existing program does.
