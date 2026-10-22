@@ -71,8 +71,8 @@ inline constexpr CommandInfo kCommands[] = {
      "bring a market data file in as a tape, and see what it holds",
      "Runs ingest. A file you already have is read from disk, never fetched, and written to\n"
      "data/NAME.tape, which git ignores. /data alone lists the tapes. Settings, when the\n"
-     "file does not say: format=csv|lobster|databento|tardis|binance name= columns= time=\n"
-     "tick= symbol= instrument=\n"
+     "file does not say: format=csv|lobster|databento|tardis|binance|coinbase name=\n"
+     "columns= time= tick= symbol= instrument=\n"
      "  /data add examples/data/DEMO_2012-06-21_34200000_57600000_message_3.csv\n"
      "  /data add examples/data/trades.csv name=demo-trades\n"
      "  /data add quotes.csv columns=time,bid,bid_qty,ask,ask_qty\n"

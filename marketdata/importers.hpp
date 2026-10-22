@@ -13,6 +13,7 @@
 // tape's header rather than dropped silently.
 #pragma once
 
+#include "marketdata/json.hpp"
 #include "marketdata/parse.hpp"
 #include "marketdata/tape.hpp"
 
@@ -1489,6 +1490,430 @@ struct BinanceFile {
     return true;
 }
 
+// ---- Coinbase --------------------------------------------------------------------------
+//
+// Coinbase's trades and feeds as JSON, from its published API documentation;
+// checked against hand-made samples:
+//
+//   REST trades (Exchange)       a JSON array of {time, trade_id, price, size, side}, newest first.
+//                                side is the resting (maker) order's, so the aggressor is the other.
+//   REST trades (Advanced Trade) {"trades": [{trade_id, product_id, price, size, time, side}, ...]}
+//   a captured feed, one message a line (JSON Lines), from either API:
+//     Exchange        level2: snapshot (bids, asks) then l2update (changes); matches: match;
+//                     full: received, open, done, change and match, order by order (L3)
+//     Advanced Trade  l2_data (snapshot, update) and market_trades (snapshot, update)
+//
+// Advanced Trade's trade side is not read: its documentation does not say whose
+// side it is, and a guess would put the wrong sign on every print. A feed holding
+// the full channel is read order by order and its level2 messages are left out,
+// since the orders are the book. Every number is read as the text it was sent as.
+
+[[nodiscard]] inline bool looks_like_coinbase(std::string_view head) {
+    const std::size_t at = head.find_first_not_of(" \t\r\n");
+    if (at == std::string_view::npos || (head[at] != '{' && head[at] != '[')) return false;
+    if (head.find("\"product_id\"") != std::string_view::npos) return true;
+    return head.find("\"trade_id\"") != std::string_view::npos && head.find("\"side\"") != std::string_view::npos &&
+           head.find("\"size\"") != std::string_view::npos;
+}
+
+// a - b, as a decimal; false when it would be negative or cannot be scaled.
+[[nodiscard]] inline bool decimal_minus(const Decimal& a, const Decimal& b, Decimal& out) {
+    const int d = std::max(a.decimals, b.decimals);
+    std::int64_t x = 0, y = 0;
+    if (!scale_to(a, d, x) || !scale_to(b, d, y) || x < y) return false;
+    out = Decimal{x - y, d};
+    return true;
+}
+
+class CoinbaseReader {
+public:
+    std::map<std::string, std::uint64_t> skipped;
+    std::string api;    // "exchange" or "advanced trade", from the first message that says
+    std::string source; // "REST trades" or "feed"
+
+    // One message of a feed, or one trade of a REST response; line numbers for errors.
+    bool message(const Json& m, std::uint64_t line, std::string& why) {
+        if (!m.is_object()) return fail(why, line, "a line that is not a JSON object");
+        if (m.get("channel") != nullptr) return advanced(m, line, why);
+        if (m.get("type") != nullptr) return exchange(m, line, why);
+        return fail(why, line, "a message with neither type nor channel: not Coinbase's");
+    }
+    // A REST trade: Exchange's when `maker_side`, Advanced Trade's otherwise.
+    bool rest_trade(const Json& tr, std::uint64_t line, bool maker_side, std::string& why) {
+        if (!tr.is_object()) return fail(why, line, "a trade that is not a JSON object");
+        std::int64_t t = 0;
+        if (!time_of(tr.str("time"), line, t, why)) return false;
+        Book& b = book(std::string(tr.str("product_id")));
+        if (!seen_trade(b, tr.str("trade_id"))) return true;
+        return print(b, tr, t, line, maker_side, why);
+    }
+    // Ends the read: fills in the times snapshots did not carry, and picks the product.
+    bool finish(const std::string& symbol, RawTape& raw, std::string& why) {
+        if (!pending_.empty()) {
+            if (!any_time_) {
+                why = "no message carries a time";
+                return false;
+            }
+            for (auto& [b, i] : pending_) books_[b].ev[i].t = last_time_;
+        }
+        std::set<std::string> products;
+        for (const auto& [p, b] : books_)
+            if (!b.ev.empty()) products.insert(p);
+        if (symbol.empty() && products.size() > 1) {
+            std::string list;
+            std::size_t n = 0;
+            for (const std::string& x : products) {
+                if (n++ == 4) {
+                    list += ", ...";
+                    break;
+                }
+                list += (list.empty() ? "" : ", ") + x;
+            }
+            why = "the file holds " + std::to_string(products.size()) + " products (" + list + "): pick one with symbol=";
+            return false;
+        }
+        const std::string chosen = !symbol.empty() ? symbol : products.empty() ? "" : *products.begin();
+        if (!symbol.empty() && products.count(symbol) == 0) {
+            why = "nothing for symbol=" + symbol;
+            return false;
+        }
+        for (const auto& [p, b] : books_)
+            if (p != chosen && !b.ev.empty()) skipped["messages for other products"] += b.ev.size();
+        Book& b = books_[chosen];
+        raw.h.instrument = chosen;
+        const bool l3 = b.l3;
+        for (std::size_t i = 0; i < b.ev.size(); ++i) {
+            if (l3 && b.from_level2[i]) {
+                ++skipped["level2 rows (the full channel's orders are the book)"];
+                continue;
+            }
+            raw.ev.push_back(b.ev[i]);
+        }
+        bool levels = false;
+        for (const RawEvent& e : raw.ev) levels = levels || e.kind == 'L';
+        raw.h.depth = l3 ? Depth::L3 : levels ? Depth::L2 : Depth::Trades;
+        std::string notes = "coinbase " + (api.empty() ? std::string("exchange") : api) + " " + source;
+        if (l3) notes += ", the full channel order by order; the book starts empty: orders resting before the "
+                         "capture began are not in it";
+        if (source == "REST trades" && api != "advanced trade")
+            notes += "; the side given is the resting order's, so the aggressor is the other";
+        if (api == "advanced trade") notes += "; the trade side is not read, since Coinbase does not say whose it is";
+        if (b.unknown > 0)
+            notes += "; " + grouped(static_cast<std::int64_t>(b.unknown)) + " message" + (b.unknown == 1 ? "" : "s") +
+                     " about orders resting before the capture began";
+        raw.h.notes = notes;
+        return true;
+    }
+
+private:
+    struct Resting {
+        std::uint64_t id;
+        char side;
+        Decimal price, qty;
+    };
+    struct Book {
+        std::vector<RawEvent> ev;
+        std::vector<bool> from_level2; // beside ev: rows the full channel replaces
+        std::map<std::string, Resting> resting;
+        std::set<std::string> trades;
+        std::uint64_t next_id = 1, unknown = 0;
+        bool l3 = false, any_update = false, in_snapshot = false;
+    };
+    std::map<std::string, Book> books_;
+    std::vector<std::pair<std::string, std::size_t>> pending_; // snapshot rows waiting for a time
+    std::int64_t last_time_ = 0;
+    bool any_time_ = false;
+    std::string current_; // the product of the message being read
+
+    static bool fail(std::string& why, std::uint64_t line, const std::string& what) {
+        why = line_ref(line) + what;
+        return false;
+    }
+    Book& book(const std::string& product) {
+        current_ = product;
+        return books_[product];
+    }
+    bool time_of(std::string_view text, std::uint64_t line, std::int64_t& t, std::string& why) {
+        TimeKind kind{};
+        if (!parse_time(text, TimeFormat::Auto, t, kind) || kind != TimeKind::Epoch)
+            return fail(why, line, "time '" + std::string(text) + "' is not a date and time");
+        any_time_ = true;
+        last_time_ = t;
+        for (auto& [b, i] : pending_) books_[b].ev[i].t = t;
+        pending_.clear();
+        return true;
+    }
+    bool number(const Json& o, const char* key, std::uint64_t line, Decimal& d, std::string& why) {
+        if (parse_decimal(o.str(key), d)) return true;
+        return fail(why, line, std::string(key) + " '" + std::string(o.str(key)) + "' is not a number");
+    }
+    void push(Book& b, std::int64_t t, std::uint64_t line, char kind, char side, std::uint64_t id, const Decimal& p,
+              const Decimal& q, bool level2) {
+        RawEvent e;
+        e.t = t;
+        e.kind = kind;
+        e.side = side;
+        e.id = id;
+        e.price = p;
+        e.qty = q;
+        e.line = line;
+        b.ev.push_back(e);
+        b.from_level2.push_back(level2);
+    }
+    static bool seen_trade(Book& b, std::string_view trade_id) {
+        if (trade_id.empty()) return true;
+        return b.trades.insert(std::string(trade_id)).second; // the same trade on two channels counts once
+    }
+    // A trade. `maker_side`: the side given is the resting order's.
+    bool print(Book& b, const Json& m, std::int64_t t, std::uint64_t line, bool maker_side, std::string& why) {
+        Decimal p{}, q{};
+        if (!number(m, "price", line, p, why) || !number(m, "size", line, q, why)) return false;
+        if (q.mantissa <= 0) {
+            ++skipped["trades of size zero"];
+            return true;
+        }
+        char side = '-';
+        if (maker_side) {
+            const char given = side_from_text(m.str("side"));
+            side = given == 'B' ? 'S' : given == 'S' ? 'B' : '-';
+        }
+        std::uint64_t id = 0;
+        const auto it = b.resting.find(std::string(m.str("maker_order_id")));
+        if (it != b.resting.end()) {
+            id = it->second.id;
+            Decimal left{};
+            if (decimal_minus(it->second.qty, q, left) && left.mantissa > 0) it->second.qty = left;
+            else b.resting.erase(it);
+        } else if (b.l3 && !m.str("maker_order_id").empty()) {
+            ++b.unknown;
+        }
+        push(b, t, line, 'T', side, id, p, q, false);
+        return true;
+    }
+    bool level(Book& b, std::int64_t t, bool timed, std::uint64_t line, char side, const Json& p, const Json& q,
+               std::string& why) {
+        Decimal pd{}, qd{};
+        if (!parse_decimal(p.text, pd) || !parse_decimal(q.text, qd))
+            return fail(why, line, "a level '" + p.text + "', '" + q.text + "' that is not two numbers");
+        push(b, t, line, 'L', side, 0, pd, qd, true);
+        if (!timed) pending_.emplace_back(current_, b.ev.size() - 1);
+        return true;
+    }
+    void snapshot_starts(Book& b, std::int64_t t, std::uint64_t line, bool timed) {
+        if (b.any_update && !b.in_snapshot) {
+            push(b, t, line, 'R', '-', 0, Decimal{}, Decimal{}, true);
+            if (!timed) pending_.emplace_back(current_, b.ev.size() - 1);
+        }
+        b.in_snapshot = true;
+    }
+
+    bool exchange(const Json& m, std::uint64_t line, std::string& why) {
+        if (api.empty()) api = "exchange";
+        source = "feed";
+        const std::string type(m.str("type"));
+        if (type == "last_match") { // its time is before the capture began, so it times nothing
+            ++skipped["last_match messages (a trade from before the capture began)"];
+            return true;
+        }
+        Book& b = book(std::string(m.str("product_id")));
+        std::int64_t t = last_time_;
+        const bool timed = !m.str("time").empty();
+        if (timed && !time_of(m.str("time"), line, t, why)) return false;
+        if (type == "snapshot") {
+            snapshot_starts(b, t, line, timed);
+            for (const char side : {'B', 'S'}) {
+                const Json* levels = m.get(side == 'B' ? "bids" : "asks");
+                if (levels == nullptr || !levels->is_array()) return fail(why, line, "a snapshot with no bids or asks");
+                for (const Json& l : levels->items) {
+                    if (!l.is_array() || l.items.size() < 2) return fail(why, line, "a snapshot level that is not [price, size]");
+                    if (!level(b, t, timed, line, side, l.items[0], l.items[1], why)) return false;
+                }
+            }
+            return true;
+        }
+        if (type == "l2update") {
+            if (!timed) return fail(why, line, "an l2update with no time");
+            b.in_snapshot = false;
+            b.any_update = true;
+            const Json* ch = m.get("changes");
+            if (ch == nullptr || !ch->is_array()) return fail(why, line, "an l2update with no changes");
+            for (const Json& c : ch->items) {
+                if (!c.is_array() || c.items.size() < 3) return fail(why, line, "a change that is not [side, price, size]");
+                const char side = side_from_text(c.items[0].text);
+                if (side == '-') return fail(why, line, "side '" + c.items[0].text + "' is not buy or sell");
+                if (!level(b, t, true, line, side, c.items[1], c.items[2], why)) return false;
+            }
+            return true;
+        }
+        if (type == "match") {
+            if (!timed) return fail(why, line, "a match with no time");
+            if (!seen_trade(b, m.str("trade_id"))) return true;
+            return print(b, m, t, line, true, why);
+        }
+        if (type == "open" || type == "done" || type == "change") {
+            if (!timed) return fail(why, line, "an order message with no time");
+            b.l3 = true;
+            const std::string oid(m.str("order_id"));
+            const auto it = b.resting.find(oid);
+            if (type == "open") {
+                const char side = side_from_text(m.str("side"));
+                Decimal p{}, q{};
+                if (side == '-') return fail(why, line, "side '" + std::string(m.str("side")) + "' is not buy or sell");
+                if (!number(m, "price", line, p, why) || !number(m, "remaining_size", line, q, why)) return false;
+                if (q.mantissa <= 0) {
+                    ++skipped["opens of size zero"];
+                    return true;
+                }
+                const std::uint64_t id = b.next_id++;
+                b.resting[oid] = Resting{id, side, p, q};
+                push(b, t, line, 'A', side, id, p, q, false);
+                return true;
+            }
+            if (it == b.resting.end()) {
+                // A taker that never rested, or an order from before the capture.
+                if (type == "change" || m.str("reason") == "canceled") ++b.unknown;
+                return true;
+            }
+            Resting& r = it->second;
+            if (type == "done") {
+                push(b, t, line, 'C', r.side, r.id, r.price, r.qty, false);
+                b.resting.erase(it);
+                return true;
+            }
+            // change: a smaller size keeps the order's place; a new price does not.
+            Decimal np = r.price, nq = r.qty;
+            if (!m.str("new_price").empty() && !number(m, "new_price", line, np, why)) return false;
+            if (!m.str("new_size").empty() && !number(m, "new_size", line, nq, why)) return false;
+            Decimal less{};
+            if (canonical(np) == canonical(r.price) && decimal_minus(r.qty, nq, less)) {
+                if (less.mantissa > 0) push(b, t, line, 'C', r.side, r.id, r.price, less, false);
+                if (nq.mantissa > 0) r.qty = nq;
+                else b.resting.erase(it);
+                return true;
+            }
+            push(b, t, line, 'C', r.side, r.id, r.price, r.qty, false);
+            if (nq.mantissa <= 0) {
+                b.resting.erase(it);
+                return true;
+            }
+            r.price = np;
+            r.qty = nq;
+            push(b, t, line, 'A', r.side, r.id, np, nq, false);
+            return true;
+        }
+        if (type == "received" || type == "activate") {
+            ++skipped["received and activate messages (an order not yet on the book)"];
+            return true;
+        }
+        ++skipped[type + " messages"];
+        return true;
+    }
+
+    bool advanced(const Json& m, std::uint64_t line, std::string& why) {
+        api = "advanced trade";
+        source = "feed";
+        const std::string channel(m.str("channel"));
+        if (channel != "l2_data" && channel != "market_trades") {
+            ++skipped[channel + " messages"];
+            return true;
+        }
+        std::int64_t t = 0;
+        if (!time_of(m.str("timestamp"), line, t, why)) return false;
+        const Json* events = m.get("events");
+        if (events == nullptr || !events->is_array()) return fail(why, line, "a message with no events");
+        for (const Json& ev : events->items) {
+            const std::string type(ev.str("type"));
+            if (channel == "market_trades") {
+                const Json* trades = ev.get("trades");
+                if (trades == nullptr || !trades->is_array()) return fail(why, line, "market_trades with no trades");
+                for (const Json& tr : trades->items) {
+                    Book& b = book(std::string(tr.str("product_id")));
+                    if (type == "snapshot") {
+                        ++skipped["market_trades snapshots (trades from before the capture began)"];
+                        continue;
+                    }
+                    if (!seen_trade(b, tr.str("trade_id"))) continue;
+                    if (!print(b, tr, t, line, false, why)) return false;
+                }
+                continue;
+            }
+            Book& b = book(std::string(ev.str("product_id")));
+            if (type == "snapshot") snapshot_starts(b, t, line, true);
+            else {
+                b.in_snapshot = false;
+                b.any_update = true;
+            }
+            const Json* ups = ev.get("updates");
+            if (ups == nullptr || !ups->is_array()) return fail(why, line, "l2_data with no updates");
+            for (const Json& u : ups->items) {
+                const std::string sd = lower(u.str("side"));
+                if (sd != "bid" && sd != "offer" && sd != "ask") return fail(why, line, "side '" + sd + "' is not bid or offer");
+                const Json* p = u.get("price_level");
+                const Json* q = u.get("new_quantity");
+                if (p == nullptr || q == nullptr) return fail(why, line, "an update with no price_level or new_quantity");
+                if (!level(b, t, true, line, sd == "bid" ? 'B' : 'S', *p, *q, why)) return false;
+            }
+        }
+        return true;
+    }
+};
+
+[[nodiscard]] inline bool import_coinbase(const std::string& path, std::string_view text, const ImportOptions& opts,
+                                          RawTape& raw, std::string& why) {
+    CoinbaseReader r;
+    const std::size_t at = text.find_first_not_of(" \t\r\n");
+    if (at == std::string_view::npos) {
+        why = "the file is empty";
+        return false;
+    }
+    Json doc;
+    if (text[at] == '[' || (text[at] == '{' && JsonReader(text).parse(doc, why) && doc.get("trades") != nullptr)) {
+        // One document: a REST response, or a feed saved as an array.
+        if (text[at] == '[' && !parse_json(text, doc, why)) return false;
+        const bool advanced = doc.is_object();
+        const Json* list = advanced ? doc.get("trades") : &doc;
+        if (list == nullptr || !list->is_array()) {
+            why = "a JSON document with no list of trades or messages in it";
+            return false;
+        }
+        r.source = "REST trades";
+        if (advanced) r.api = "advanced trade";
+        std::uint64_t n = 0;
+        for (const Json& item : list->items) {
+            ++n;
+            const bool msg = item.get("type") != nullptr || item.get("channel") != nullptr;
+            if (msg ? !r.message(item, n, why) : !r.rest_trade(item, n, !advanced, why)) {
+                why = "item " + why.substr(5);
+                return false;
+            }
+        }
+    } else {
+        why.clear();
+        const std::vector<std::string_view> lines = lines_of(text);
+        for (std::size_t li = 0; li < lines.size(); ++li) {
+            if (trim(lines[li]).empty()) continue;
+            Json m;
+            if (!parse_json(lines[li], m, why)) {
+                why = line_ref(li + 1) + why + " (a feed is read one JSON message a line)";
+                return false;
+            }
+            if (!r.message(m, li + 1, why)) return false;
+        }
+    }
+    if (!r.finish(opts.symbol, raw, why)) return false;
+    raw.skipped = r.skipped;
+    raw.h.format = "coinbase";
+    raw.h.importer = "coinbase 1";
+    raw.h.source_file = base_name(path);
+    raw.kind = TimeKind::Epoch;
+    if (!raw.ev.empty()) {
+        std::int64_t first = raw.ev.front().t;
+        for (const RawEvent& e : raw.ev) first = std::min(first, e.t);
+        raw.h.date = time_text(first, TimeKind::Epoch).substr(0, 10);
+    }
+    return true;
+}
+
 // ---- companions -------------------------------------------------------------------------
 
 // A second file some formats read beside the first: LOBSTER's orderbook file,
@@ -1529,11 +1954,15 @@ struct Companion {
 
 // ---- detection and the front door ------------------------------------------------------
 
-inline constexpr const char* kFormats = "csv lobster databento tardis binance";
+inline constexpr const char* kFormats = "csv lobster databento tardis binance coinbase";
 
-// Which importer reads this file. `first_line` is the file's first line.
-[[nodiscard]] inline std::string detect_format(std::string_view path, std::string_view first_line) {
+// Which importer reads this file. `head` is the start of it: its first line
+// decides, except for JSON, which may spread one record over several lines.
+[[nodiscard]] inline std::string detect_format(std::string_view path, std::string_view head) {
+    std::string_view first_line = head.substr(0, head.find('\n'));
+    if (!first_line.empty() && first_line.back() == '\r') first_line.remove_suffix(1);
     if (first_line.substr(0, 3) == "DBN" || looks_like_databento_csv(first_line)) return "databento";
+    if (looks_like_coinbase(head.substr(0, 4096))) return "coinbase";
     if (looks_like_tardis(first_line)) return "tardis";
     if (looks_like_binance(path, first_line)) return "binance";
     if (looks_like_lobster(path, first_line)) return "lobster";
@@ -1565,9 +1994,7 @@ inline constexpr const char* kFormats = "csv lobster databento tardis binance";
 // read beside the first (LOBSTER's orderbook file); empty when there is none.
 [[nodiscard]] inline bool import_file(const std::string& path, std::string_view bytes, std::string_view companion,
                                       const ImportOptions& opts, Tape& out, std::string& why) {
-    std::string_view first_line = bytes.substr(0, bytes.find('\n'));
-    if (!first_line.empty() && first_line.back() == '\r') first_line.remove_suffix(1);
-    const std::string format = opts.format.empty() ? detect_format(path, first_line) : opts.format;
+    const std::string format = opts.format.empty() ? detect_format(path, bytes) : opts.format;
     RawTape raw;
     bool ok = false;
     if (format == "csv") ok = import_csv(path, bytes, opts, raw, why);
@@ -1575,6 +2002,7 @@ inline constexpr const char* kFormats = "csv lobster databento tardis binance";
     else if (format == "databento") ok = import_databento(path, bytes, opts, raw, why);
     else if (format == "tardis") ok = import_tardis(path, bytes, companion, opts, raw, why);
     else if (format == "binance") ok = import_binance(path, bytes, companion, raw, why);
+    else if (format == "coinbase") ok = import_coinbase(path, bytes, opts, raw, why);
     else {
         why = "unknown format " + format + " (formats: " + kFormats + ")";
         return false;
