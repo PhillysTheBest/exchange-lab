@@ -130,6 +130,18 @@ void test_argument_vectors() {
     PX_CHECK((plan("/controls smoke").run == std::vector<std::string>{"build/release/controls", "--block=smoke"}));
     PX_CHECK(!plan("/controls standard").error.empty());
     PX_CHECK((plan("/book").run == std::vector<std::string>{"build/release/repl"}));
+
+    p = plan("/data");
+    PX_CHECK(p.program == Program::Ingest && p.build.back() == "build/release/ingest" &&
+             (p.run == std::vector<std::string>{"build/release/ingest", "list"}));
+    p = plan("/data add \"my files/x.csv\" name=x columns=time,price");
+    PX_CHECK((p.run == std::vector<std::string>{"build/release/ingest", "add", "my files/x.csv", "name=x",
+                                                "columns=time,price"}));
+    PX_CHECK((plan("/data show demo").run == std::vector<std::string>{"build/release/ingest", "show", "demo"}));
+    PX_CHECK((plan("/data remove demo").run == std::vector<std::string>{"build/release/ingest", "remove", "demo"}));
+    PX_CHECK(!plan("/data add").error.empty() && !plan("/data add a.csv b.csv").error.empty());
+    PX_CHECK(!plan("/data show").error.empty() && !plan("/data show a name=b").error.empty());
+    PX_CHECK(plan("/data fetch x").error.find("add, show or remove") != std::string::npos);
     PX_CHECK(!plan("/book x").error.empty());
 
     // A Windows build names its programs and its make differently; nothing else changes.
@@ -162,6 +174,7 @@ void test_exit_meanings() {
     PX_CHECK(exit_meaning(Program::Reproduce, 1).find("NOT REPRODUCED") != std::string::npos);
     PX_CHECK(exit_meaning(Program::Controls, 1).find("control") != std::string::npos);
     PX_CHECK(exit_meaning(Program::Sweep, 9).find("9") != std::string::npos);
+    PX_CHECK(exit_meaning(Program::Ingest, 1).find("refused") != std::string::npos);
     PX_CHECK(exit_meaning(Program::Arena, -1).find("could not be started") != std::string::npos);
 }
 

@@ -9,6 +9,8 @@
 #   make reproduce RUN=runs/x     re-run a run from its suite.cfg and compare every file (docs/REPRODUCE.md)
 #   make controls                 the evaluator's own controls on the standard block (docs/CONTROLS.md)
 #   make test-app the app driven the way a person would, through its commands
+#   make data FILE=path [OPTS='name=x ...']   bring a market data file in as a tape (docs/DATA.md)
+#   make test-data the ingest program's command line, run against the samples in examples/data/
 #   make all      test, then build the benchmarks and the REPL
 #   make clean
 #
@@ -63,7 +65,7 @@ LIB_DBG := $(LIB_SRC:%.cpp=$(DOBJ)/%.o)
 LIB_REL := $(LIB_SRC:%.cpp=$(ROBJ)/%.o)
 
 TESTS   := test_containers test_spsc_ring test_engine fuzz_vs_reference test_alloc_audit test_determinism \
-           test_arena test_app
+           test_arena test_app test_data
 BENCHES := bench_engine bench_ring bench_matching_latency
 
 TEST_BINS  := $(TESTS:%=$(DBG)/%$(EXE))
@@ -73,10 +75,12 @@ REPL_BIN   := $(REL)/repl$(EXE)
 # consumers of the same MatchingEngine the benchmarks measure, so neither can
 # affect a latency number.
 ARENA_BINS := $(REL)/sweep$(EXE) $(REL)/arena$(EXE) $(REL)/suite$(EXE) $(REL)/controls$(EXE)
+# Bringing market data in (docs/DATA.md). It links none of the market.
+INGEST_BIN := $(REL)/ingest$(EXE)
 
 .PHONY: all test bench latency repl arena sweep controls reproduce clean
 
-all: test test-cli test-lab test-app $(BENCH_BINS) $(REPL_BIN) $(ARENA_BINS)
+all: test test-cli test-lab test-app test-data $(BENCH_BINS) $(REPL_BIN) $(ARENA_BINS)
 
 test: $(TEST_BINS)
 	@set -e; for t in $(TEST_BINS); do echo "== $$t"; ./$$t; done
@@ -345,7 +349,7 @@ APP_BIN := $(REL)/exchange-lab$(EXE)
 
 .PHONY: app test-app
 
-app: $(APP_BIN) $(LAB_BINS) $(REL)/controls$(EXE) $(REPL_BIN)
+app: $(APP_BIN) $(LAB_BINS) $(REL)/controls$(EXE) $(REPL_BIN) $(INGEST_BIN)
 
 $(APP_BIN): $(ROBJ)/app/main.o
 	$(CXX) $(RELEASE_FLAGS) $^ -o $@ $(LDLIBS)
@@ -357,7 +361,7 @@ $(ROBJ)/app/main.o: INCLUDES += -I$(GEN)
 # /compare maker smoke would for anyone; everything else goes under $(BUILD)/app-test.
 # MSYS2_ARG_CONV_EXCL stops an MSYS2 shell rewriting `-c /help` into a Windows path,
 # and tr drops the carriage returns a Windows program writes before a line ends.
-test-app: $(APP_BIN) $(LAB_BINS) $(REL)/controls$(EXE) $(REPL_BIN)
+test-app: $(APP_BIN) $(LAB_BINS) $(REL)/controls$(EXE) $(REPL_BIN) $(INGEST_BIN)
 	@set -e; export MSYS2_ARG_CONV_EXCL='*'; \
 	n=0; ok() { n=$$((n+1)); }; fail() { echo "FAIL: $$1"; exit 1; }; \
 	A=./$(APP_BIN); D=$(BUILD)/app-test; rm -rf $$D; mkdir -p $$D; \
@@ -387,12 +391,93 @@ test-app: $(APP_BIN) $(LAB_BINS) $(REL)/controls$(EXE) $(REPL_BIN)
 	$$A -c '/watch seed=42 still=1000000' > /dev/null || fail "/watch should draw a still"; ok; \
 	$$A -c '/sweep --help' > /dev/null || fail "/sweep should pass its flags through"; ok; \
 	$$A -c /book < tools/repl_demo.txt > /dev/null || fail "/book should run the REPL"; ok; \
+	$$A -c '/data add examples/data/trades.csv name=app-test-trades' | grep -q '^added app-test-trades ' \
+	    || fail "/data add should import a file"; ok; \
+	$$A -c /data | grep -Eq '^app-test-trades +trades +500 ' || fail "/data should list it"; ok; \
+	$$A -c '/data show app-test-trades' | grep -q '^  print size ' || fail "/data show should show it"; ok; \
+	$$A -c '/data remove app-test-trades' > /dev/null && [ ! -e data/app-test-trades.tape ] \
+	    || fail "/data remove should remove it"; ok; \
 	[ "$$($$A -c /learn | grep -c '^  [0-9]\.')" -eq 8 ] || fail "/learn should list eight exercises"; ok; \
 	$$A -c '/learn 1' | grep -q '^1\. ' || fail "/learn 1 should show the first"; ok; \
 	rc=0; (cd $$D && $(CURDIR)/$(APP_BIN) -c /help > /dev/null 2>&1) || rc=$$?; \
 	[ $$rc -eq 2 ] || fail "outside the repository root it should refuse"; ok; \
 	rm -rf $$D; \
 	echo "$$n/$$n app checks passed"
+
+# ---- market data of your own (docs/DATA.md) ----------------------------------
+#
+#   make data                                 list the tapes in data/
+#   make data FILE=path [OPTS='name=x ...']   import a file into data/NAME.tape
+#   make data SHOW=name                       what a tape holds, and what calibration matches
+#
+# ingest reads a file already on disk and never fetches anything. It links none
+# of the market, so an importer cannot reach a session, a hash or a published
+# number. data/ is git-ignored: a tape made from data you paid for stays yours.
+.PHONY: data test-data
+
+$(INGEST_BIN): $(ROBJ)/marketdata/ingest.o
+	$(call announce,linking,$@)
+	$(CXX) $(RELEASE_FLAGS) $^ -o $@ $(LDLIBS)
+
+data: $(INGEST_BIN)
+	@set -e; \
+	if [ -n '$(FILE)' ]; then ./$(INGEST_BIN) add '$(FILE)' $(OPTS); \
+	elif [ -n '$(SHOW)' ]; then ./$(INGEST_BIN) show '$(SHOW)'; \
+	else ./$(INGEST_BIN) list; fi
+
+# The command line, run against the samples, in a directory of its own.
+test-data: $(INGEST_BIN)
+	@set -e; \
+	n=0; ok() { n=$$((n+1)); }; fail() { echo "FAIL: $$1"; exit 1; }; \
+	exits() { want=$$1; shift; rc=0; "$$@" > /dev/null 2>&1 || rc=$$?; [ $$rc -eq $$want ]; }; \
+	I=./$(INGEST_BIN); D=$(BUILD)/data-test; rm -rf $$D; mkdir -p $$D; \
+	L=examples/data/DEMO_2012-06-21_34200000_57600000_message_3.csv; \
+	echo "== ingest"; \
+	$$I --help > /dev/null || fail "--help should succeed"; ok; \
+	exits 2 $$I || fail "no command should exit 2"; ok; \
+	exits 2 $$I fetch x || fail "an unknown command should exit 2"; ok; \
+	exits 2 $$I add $$L dir=$$D colour=red || fail "an unknown setting should exit 2"; ok; \
+	exits 2 $$I add $$L dir=$$D format=parquet || fail "an unknown format should exit 2"; ok; \
+	exits 2 $$I add $$L dir=$$D name=Bad/Name || fail "a bad name should exit 2"; ok; \
+	$$I list dir=$$D | grep -q 'no tapes yet' || fail "an empty list should say so"; ok; \
+	$$I add $$L dir=$$D > $$D/out || fail "the LOBSTER sample should import"; \
+	grep -q '^added demo-2012-06-21 ' $$D/out && grep -q 'with the orderbook file beside it' $$D/out \
+	    || fail "it should be named from the file and read the orderbook file"; ok; \
+	grep -q '^tape.version=1$$' $$D/demo-2012-06-21.tape || fail "it should write a tape"; ok; \
+	[ "$$(sed -n 's/^source.cksum=//p' $$D/demo-2012-06-21.tape)" = "$$(cksum < $$L | cut -d' ' -f1-2)" ] \
+	    || fail "the tape should record the source's cksum, as cksum prints it"; ok; \
+	cp $$D/demo-2012-06-21.tape $$D/first.tape; \
+	$$I add $$L dir=$$D | grep -q '^replaced demo-2012-06-21 ' || fail "the same file again should replace it"; ok; \
+	cmp -s $$D/first.tape $$D/demo-2012-06-21.tape || fail "the same file should give the same tape, byte for byte"; ok; \
+	rm $$D/first.tape; \
+	$$I add examples/data/trades.csv dir=$$D name=demo-2012-06-21 > $$D/out 2>&1 && fail "a name taken by another file should be refused"; \
+	grep -q 'already exists, made from another file' $$D/out || fail "and say why"; ok; \
+	$$I add examples/data/trades.csv dir=$$D > /dev/null || fail "the trades sample should import"; ok; \
+	exits 1 $$I add examples/data/quotes_and_trades.csv dir=$$D || fail "a file with no header needs columns="; ok; \
+	$$I add examples/data/quotes_and_trades.csv dir=$$D 'columns=time,price,qty,side,bid,bid_qty,ask,ask_qty' > $$D/out \
+	    || fail "with columns= it should import"; \
+	grep -q 'price levels (L2)' $$D/out || fail "quotes should make an L2 tape"; ok; \
+	printf 'time,price,qty\n1,10,1\n2,ten,1\n' > $$D/bad.csv; \
+	rc=0; $$I add $$D/bad.csv dir=$$D > $$D/out 2>&1 || rc=$$?; \
+	[ $$rc -eq 1 ] && grep -q "line 3: price 'ten' is not a number" $$D/out || fail "a malformed file should be refused naming the line"; ok; \
+	[ ! -e $$D/bad.tape ] || fail "a refused file should write nothing"; ok; \
+	printf '\037\213rest' > $$D/x.csv.gz; \
+	rc=0; $$I add $$D/x.csv.gz dir=$$D > $$D/out 2>&1 || rc=$$?; \
+	[ $$rc -eq 1 ] && grep -q 'gzip -dk' $$D/out || fail "a compressed file should be refused with the command that opens it"; ok; \
+	exits 1 $$I add $$D/nosuch.csv dir=$$D || fail "a missing file should exit 1"; ok; \
+	$$I list dir=$$D > $$D/out; \
+	grep -Eq '^demo-2012-06-21 +L3 +' $$D/out && grep -Eq '^trades +trades +500 ' $$D/out \
+	    && grep -Eq '^quotes_and_trades +L2 ' $$D/out || fail "list should show every tape"; ok; \
+	$$I show demo-2012-06-21 dir=$$D > $$D/out || fail "show should succeed"; \
+	grep -q '^  spread  *[0-9]* ticks' $$D/out && grep -q '^  per move ' $$D/out || fail "show should print the statistics"; ok; \
+	exits 1 $$I show nosuch dir=$$D || fail "show of a missing tape should exit 1"; ok; \
+	sed -i.bak '$$d' $$D/trades.tape; \
+	exits 1 $$I show trades dir=$$D || fail "a tape cut short should be refused"; ok; \
+	$$I remove trades dir=$$D > /dev/null && [ ! -e $$D/trades.tape ] || fail "remove should delete the tape"; ok; \
+	exits 1 $$I remove trades dir=$$D || fail "removing it twice should exit 1"; ok; \
+	[ -f examples/data/trades.csv ] || fail "remove must never touch the source"; ok; \
+	rm -rf $$D; \
+	echo "$$n/$$n ingest checks passed"
 
 $(LOBJ)/%.o: %.cpp $(MANIFEST)
 	$(call announce,compiling,$<)
