@@ -11,15 +11,20 @@
 // seconds, so calibration matches the shape of the market, not its clock
 // (docs/DATA.md, "Ratios, not the clock").
 //
-//   spread           the time-weighted median of best ask minus best bid, in ticks,
-//                    over the time the book has both sides and is not crossed
-//   touch depth      the time-weighted median of the quantity at the best bid and
-//                    the best ask, averaged
-//   print size       the median print: the trades one aggressor made at one moment
-//                    (T rows with the same time and side), summed
-//   size/depth       print size as a share of touch depth, in thousandths
-//   prints per move  how many prints it takes the mid to move one tick, from the
-//                    squared change of the mid over windows of 20 prints
+//   spread           best ask minus best bid, in ticks, weighted by time, over the
+//                    time the book has both sides and is not crossed: its median,
+//                    and its mean in hundredths of a tick, which calibration uses
+//                    because a median of whole ticks is too coarse to steer by
+//   touch depth      the quantity at the best bid and the best ask, averaged,
+//                    weighted by time: median and mean
+//   print size       a print is the trades one aggressor made at one moment (T rows
+//                    with the same time and side), summed: median and mean
+//   size/depth       the mean print as a share of the mean touch depth, in
+//                    thousandths. Means, because the medians of a few discrete
+//                    sizes jump between them from one sample to the next
+//   prints per move  how many prints it takes the mid to move one tick: 20 over
+//                    the mean squared change of the mid, in ticks, across every
+//                    run of 20 consecutive prints
 //
 // The mid is measured in half ticks (bid + ask), so it stays an integer. On a
 // trades-only tape, or when a tape is read as one, the print price stands in
@@ -159,6 +164,11 @@ private:
 
 inline constexpr int kMoveWindow = 20; // prints per window for prints-per-move
 
+// A product of a time weight and a value overflows 64 bits over a long tape (a
+// day is 2.3e13 ns), so weighted sums are taken in 128. GCC and Clang have it;
+// __extension__ keeps -Wpedantic quiet about it.
+__extension__ typedef __int128 WideSum;
+
 struct TapeStats {
     Depth depth = Depth::Trades; // the depth the tape was read at
     std::uint64_t events = 0, adds = 0, cancels = 0, trades = 0, levels = 0, resets = 0;
@@ -168,21 +178,35 @@ struct TapeStats {
 
     // The book: time with both sides, one side or none, and crossed or locked.
     std::int64_t two_sided_ns = 0, one_sided_ns = 0, empty_ns = 0, crossed_ns = 0;
-    std::int64_t spread_ticks = -1; // -1: not measurable at this depth
-    std::int64_t touch_depth = -1;
+    std::int64_t spread_ticks = -1;     // the median; -1: not measurable at this depth
+    std::int64_t spread_mean_x100 = -1; // the mean, in hundredths of a tick
+    std::int64_t touch_depth = -1;      // the median
+    std::int64_t touch_depth_mean_x100 = -1;
 
-    std::int64_t print_qty = -1;       // median
-    std::int64_t size_depth_pml = -1;  // print_qty * 1000 / touch_depth
+    std::int64_t print_qty = -1; // the median
+    std::int64_t print_mean_x100 = -1;
+    std::int64_t size_depth_pml = -1; // mean print * 1000 / mean touch depth
 
-    std::uint64_t move_windows = 0;
-    std::int64_t move_sumsq = 0;         // sum over windows of (change of the mid in half ticks)^2
+    std::uint64_t move_windows = 0;      // runs of kMoveWindow consecutive prints, overlapping
+    std::int64_t move_sumsq = 0;         // over those runs, (change of the mid in half ticks)^2, summed
     std::int64_t prints_per_move_x100 = -1; // -1: too few prints, or the price never moved
 
     // How well the numbers are supported: a statistic from a handful of prints is noise.
-    [[nodiscard]] bool enough_prints() const noexcept { return move_windows >= 10; }
+    [[nodiscard]] bool enough_prints() const noexcept { return move_windows >= 10 * kMoveWindow; }
 };
 
 namespace detail {
+
+// The weighted mean, times 100; -1 with no weight.
+[[nodiscard]] inline std::int64_t weighted_mean_x100(const std::map<std::int64_t, std::int64_t>& w) {
+    WideSum total = 0, sum = 0;
+    for (const auto& [v, n] : w) {
+        total += n;
+        sum += static_cast<WideSum>(v) * n;
+    }
+    if (total <= 0) return -1;
+    return static_cast<std::int64_t>(sum * 100 / total);
+}
 
 // The value below which half the weight lies.
 [[nodiscard]] inline std::int64_t weighted_median(const std::map<std::int64_t, std::int64_t>& w) {
@@ -211,7 +235,7 @@ namespace detail {
     std::vector<std::int64_t> print_qty;
     std::vector<std::int64_t> mids; // the mid, in half ticks, at each print since the last reset
     auto close_windows = [&st, &mids] {
-        for (std::size_t i = kMoveWindow; i < mids.size(); i += kMoveWindow) {
+        for (std::size_t i = kMoveWindow; i < mids.size(); ++i) {
             const std::int64_t d = mids[i] - mids[i - kMoveWindow];
             st.move_sumsq += d * d;
             ++st.move_windows;
@@ -300,14 +324,20 @@ namespace detail {
 
     if (book) {
         st.spread_ticks = detail::weighted_median(spread_w);
+        st.spread_mean_x100 = detail::weighted_mean_x100(spread_w);
         st.touch_depth = detail::weighted_median(depth_w);
+        st.touch_depth_mean_x100 = detail::weighted_mean_x100(depth_w);
     }
     if (!print_qty.empty()) {
+        WideSum sum = 0;
+        for (const std::int64_t q : print_qty) sum += q;
+        st.print_mean_x100 = static_cast<std::int64_t>(sum * 100 / static_cast<WideSum>(print_qty.size()));
         auto mid = print_qty.begin() + static_cast<std::ptrdiff_t>((print_qty.size() - 1) / 2);
         std::nth_element(print_qty.begin(), mid, print_qty.end());
         st.print_qty = *mid;
     }
-    if (st.print_qty > 0 && st.touch_depth > 0) st.size_depth_pml = st.print_qty * 1000 / st.touch_depth;
+    if (st.print_mean_x100 > 0 && st.touch_depth_mean_x100 > 0)
+        st.size_depth_pml = st.print_mean_x100 * 1000 / st.touch_depth_mean_x100;
     // Var of the mid over a window, in ticks^2, is sumsq / (4 * windows); a one-tick
     // move takes kMoveWindow / that many prints.
     if (st.move_windows > 0 && st.move_sumsq > 0)

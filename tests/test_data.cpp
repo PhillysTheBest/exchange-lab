@@ -1,10 +1,14 @@
-// tests/test_data.cpp — the tape format, the importers and the statistics
-// calibration matches (docs/DATA.md), checked against answers known in advance.
+// tests/test_data.cpp — the tape format, the importers, the statistics
+// calibration matches and the session writer it measures the simulation with
+// (docs/DATA.md), checked against answers known in advance. The known-answer
+// control itself runs many hundreds of sessions, so make test-data runs it,
+// through the calibrate program, with its planted defects.
 //
 // The samples in examples/data/ are synthetic: made up for these tests, so they
 // carry no licence. The LOBSTER sample comes with its orderbook file, written by
 // the same made-up market, so the book a tape rebuilds can be held to the book
 // LOBSTER's own format says it should be after every message.
+#include "marketdata/calibrate.hpp"
 #include "marketdata/importers.hpp"
 #include "marketdata/stats.hpp"
 #include "test_harness.hpp"
@@ -292,21 +296,22 @@ void test_stats() {
     TapeStats s = tape_stats(t);
     PX_CHECK(s.spread_ticks == 1 && s.touch_depth == 10 && s.two_sided_ns == 1000 && s.crossed_ns == 0);
     PX_CHECK(s.prints == 1 && s.trades == 2 && s.print_qty == 10 && s.buy_prints == 1); // one aggressor, one print
-    PX_CHECK(s.size_depth_pml == 1000 && s.span_ns == 1000);
+    // Means: depth (20 for 100 ns, 10 for 900) is 11; spread (2, then 1) is 1.1 ticks; one print of 10.
+    PX_CHECK(s.touch_depth_mean_x100 == 1100 && s.spread_mean_x100 == 110 && s.print_mean_x100 == 1000);
+    PX_CHECK(s.size_depth_pml == 909 && s.span_ns == 1000);
     // Read as trades only, the book is not measured at all.
     s = tape_stats(t, Depth::Trades);
     PX_CHECK(s.depth == Depth::Trades && s.spread_ticks == -1 && s.touch_depth == -1 && s.print_qty == 10);
 
-    // Prints per move: the price is 100 for 20 prints, 101 for 20, then 103. Two windows
-    // of 20 prints move 1 and 2 ticks: a variance of 2.5 ticks^2, so 8 prints a tick.
+    // Prints per move: the price rises a tick every print, so every run of 20
+    // prints moves 20 ticks, a squared move of 400 ticks^2: 0.05 prints a tick.
     Tape p;
     p.h.depth = Depth::Trades;
-    for (int i = 0; i <= 40; ++i)
-        p.ev.push_back({i * 10, 'T', i % 2 == 0 ? 'B' : 'S', 0, i < 20 ? 100 : i < 40 ? 101 : 103, 1});
+    for (int i = 0; i <= 40; ++i) p.ev.push_back({i * 10, 'T', i % 2 == 0 ? 'B' : 'S', 0, 100 + i, 1});
     s = tape_stats(p);
-    PX_CHECK(s.prints == 41 && s.move_windows == 2 && s.move_sumsq == 20 && s.prints_per_move_x100 == 800);
+    PX_CHECK(s.prints == 41 && s.move_windows == 21 && s.move_sumsq == 21 * 1600 && s.prints_per_move_x100 == 5);
     PX_CHECK(!s.enough_prints());
-    // A reset closes the windows: none may span two sessions.
+    // A reset closes the runs: none may span two sessions. 20 prints, then 21.
     p.ev.insert(p.ev.begin() + 20, TapeEvent{195, 'R', '-', 0, 0, 0});
     s = tape_stats(p);
     PX_CHECK(s.move_windows == 1 && s.resets == 1);
@@ -338,6 +343,102 @@ void test_stats() {
                 static_cast<long long>(s.prints_per_move_x100 % 100));
 }
 
+// A session written as a tape rebuilds the engine's own book, every level on
+// both sides, after every step; and writing it changes nothing in the session.
+void test_session_tape() {
+    using namespace px::arena;
+    using px::kPriceScale;
+    using px::LevelView;
+    using px::Side;
+    const suite::SuiteDef def = suite::standard_suite();
+    Roster roster, bare_roster;
+    suite::Origin origin{};
+    std::string why;
+    PX_CHECK(suite::build_arm_roster(def, "", roster, origin, why) &&
+             suite::build_arm_roster(def, "", bare_roster, origin, why));
+    Session s, bare;
+    PX_CHECK(s.start(suite::suite_session_config(def, 42), std::move(roster)) == Session::StartError::None);
+    PX_CHECK(bare.start(suite::suite_session_config(def, 42), std::move(bare_roster)) == Session::StartError::None);
+    SessionTapeWriter w("check", 100, kPriceScale);
+    w.attach(s, 0);
+    TapeBook b;
+    std::size_t applied = 0, steps = 0, mismatches = 0;
+    std::uint64_t levels = 0;
+    while (s.step()) {
+        ++steps;
+        w.sync();
+        const std::vector<TapeEvent>& ev = w.tape().ev;
+        for (; applied < ev.size(); ++applied) b.apply(ev[applied]);
+        for (const Side side : {Side::Buy, Side::Sell}) {
+            const std::uint32_t n = s.engine().depth(s.instrument(), side);
+            const auto mine = b.top(side == Side::Buy ? 0 : 1, n + 1);
+            bool same = mine.size() == n;
+            for (std::uint32_t i = 0; same && i < n; ++i) {
+                const LevelView lv = s.engine().level(s.instrument(), side, i);
+                same = mine[i].first * 100 == lv.price && static_cast<std::uint64_t>(mine[i].second) == lv.qty;
+            }
+            mismatches += same ? 0 : 1;
+            levels += n;
+        }
+    }
+    s.finish();
+    w.detach(s);
+    while (bare.step()) {
+    }
+    bare.finish();
+    PX_CHECK(steps > 10'000 && levels > 100'000 && mismatches == 0);
+    PX_CHECK(s.hash() == bare.hash()); // the tap reads; it never acts
+    const Tape& t = w.tape();
+    PX_CHECK(t.h.depth == Depth::L3 && t.h.tick == 100 && t.h.price_scale == kPriceScale && w.rested() > 0);
+    std::uint64_t kinds[128] = {};
+    for (const TapeEvent& e : t.ev) ++kinds[static_cast<unsigned char>(e.kind)];
+    PX_CHECK(kinds['A'] > 0 && kinds['C'] > 0 && kinds['T'] > 0 && kinds['L'] == 0 && kinds['R'] == 0);
+    std::printf("  session tape: %zu steps, %zu rows, book identical to the engine's after every step\n", steps,
+                t.ev.size());
+
+    // Two sessions on one tape: a reset between them, time running on, and the
+    // same tape every time it is made.
+    const std::uint64_t seeds[] = {42, 43};
+    Tape one, two;
+    PX_CHECK(simulate(def, seeds, 2, one, why) && simulate(def, seeds, 2, two, why));
+    PX_CHECK(tape_text(one) == tape_text(two));
+    std::size_t resets = 0;
+    for (const TapeEvent& e : one.ev) resets += e.kind == 'R' ? 1 : 0;
+    PX_CHECK(resets == 1 && one.ev.back().t > def.session_ns && one.ev.back().t <= 2 * def.session_ns);
+    Tape back;
+    PX_CHECK(parse_tape(tape_text(one), back, why) && tape_text(back) == tape_text(one));
+}
+
+void test_calibration_parts() {
+    PX_CHECK(ratio_distance(100, 100) == 0 && ratio_distance(125, 100) == 250 && ratio_distance(100, 125) == 250);
+    PX_CHECK(ratio_distance(0, 100) == kFar && ratio_distance(-1, -1) == 0);
+    PX_CHECK(grid_index(Knob::Pace, 20'000) == 5 && grid_index(Knob::Size, 33) == -1);
+    const MarketParams ref = reference_params();
+    PX_CHECK(ref.half_spread_ticks == 2 && ref.noise_qty == 25 && ref.noise_timer_ns == 10'000);
+    for (const Knob k : kKnobs) PX_CHECK(grid_index(k, knob_value(ref, k)) >= 0);       // the start is on every grid
+    for (const Knob k : kKnobs) PX_CHECK(grid_index(k, knob_value(control_truth(), k)) >= 0);
+    for (const Knob k : kKnobs) PX_CHECK(knob_value(control_truth(), k) != knob_value(ref, k)); // every knob must move
+    const px::arena::suite::SuiteDef m = market_with(px::arena::suite::standard_suite(), MarketParams{4, 30, 15'000});
+    PX_CHECK(m.roster.maker_half_spread_ticks == 4 && m.roster.rival_half_spread_ticks == 4 && m.roster.noise_qty == 30 &&
+             m.roster.noise_timer_ns == 15'000 && std::string(m.name) == "standard");
+    // Calibration's seeds are never a block a result is read on.
+    for (const std::uint64_t s : kCalibrationSeeds) PX_CHECK(s < 42 || s > 105);
+    for (const std::uint64_t s : kControlSeeds) PX_CHECK((s < 42 || s > 105) && (s < 9001 || s > 9008));
+
+    // The planted defects do what their names say.
+    Tape t = small_tape();
+    Tape d = t;
+    plant(d, Defect::DropCancels);
+    PX_CHECK(d.ev.size() == t.ev.size() - 1);
+    for (const TapeEvent& e : d.ev) PX_CHECK(e.kind != 'C');
+    d = t;
+    plant(d, Defect::PriceTimesTen);
+    PX_CHECK(d.ev[0].price == 10 * t.ev[0].price && d.ev.size() == t.ev.size());
+    d = t;
+    plant(d, Defect::None);
+    PX_CHECK(tape_text(d) == tape_text(t));
+}
+
 } // namespace
 
 int main() {
@@ -348,5 +449,7 @@ int main() {
     test_generic_csv();
     test_lobster();
     test_stats();
+    test_session_tape();
+    test_calibration_parts();
     PX_TEST_REPORT_AND_RETURN();
 }

@@ -357,6 +357,16 @@ public:
     [[nodiscard]] const FairValue& fair_value() const noexcept { return fv_; }
     [[nodiscard]] const SessionConfig& config() const noexcept { return cfg_; }
     [[nodiscard]] const SessionStats& stats() const noexcept { return stats_; }
+
+    // A read-only tap on the event stream: every event the engine emits, with
+    // the simulated instant it happened, as it happens. It cannot act, so it
+    // cannot move a hash; marketdata/session_tape.hpp writes a session out as a
+    // tape with it (docs/DATA.md). Survives start(); null turns it off.
+    using EventTap = void (*)(void* ctx, SimTime at, const ExecEvent& e);
+    void set_event_tap(EventTap fn, void* ctx) noexcept {
+        tap_fn_ = fn;
+        tap_ctx_ = ctx;
+    }
     [[nodiscard]] const std::vector<TapePrint>& tape() const noexcept { return tape_; }
     [[nodiscard]] std::size_t participants() const noexcept { return parts_.size(); }
     [[nodiscard]] const char* name_of(std::size_t i) const noexcept { return roster_.strategies[i]->name(); }
@@ -586,6 +596,7 @@ private:
 
         bool own[kMaxParticipants] = {};
         for (const ExecEvent& e : buf_) {
+            if (tap_fn_ != nullptr) tap_fn_(tap_ctx_, now, e);
             ev_hash_.add(e);
             time_hash_ = mix(time_hash_, static_cast<std::uint64_t>(now));
             ++stats_.events;
@@ -696,6 +707,8 @@ private:
     EventHasher ev_hash_{};
     std::uint64_t time_hash_ = 0xcbf29ce484222325ULL;
     SessionStats stats_{};
+    EventTap tap_fn_ = nullptr;
+    void* tap_ctx_ = nullptr;
     OrderId next_order_id_ = 1;
     SimTime last_request_at_ = 0;
     bool done_ = false;
