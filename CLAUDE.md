@@ -8,22 +8,30 @@ A price-time-priority exchange matching engine in C++20: a single-threaded match
 core fed by lock-free SPSC rings, no heap allocation after start-up, int64 fixed-point
 prices, plus the test and measurement machinery that backs its latency claims — and
 `arena/`, a seeded simulated market of strategies trading inside that engine, with a
-controllable reaction delay each and a terminal renderer. README.md holds the design
-and the published results, `docs/ARENA.md` the arena's design, its reasoning and the
-terminal viewer, `docs/LEARN.md` the students' path and `GLOSSARY.md` the terms; this
-file covers how to work in the repo.
+controllable reaction delay each and a terminal renderer — and `app/`, the terminal app
+in front of all of it. README.md is the front page; `docs/APP.md` is the app's design,
+`docs/ENGINE.md` the engine's design and measurements, `docs/ARENA.md` the arena's design,
+its reasoning and the viewer, `docs/RESULTS.md` the arena's published results,
+`docs/LEARN.md` the students' path and `GLOSSARY.md` the terms; this file covers how to
+work in the repo.
 
 **Who it is for (decided 2026-10-17).** exchange-lab is a research and learning tool for
 **students** of market microstructure and **researchers** who need controlled, reproducible
 experiments on market mechanisms and strategies. It is not a backtester and not a tool for
 deciding whether to trade a strategy: the market is invented, not fitted to data, so its
 P&L predicts nothing about a real venue. Write every user-facing document for those two
-readers, and keep the README's opening in this order: what it is and is not, "Start here",
-the negative result, then the two audiences. `docs/LEARN.md` is the students' path
+readers, and keep the README's opening in this order: what it is and is not, "Start here"
+(the app), the negative result, what makes it different, then the two audiences. `docs/LEARN.md` is the students' path
 (every command in it must run as written; re-run them when a command changes) and
 `GLOSSARY.md` defines terms as this project uses them; a new term in a report or a doc gets
-an entry there. `docs/REPOSITION_PLAN.md` lists the remaining repositioning steps,
-deletions included, none of them carried out without the user's go-ahead.
+an entry there.
+
+**The app is the front door (decided 2026-10-22).** One terminal program,
+`build/release/exchange-lab`, with a prompt and slash commands in the spirit of Claude Code.
+**No browser whatsoever**: no web or desktop interface, no mouse, no network, and no AI model
+in it. It runs the existing programs as children and links none of the market
+(`docs/APP.md` says why), so it cannot move a hash. Document new features as app commands
+first, with the raw `make` target beside them.
 
 **History.** This was a Kalshi prediction-market trading system; the live stack was
 deleted at `07b3be0` and is not coming back. Nothing in the tree depends on an exchange
@@ -38,7 +46,8 @@ load-bearing. Its scope boundary is binding — everything compiles into one bin
 nothing talks over a network. All of it sits on the branch `arena`, open as pull request
 #1 against `main`. The arena is being turned into a strategy research platform in five
 steps, and all five are built: the strategy interface, the standard experiment runner,
-the evaluation report, its validation and one-command reproducibility. See "Strategies of your own" below for the plan and what is built.
+the evaluation report, its validation and one-command reproducibility. See "Strategies of
+your own" below for what is built. The terminal app in front of it is built too.
 
 **The result is a negative one and the documentation leads with it.** "What is 10
 microseconds worth?" answers *less than 24 seeds can resolve*; 1 ms costs real money,
@@ -59,8 +68,10 @@ The GitHub description is currently set to:
 > allocation, bit-identical cross-OS replay — and the deterministic market simulator
 > built on it.
 
-`docs/REPOSITION_PLAN.md` (C4) proposes one for the new audience; change this paragraph
-when the user sets it. The user's local checkout is still named `prediction-markets`; when
+A description for the new audience was proposed: *Price-time-priority matching engine in
+C++20 (p99.9 under 2µs, zero allocation) and a deterministic market simulator for teaching
+and researching trading strategies: paired experiments, tested controls, byte-for-byte
+reproduction.* Change this paragraph when the user sets one. The user's local checkout is still named `prediction-markets`; when
 it is renamed, the WSL path in the sanitizer command below changes with it.
 
 ## Build and test
@@ -69,7 +80,8 @@ Hand-written Makefile: `mingw32-make` on Windows (MSYS2 UCRT64 g++ 13), `make` o
 Linux. No CMake, no package manager, no third-party libraries — keep it that way.
 
 ```bash
-mingw32-make test       # debug (-Og, PX_DEBUG invariants, _GLIBCXX_ASSERTIONS): builds and runs all 7 tests
+mingw32-make app        # the terminal app, build/release/exchange-lab, and every program it runs
+mingw32-make test       # debug (-Og, PX_DEBUG invariants, _GLIBCXX_ASSERTIONS): builds and runs all 8 tests
 mingw32-make bench      # release (-O3 -march=native -flto): builds and runs all 3 benchmarks
 mingw32-make latency    # only the 1M-order matching-latency benchmark
 mingw32-make repl       # then: build/release/repl.exe < tools/repl_demo.txt
@@ -78,7 +90,8 @@ mingw32-make test-cli   # the sweep's and the suite's command lines: bad flags f
 mingw32-make compare CANDIDATES=a,b   # the standard experiment, written to runs/; see "Strategies of your own"
 mingw32-make controls   # the evaluator's own controls on the standard block (docs/CONTROLS.md)
 mingw32-make reproduce RUN=runs/x   # re-run a run from its suite.cfg, compare every file (docs/REPRODUCE.md)
-mingw32-make all        # tests, command-line checks, benchmarks, REPL, arena
+mingw32-make test-app   # the app driven through its commands (writes runs/maker-smoke)
+mingw32-make all        # tests, command-line, lab and app checks, benchmarks, REPL, arena
 mingw32-make clean
 ```
 
@@ -114,10 +127,10 @@ mingw32-make build/debug/test_engine.exe && ./build/debug/test_engine.exe
   `wsl -d Ubuntu -- bash -lc "cd /mnt/c/Users/Philb/prediction-markets && make BUILD=build-asan SAN='-fsanitize=address,undefined -fno-sanitize-recover=all' test"`
   (`BUILD` picks the output directory so Windows and WSL builds coexist.)
 - `bench/run_evidence.sh <label>` regenerates `results/<label>/` — machine state plus
-  every run the README quotes. `python bench/summarize_results.py results/<label>`
-  prints the README's tables. Never hand-edit numbers in `results/` or README.
+  every run README.md and `docs/ENGINE.md` quote. `python bench/summarize_results.py results/<label>`
+  prints their tables. Never hand-edit numbers in `results/` or the docs.
 - `python bench/summarize_arena.py results/arena-<label>` prints the arena tables that
-  README and `docs/ARENA.md` quote, including the paired standard errors and the smallest
+  README, `docs/RESULTS.md` and `docs/ARENA.md` quote, including the paired standard errors and the smallest
   effect a given seed count could resolve. Same rule as the engine's: a number in the
   documentation that this script does not print has no evidence behind it.
 - `bench/run_arena_evidence.sh <label>` does the same for `results/arena-<label>/`:
@@ -179,6 +192,14 @@ of the book, including its queue position, is reconstructed from the `ExecEvent`
 stream in `arena/book_mirror.hpp`. Read `docs/ARENA.md` before changing anything in
 there — several of its parameters are load-bearing in ways that are not obvious, and
 the document records which and why.
+
+**The app** (`app/`, `docs/APP.md`) is not a consumer of the engine: it links none of it.
+`app/commands.hpp` turns a typed line into a plan (answer it inside, or a `make`
+invocation and a program to run) as pure functions that `test_app` checks, including that
+every command in the `/help` table has a handler and every name in `kStrategyNames` has a
+line in `kStrategyNotes`. `app/run.hpp` starts children without a shell; `app/line.hpp` is
+the line editor. A new command is a row in `kCommands` and a branch in `plan_for()` (or in
+`main.cpp`'s internal commands), plus a check in `test-app`.
 
 **Strategies** are plain structs in `arena/strategies/`, compiled in and never loaded at runtime.
 Adding one is a header plus one line in `add_named_strategy()` and its name in `kStrategyNames`,
@@ -329,10 +350,11 @@ wire-to-wire tick-to-trade. The ~32ns timer floor is printed, never subtracted.
 The gate is fixed: **p99.9 < 2µs, zero ring stalls, zero allocations in the window.**
 Do not add knobs that move it and do not trim outliers; the count over 2µs and the
 slowest single order are always reported beside it. Paced runs currently fail that gate
-on this laptop and the README says so. When a cause is not established (most of the
+on this laptop and `docs/ENGINE.md` says so. When a cause is not established (most of the
 paced tail), write "not established" rather than blaming the OS.
 
-Claims in the README must be reproducible from `results/` by the scripts above.
+Claims in README.md, `docs/ENGINE.md` and `docs/RESULTS.md` must be reproducible from
+`results/` by the scripts above.
 
 **Arena numbers are a different kind of number and must never be mixed with these.**
 A session invents its nanoseconds; a reaction delay is an input the experimenter
@@ -362,7 +384,8 @@ loose from the fundamental is not a market and nothing read off one counts.
 - Rebuilding `sweep.exe` or `arena.exe` while one is still running fails with a bare
   `Permission denied` from the linker on Windows. Check for the process first.
 - `arena/term.hpp` reaches for `<windows.h>` and `<termios.h>`, so exactly one
-  translation unit includes it: `arena/arena.cpp`. Nothing measured links it.
+  translation unit includes it: `arena/arena.cpp`. Nothing measured links it. The app's
+  line editor has its own blocking raw mode in `app/line.hpp` rather than include it.
 - Several arena parameters are load-bearing in non-obvious ways (the informed trader's
   position limit, the maker's inventory limit, the learning rate, the inventory skew).
   Changing one and reading only the P&L will produce a confident wrong answer; read

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Print the arena tables that README.md and docs/ARENA.md quote.
+"""Print the arena tables that README.md, docs/RESULTS.md and docs/ARENA.md quote.
 
     python bench/summarize_arena.py results/arena-windows
 
@@ -82,8 +82,8 @@ def decomposition(rows, label):
     """Where the money actually went: spread earned against adverse selection.
 
     Both are per-fill in the CSV, so the totals here are per-fill times the mean
-    fill count, divided into currency units. This is the arithmetic behind the
-    README's claim that the cost of being slow is liquidity provision.
+    fill count, divided into currency units. This is the arithmetic behind
+    the claim in README.md and docs/RESULTS.md that the cost of being slow is liquidity provision.
     """
     print("\n%s - per-fill decomposition (edge = spread + adverse, currency units)" % label)
     print("  %-12s | %8s | %10s | %12s | %10s | %12s | %s"

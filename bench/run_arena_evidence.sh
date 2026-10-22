@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # bench/run_arena_evidence.sh <label> — regenerates results/arena-<label>/.
 #
-# Every arena number quoted in README.md and docs/ARENA.md comes out of this
+# Every arena number quoted in README.md, docs/RESULTS.md and docs/ARENA.md comes out of this
 # script, the same arrangement run_evidence.sh gives the engine's benchmarks: the
 # tables are regenerated, never edited. If a number in the documentation is not
 # in one of these files, it should not be in the documentation.
