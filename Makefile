@@ -199,11 +199,16 @@ sweep: $(REL)/sweep$(EXE)
 controls: $(REL)/controls$(EXE)
 	./$<
 
+# The app passes ANNOUNCE=1, so a command that has to rebuild says so rather than
+# pausing silently (a pull or a commit changes the build info, which rebuilds suite_lab).
+announce = $(if $(ANNOUNCE),@echo "  $(1) $(2)")
+
 $(DOBJ)/%.o: %.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(DEBUG_FLAGS) $(DEPFLAGS) -c $< -o $@
 
 $(ROBJ)/%.o: %.cpp
+	$(call announce,compiling,$<)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(RELEASE_FLAGS) $(DEPFLAGS) -c $< -o $@
 
@@ -214,9 +219,11 @@ $(BENCH_BINS): $(REL)/%$(EXE): $(ROBJ)/bench/%.o $(LIB_REL)
 	$(CXX) $(RELEASE_FLAGS) $^ -o $@ $(LDLIBS)
 
 $(REPL_BIN): $(ROBJ)/tools/repl.o $(LIB_REL)
+	$(call announce,linking,$@)
 	$(CXX) $(RELEASE_FLAGS) $^ -o $@ $(LDLIBS)
 
 $(ARENA_BINS): $(REL)/%$(EXE): $(ROBJ)/arena/%.o $(LIB_REL)
+	$(call announce,linking,$@)
 	$(CXX) $(RELEASE_FLAGS) $^ -o $@ $(LDLIBS)
 
 # ---- strategies of your own ------------------------------------------------
@@ -388,10 +395,12 @@ test-app: $(APP_BIN) $(LAB_BINS) $(REL)/controls$(EXE) $(REPL_BIN)
 	echo "$$n/$$n app checks passed"
 
 $(LOBJ)/%.o: %.cpp $(MANIFEST)
+	$(call announce,compiling,$<)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXSTD) $(WARN) $(INCLUDES) $(LAB_FLAGS) $(RELEASE_FLAGS) $(DEPFLAGS) -c $< -o $@
 
 $(LAB_BINS): $(REL)/%_lab$(EXE): $(LOBJ)/arena/%.o $(LIB_REL)
+	$(call announce,linking,$@)
 	$(CXX) $(RELEASE_FLAGS) $^ -o $@ $(LDLIBS)
 
 # The whole path, run the way a newcomer would: refusals first, then install the

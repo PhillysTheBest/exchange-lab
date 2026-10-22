@@ -89,7 +89,7 @@ void test_internal_commands() {
 void test_argument_vectors() {
     Env env;
     const std::vector<std::string> make_suite = {"make", "-s", "--no-print-directory", "BUILD=build",
-                                                 "build/release/suite_lab"};
+                                                 "ANNOUNCE=1", "build/release/suite_lab"};
 
     Plan p = plan("/compare imbalance,maker smoke wide", env);
     PX_CHECK(p.error.empty() && p.program == Program::Suite && p.build == make_suite);
@@ -103,7 +103,7 @@ void test_argument_vectors() {
 
     p = plan("/add examples/strategies/imbalance.hpp");
     PX_CHECK(p.program == Program::Make && p.run.empty());
-    PX_CHECK((p.build == std::vector<std::string>{"make", "-s", "--no-print-directory", "BUILD=build", "strategy",
+    PX_CHECK((p.build == std::vector<std::string>{"make", "-s", "--no-print-directory", "BUILD=build", "ANNOUNCE=1", "strategy",
                                                   "STRATEGY=examples/strategies/imbalance.hpp"}));
     PX_CHECK(!plan("/add").error.empty() && !plan("/add a.hpp b.hpp").error.empty());
 
@@ -140,7 +140,7 @@ void test_argument_vectors() {
     win.rel = "build-x/release";
     p = plan("/compare maker", win);
     PX_CHECK(p.build[0] == "mingw32-make" && p.build[3] == "BUILD=build-x" &&
-             p.build[4] == "build-x/release/suite_lab.exe" && p.run[0] == "build-x/release/suite_lab.exe");
+             p.build[5] == "build-x/release/suite_lab.exe" && p.run[0] == "build-x/release/suite_lab.exe");
 }
 
 void test_strategy_notes_match_the_registry() {
