@@ -152,7 +152,7 @@ struct Plan {
 };
 
 [[nodiscard]] inline std::vector<std::string> make_target(const Env& env, const std::string& target) {
-    return {env.make, "-s", "--no-print-directory", "BUILD=" + env.build, target};
+    return {env.make, "-s", "--no-print-directory", "BUILD=" + env.build, "ANNOUNCE=1", target};
 }
 
 [[nodiscard]] inline std::string program_path(const Env& env, const char* name) {
