@@ -1331,10 +1331,168 @@ struct TardisFile {
     return n;
 }
 
+// ---- Binance ---------------------------------------------------------------------------
+//
+// The CSV files data.binance.vision publishes, named SYMBOL-TYPE-DATE.csv, from
+// its published descriptions of them; checked against hand-made samples:
+//
+//   trades      spot, no header: id,price,qty,quote_qty,time,is_buyer_maker,is_best_match
+//               futures, a header: id,price,qty,quote_qty (base_qty on coin-margined),time,is_buyer_maker
+//   aggTrades   spot, no header: agg_id,price,qty,first_id,last_id,time,is_buyer_maker,is_best_match
+//               futures, a header: agg_trade_id,price,quantity,first_trade_id,last_trade_id,transact_time,
+//               is_buyer_maker
+//   bookTicker  futures, a header: update_id,best_bid_price,best_bid_qty,best_ask_price,best_ask_qty,
+//               transaction_time,event_time
+//
+// Times are epoch milliseconds, or microseconds in spot files from 2025: the
+// number of digits says which. is_buyer_maker true means a seller crossed the
+// spread. A bookTicker file is read with the trades file of the same symbol and
+// day when it sits beside it, or failing that its aggTrades file.
+
+// The type a Binance file's name gives, or "" when it gives none.
+[[nodiscard]] inline std::string binance_type(std::string_view path) {
+    const std::string base = base_name(path);
+    for (const char* t : {"-aggTrades-", "-trades-", "-bookTicker-"}) {
+        const std::string_view tv(t);
+        if (base.find(tv) != std::string::npos) return std::string(tv.substr(1, tv.size() - 2));
+    }
+    return "";
+}
+
+// The type a Binance header names, or "" when the line is not one.
+[[nodiscard]] inline std::string binance_header_type(std::string_view first_line) {
+    const std::string h = lower(trim(first_line));
+    if (h == "id,price,qty,quote_qty,time,is_buyer_maker" || h == "id,price,qty,base_qty,time,is_buyer_maker")
+        return "trades";
+    if (h == "agg_trade_id,price,quantity,first_trade_id,last_trade_id,transact_time,is_buyer_maker")
+        return "aggTrades";
+    if (h == "update_id,best_bid_price,best_bid_qty,best_ask_price,best_ask_qty,transaction_time,event_time")
+        return "bookTicker";
+    return "";
+}
+
+[[nodiscard]] inline bool looks_like_binance(std::string_view path, std::string_view first_line) {
+    if (!binance_header_type(first_line).empty()) return true;
+    const std::string t = binance_type(path), l = lower(first_line);
+    return (t == "trades" || t == "aggTrades") && !l.empty() && is_digit(l[0]) &&
+           (l.find(",true") != std::string::npos || l.find(",false") != std::string::npos);
+}
+
+struct BinanceFile {
+    std::string type;
+    bool header = false;
+    std::vector<RawEvent> ev;
+};
+
+[[nodiscard]] inline bool read_binance(const std::string& path, std::string_view text, BinanceFile& out,
+                                       std::string& why) {
+    const std::vector<std::string_view> lines = lines_of(text);
+    if (lines.empty()) {
+        why = "the file is empty";
+        return false;
+    }
+    out.type = binance_header_type(lines[0]);
+    out.header = !out.type.empty();
+    if (!out.header) out.type = binance_type(path);
+    std::vector<std::string> f;
+    if (out.type.empty() && !out.header && split_csv(lines[0], ',', f)) // a spot file renamed: its width says
+        out.type = f.size() == 7 ? "trades" : f.size() == 8 ? "aggTrades" : "";
+    if (out.type.empty()) {
+        why = "not a Binance file this build reads: its name should say trades, aggTrades or bookTicker, as "
+              "data.binance.vision names them (BTCUSDT-trades-2024-01-02.csv), or it should start with their header";
+        return false;
+    }
+    // Columns: price, qty, time, is_buyer_maker; bookTicker: bid, bid qty, ask, ask qty, time.
+    const bool book = out.type == "bookTicker";
+    const std::size_t c_time = book ? 5 : out.type == "trades" ? 4 : 5, c_bm = out.type == "trades" ? 5 : 6;
+    const std::size_t need = book ? 6 : c_bm + 1;
+    if (book && !out.header) {
+        why = "a bookTicker file without its header: this build reads them as data.binance.vision writes them";
+        return false;
+    }
+    LevelDiff diff;
+    RawTape scratch;
+    for (std::size_t li = out.header ? 1 : 0; li < lines.size(); ++li) {
+        if (trim(lines[li]).empty()) continue;
+        const std::uint64_t line = li + 1;
+        if (!split_csv(lines[li], ',', f) || f.size() < need) {
+            why = line_ref(line) + std::to_string(f.size()) + " fields, a Binance " + out.type + " file has " +
+                  std::to_string(need) + " or more";
+            return false;
+        }
+        RawEvent e;
+        e.line = line;
+        TimeKind kind{};
+        if (!parse_time(trim(f[c_time]), TimeFormat::Auto, e.t, kind) || kind != TimeKind::Epoch) {
+            why = line_ref(line) + "time '" + std::string(trim(f[c_time])) + "' is not epoch milliseconds or microseconds";
+            return false;
+        }
+        auto number = [&](std::size_t c, const char* what, Decimal& d) {
+            if (parse_decimal(trim(f[c]), d)) return true;
+            why = line_ref(line) + what + " '" + std::string(trim(f[c])) + "' is not a number";
+            return false;
+        };
+        if (book) {
+            for (const char side : {'B', 'S'}) {
+                const std::size_t c = side == 'B' ? 1 : 3;
+                Decimal p{}, q{};
+                if (!number(c, side == 'B' ? "best_bid_price" : "best_ask_price", p) ||
+                    !number(c + 1, side == 'B' ? "best_bid_qty" : "best_ask_qty", q))
+                    return false;
+                LevelDiff::Levels now;
+                if (q.mantissa > 0) now.emplace_back(p, q);
+                diff.side(scratch, e.t, line, side, now);
+            }
+            continue;
+        }
+        e.kind = 'T';
+        e.side = side_from_buyer_maker(f[c_bm]);
+        if (e.side == '-') {
+            why = line_ref(line) + "is_buyer_maker '" + std::string(trim(f[c_bm])) + "' is not true or false";
+            return false;
+        }
+        if (!number(1, "price", e.price) || !number(2, "qty", e.qty)) return false;
+        out.ev.push_back(e);
+    }
+    if (book) out.ev = std::move(scratch.ev);
+    return true;
+}
+
+[[nodiscard]] inline bool import_binance(const std::string& path, std::string_view text, std::string_view trades,
+                                         RawTape& raw, std::string& why) {
+    BinanceFile main, other;
+    if (!read_binance(path, text, main, why)) return false;
+    if (main.type == "bookTicker" && !trades.empty()) {
+        if (!read_binance("", trades, other, why)) {
+            why = "the trades file beside it: " + why;
+            return false;
+        }
+        if (other.type == "bookTicker") other = BinanceFile{};
+    }
+    raw.ev.reserve(main.ev.size() + other.ev.size());
+    std::merge(main.ev.begin(), main.ev.end(), other.ev.begin(), other.ev.end(), std::back_inserter(raw.ev),
+               [](const RawEvent& a, const RawEvent& b) { return a.t < b.t; });
+    raw.h.format = "binance";
+    raw.h.importer = "binance 1";
+    raw.h.source_file = base_name(path);
+    const std::string base = base_name(path);
+    raw.h.instrument = base.find('-') == std::string::npos ? "" : base.substr(0, base.find('-'));
+    raw.kind = TimeKind::Epoch;
+    raw.h.depth = main.type == "bookTicker" ? Depth::L2 : Depth::Trades;
+    if (!raw.ev.empty()) raw.h.date = time_text(raw.ev.front().t, TimeKind::Epoch).substr(0, 10);
+    std::string notes = "binance " + main.type + (main.header ? "" : " (spot, no header)");
+    if (main.type == "aggTrades") notes += ": a row is one taker order's trades at one price";
+    if (main.type == "bookTicker")
+        notes += other.ev.empty() ? "; no trades file beside it, so no prints"
+                                  : ", with its " + other.type + " file";
+    raw.h.notes = notes;
+    return true;
+}
+
 // ---- companions -------------------------------------------------------------------------
 
 // A second file some formats read beside the first: LOBSTER's orderbook file,
-// a Tardis book file's trades. Candidates, best first; ingest reads the first
+// a Tardis book file's or a Binance bookTicker file's trades. Candidates, best first; ingest reads the first
 // that exists.
 struct Companion {
     std::string path;
@@ -1361,17 +1519,23 @@ struct Companion {
             out.push_back({dir + base.substr(0, at) + "_trades_" + base.substr(end), "its trades file"});
         }
     }
+    const std::size_t b = base.find("-bookTicker-");
+    if (b != std::string::npos && (format.empty() || format == "binance")) {
+        out.push_back({dir + base.substr(0, b) + "-trades-" + base.substr(b + 12), "its trades file"});
+        out.push_back({dir + base.substr(0, b) + "-aggTrades-" + base.substr(b + 12), "its aggTrades file"});
+    }
     return out;
 }
 
 // ---- detection and the front door ------------------------------------------------------
 
-inline constexpr const char* kFormats = "csv lobster databento tardis";
+inline constexpr const char* kFormats = "csv lobster databento tardis binance";
 
 // Which importer reads this file. `first_line` is the file's first line.
 [[nodiscard]] inline std::string detect_format(std::string_view path, std::string_view first_line) {
     if (first_line.substr(0, 3) == "DBN" || looks_like_databento_csv(first_line)) return "databento";
     if (looks_like_tardis(first_line)) return "tardis";
+    if (looks_like_binance(path, first_line)) return "binance";
     if (looks_like_lobster(path, first_line)) return "lobster";
     return "csv";
 }
@@ -1410,6 +1574,7 @@ inline constexpr const char* kFormats = "csv lobster databento tardis";
     else if (format == "lobster") ok = import_lobster(path, bytes, companion, opts, raw, why);
     else if (format == "databento") ok = import_databento(path, bytes, opts, raw, why);
     else if (format == "tardis") ok = import_tardis(path, bytes, companion, opts, raw, why);
+    else if (format == "binance") ok = import_binance(path, bytes, companion, raw, why);
     else {
         why = "unknown format " + format + " (formats: " + kFormats + ")";
         return false;

@@ -481,6 +481,11 @@ test-data: $(INGEST_BIN) $(CALIBRATE_BIN) $(LAB_BINS) $(REL)/suite$(EXE) $(REL)/
 	    || fail "it should be read with its trades file, the second snapshot a reset"; ok; \
 	$$I add examples/data/demo_trades_2024-01-02_DEMO.csv dir=$$D | grep -q '^added demo-demo-2024-01-02-trades ' \
 	    || fail "its trades file alone should be a tape of its own"; ok; \
+	$$I add examples/data/BTCUSDT-bookTicker-2024-01-02.csv dir=$$D > $$D/out || fail "the Binance sample should import"; \
+	grep -q '^added btcusdt-bookticker-2024-01-02 .*(with its trades file beside it)$$' $$D/out && grep -q '3 trades, 8 level updates$$' $$D/out \
+	    || fail "a bookTicker file should be read with its trades file"; ok; \
+	$$I add examples/data/ETHUSDT-trades-2025-01-02.csv dir=$$D > $$D/out || fail "a spot trades file with no header should import"; \
+	grep -q 'read as binance' $$D/out && grep -q 'binance trades (spot, no header)' $$D/out || fail "and be read as Binance's"; ok; \
 	exits 1 $$I add examples/data/quotes_and_trades.csv dir=$$D || fail "a file with no header needs columns="; ok; \
 	$$I add examples/data/quotes_and_trades.csv dir=$$D 'columns=time,price,qty,side,bid,bid_qty,ask,ask_qty' > $$D/out \
 	    || fail "with columns= it should import"; \
@@ -497,7 +502,7 @@ test-data: $(INGEST_BIN) $(CALIBRATE_BIN) $(LAB_BINS) $(REL)/suite$(EXE) $(REL)/
 	grep -Eq '^demo-2012-06-21 +L3 +' $$D/out && grep -Eq '^trades +trades +500 ' $$D/out \
 	    && grep -Eq '^quotes_and_trades +L2 ' $$D/out || fail "list should show every tape"; ok; \
 	$$I show demo-2012-06-21 dir=$$D > $$D/out || fail "show should succeed"; \
-	grep -q '^  spread  *[0-9]* ticks' $$D/out && grep -q '^  per move ' $$D/out || fail "show should print the statistics"; ok; \
+	grep -q '^  spread  *[0-9]* ticks* ' $$D/out && grep -q '^  per move ' $$D/out || fail "show should print the statistics"; ok; \
 	exits 1 $$I show nosuch dir=$$D || fail "show of a missing tape should exit 1"; ok; \
 	sed -i.bak '$$d' $$D/trades.tape; \
 	exits 1 $$I show trades dir=$$D || fail "a tape cut short should be refused"; ok; \

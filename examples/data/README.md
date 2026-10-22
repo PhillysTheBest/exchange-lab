@@ -13,6 +13,9 @@ you bring stays where you keep it, and its tape goes in `data/`, which git ignor
 | `databento_mbo.csv` | Databento's MBO schema as its CSV export writes it: a clear, adds, a modify, a partial cancel, and two trades each followed by the fills and cancels Databento sends for the resting orders |
 | `demo_incremental_book_L2_2024-01-02_DEMO.csv` | Tardis.dev's `incremental_book_L2` file: a snapshot, level updates, and a second snapshot part-way, as when the exchange connection starts again; `/data add` turns that into a reset of the book |
 | `demo_trades_2024-01-02_DEMO.csv` | its `trades` file, which `/data add` reads beside the book file and merges in by arrival time; one trade's side is `unknown` |
+| `BTCUSDT-bookTicker-2024-01-02.csv` | Binance futures' best bid and ask file, as data.binance.vision names and writes it; `/data add` reads it with the trades file beside it |
+| `BTCUSDT-trades-2024-01-02.csv` | that trades file, with its header; `is_buyer_maker` gives the aggressor's side |
+| `ETHUSDT-trades-2025-01-02.csv` | a Binance spot trades file: no header, and times in microseconds, as spot files are from 2025 |
 | `quotes_and_trades.csv` | best bid and ask changes and trades in one file, `;`-separated, ISO times and no header: `/data add` needs `columns=time,price,qty,side,bid,bid_qty,ask,ask_qty` |
 
 `tests/test_data.cpp` holds the LOBSTER sample to its orderbook file after every message:

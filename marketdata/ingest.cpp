@@ -30,7 +30,7 @@ namespace {
 constexpr const char* kHelp =
     "ingest: bring a market data file into exchange-lab as a tape (docs/DATA.md)\n"
     "\n"
-    "  ingest add FILE [format=csv|lobster|databento|tardis] [name=NAME] [columns=ROLES] [time=FORMAT]\n"
+    "  ingest add FILE [format=FORMAT] [name=NAME] [columns=ROLES] [time=FORMAT]\n"
     "                  [tick=DECIMAL] [symbol=SYMBOL] [instrument=NAME]\n"
     "  ingest list               the tapes in data/\n"
     "  ingest show NAME          what a tape holds, and the statistics calibration matches\n"
@@ -38,9 +38,10 @@ constexpr const char* kHelp =
     "\n"
     "Settings are written name=value (--name=value works too); dir=DIR keeps tapes\n"
     "somewhere other than data/.\n"
-    "  format=     csv, lobster, databento (CSV or uncompressed DBN) or tardis; found from\n"
-    "              the file when left out. A LOBSTER message file is read with its orderbook\n"
-    "              file, and a Tardis book file with its trades file, when it sits beside it\n"
+    "  format=     csv, lobster, databento (CSV or uncompressed DBN), tardis or binance;\n"
+    "              found from the file when left out. A LOBSTER message file is read with its\n"
+    "              orderbook file, and a Tardis book file or a Binance bookTicker file with its\n"
+    "              trades file, when that sits beside it\n"
     "  name=       the tape's name; from the file name when left out\n"
     "  columns=    a CSV's columns in order, when its header does not say or it has none:\n"
     "              time, price, qty, side, buyer_maker, bid, bid_qty, ask, ask_qty, symbol, -\n"
@@ -131,7 +132,7 @@ void show(const Tape& tape) {
         say("  touch depth   not in a trades-only tape");
     } else {
         say("  spread        " + (st.spread_ticks < 0 ? std::string("never measurable: the book never had both sides")
-                                                       : std::to_string(st.spread_ticks) + " ticks") +
+                                                       : std::to_string(st.spread_ticks) + (st.spread_ticks == 1 ? " tick" : " ticks")) +
             " (time-weighted median)");
         say("  touch depth   " + (st.touch_depth < 0 ? std::string("-") : grouped(st.touch_depth)) +
             " (time-weighted median of the best bid's and best ask's size, averaged)");
@@ -194,7 +195,7 @@ int cmd_add(const std::string& file, const ImportOptions& opts, const std::strin
     if (!readable(file, bytes, why)) return refuse(file + ": " + why);
 
     // A second file read with this one, when it sits beside it: LOBSTER's
-    // orderbook file, the trades of a Tardis book file.
+    // orderbook file, the trades of a Tardis book file or a Binance bookTicker file.
     std::string companion, companion_what;
     for (const Companion& c : companions_of(file, opts.format)) {
         if (!fs::is_regular_file(c.path, ec)) continue;
