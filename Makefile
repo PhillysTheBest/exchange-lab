@@ -1,5 +1,6 @@
 # Matching engine — build with mingw32-make (Windows, MSYS2 UCRT64) or make (Linux).
 #
+#   make app      the terminal app, build/release/exchange-lab, and every program it runs (docs/APP.md)
 #   make test     debug build (-Og, PX_DEBUG invariants, _GLIBCXX_ASSERTIONS); builds and runs every test
 #   make bench    release build (-O3 -march=native -flto); builds and runs every benchmark
 #   make latency  builds and runs only bench_matching_latency (the 1M-order headline number)
@@ -7,6 +8,7 @@
 #   make compare CANDIDATES=a,b   the standard experiment (docs/RUNNER.md); see "strategies of your own"
 #   make reproduce RUN=runs/x     re-run a run from its suite.cfg and compare every file (docs/REPRODUCE.md)
 #   make controls                 the evaluator's own controls on the standard block (docs/CONTROLS.md)
+#   make test-app the app driven the way a person would, through its commands
 #   make all      test, then build the benchmarks and the REPL
 #   make clean
 #
@@ -61,7 +63,7 @@ LIB_DBG := $(LIB_SRC:%.cpp=$(DOBJ)/%.o)
 LIB_REL := $(LIB_SRC:%.cpp=$(ROBJ)/%.o)
 
 TESTS   := test_containers test_spsc_ring test_engine fuzz_vs_reference test_alloc_audit test_determinism \
-           test_arena
+           test_arena test_app
 BENCHES := bench_engine bench_ring bench_matching_latency
 
 TEST_BINS  := $(TESTS:%=$(DBG)/%$(EXE))
@@ -74,7 +76,7 @@ ARENA_BINS := $(REL)/sweep$(EXE) $(REL)/arena$(EXE) $(REL)/suite$(EXE) $(REL)/co
 
 .PHONY: all test bench latency repl arena sweep controls reproduce clean
 
-all: test test-cli test-lab $(BENCH_BINS) $(REPL_BIN) $(ARENA_BINS)
+all: test test-cli test-lab test-app $(BENCH_BINS) $(REPL_BIN) $(ARENA_BINS)
 
 test: $(TEST_BINS)
 	@set -e; for t in $(TEST_BINS); do echo "== $$t"; ./$$t; done
@@ -326,6 +328,62 @@ $(BUILD_INFO): FORCE
 
 $(ROBJ)/arena/suite.o $(LOBJ)/arena/suite.o: $(BUILD_INFO)
 $(ROBJ)/arena/suite.o: INCLUDES += -I$(GEN)
+
+# ---- the terminal app (docs/APP.md) ---------------------------------------
+#
+# One prompt with slash commands, in front of the programs above. It runs them
+# as child processes and links none of the market, so it cannot move a hash,
+# a fingerprint or a published number.
+APP_BIN := $(REL)/exchange-lab$(EXE)
+
+.PHONY: app test-app
+
+app: $(APP_BIN) $(LAB_BINS) $(REL)/controls$(EXE) $(REPL_BIN)
+
+$(APP_BIN): $(ROBJ)/app/main.o
+	$(CXX) $(RELEASE_FLAGS) $^ -o $@ $(LDLIBS)
+
+$(ROBJ)/app/main.o: $(BUILD_INFO)
+$(ROBJ)/app/main.o: INCLUDES += -I$(GEN)
+
+# Commands typed into the real binary. It writes runs/maker-smoke, as
+# /compare maker smoke would for anyone; everything else goes under $(BUILD)/app-test.
+test-app: $(APP_BIN) $(LAB_BINS) $(REL)/controls$(EXE) $(REPL_BIN)
+	@set -e; \
+	n=0; ok() { n=$$((n+1)); }; fail() { echo "FAIL: $$1"; exit 1; }; \
+	A=./$(APP_BIN); D=$(BUILD)/app-test; rm -rf $$D; mkdir -p $$D; \
+	echo "== exchange-lab app"; \
+	out=$$(echo /help | $$A 2>&1); \
+	for c in $$(sed -n 's/^    {"\(\/[a-z]*\)".*/\1/p' app/commands.hpp); do \
+	    echo "$$out" | grep -q "^  $$c " || fail "/help should list $$c"; done; ok; \
+	rc=0; echo /nosuch | $$A > $$D/out 2>&1 || rc=$$?; \
+	[ $$rc -eq 2 ] && grep -q 'no command /nosuch' $$D/out || fail "an unknown command should be refused"; ok; \
+	rc=0; $$A -c 'hello there' > $$D/out 2>&1 || rc=$$?; \
+	[ $$rc -eq 2 ] && grep -q 'commands start with /' $$D/out || fail "plain text should point at /help"; ok; \
+	out=$$($$A -c /strategies); \
+	for s in $(BUILTIN_STRATEGIES); do echo "$$out" | grep -q "^  $$s " || fail "/strategies should list $$s"; done; ok; \
+	rc=0; $$A -c '/add Makefile' > $$D/out 2>&1 || rc=$$?; \
+	[ $$rc -eq 2 ] && grep -q 'not a .hpp header' $$D/out || fail "/add of a non-header should be refused"; ok; \
+	$$A -c '/compare maker smoke' > $$D/compare 2>/dev/null || fail "/compare maker smoke should complete"; \
+	grep -q '^status=complete' runs/maker-smoke/outcome.cfg && grep -q 'Saved in runs/maker-smoke' $$D/compare \
+	    || fail "/compare should write a complete run and say where"; ok; \
+	$$A -c /runs | grep -Eq '^maker-smoke +complete +standard +smoke +maker$$' || fail "/runs should list it"; ok; \
+	$$A -c '/report maker-smoke' | grep -q 'arena suite' || fail "/report should show it"; ok; \
+	cp -r runs/maker-smoke $$D/run; \
+	$$A -c "/reproduce $$D/run" 2>/dev/null | grep -q '^  REPRODUCED' || fail "/reproduce should reproduce it"; ok; \
+	cp -r $$D/run $$D/bad; echo >> $$D/bad/report.txt; \
+	rc=0; $$A -c "/reproduce $$D/bad" > $$D/out 2>&1 || rc=$$?; \
+	[ $$rc -eq 1 ] && grep -q 'NOT REPRODUCED' $$D/out || fail "-c should return the child's status (got $$rc, want 1)"; ok; \
+	$$A -c '/controls smoke' 2>/dev/null | grep -q '^8/8 controls held' || fail "/controls should run the controls"; ok; \
+	$$A -c '/watch seed=42 still=1000000' > /dev/null || fail "/watch should draw a still"; ok; \
+	$$A -c '/sweep --help' > /dev/null || fail "/sweep should pass its flags through"; ok; \
+	$$A -c /book < tools/repl_demo.txt > /dev/null || fail "/book should run the REPL"; ok; \
+	[ "$$($$A -c /learn | grep -c '^  [0-9]\.')" -eq 8 ] || fail "/learn should list eight exercises"; ok; \
+	$$A -c '/learn 1' | grep -q '^1\. ' || fail "/learn 1 should show the first"; ok; \
+	rc=0; (cd $$D && $(CURDIR)/$(APP_BIN) -c /help > /dev/null 2>&1) || rc=$$?; \
+	[ $$rc -eq 2 ] || fail "outside the repository root it should refuse"; ok; \
+	rm -rf $$D; \
+	echo "$$n/$$n app checks passed"
 
 $(LOBJ)/%.o: %.cpp $(MANIFEST)
 	@mkdir -p $(dir $@)
