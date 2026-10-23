@@ -682,6 +682,17 @@ test-lab: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(INGEST_BIN)
 	rm -rf $$D; \
 	echo "9/9 suite checks passed"
 
+# The outputs that must be identical on every platform, compared line by line with
+# the record committed from Linux (docs/PORTABILITY_PLAN.md, stage 0). The first
+# differing line names what diverged first; derived.* lines are the report's
+# double arithmetic, apart from the market's integer state.
+.PHONY: canonical
+canonical: $(DBG)/test_determinism$(EXE) $(DBG)/test_arena$(EXE) $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(INGEST_BIN) $(CALIBRATE_BIN)
+	@sh tools/canonical.sh $(BUILD) > $(BUILD)/canonical.txt
+	@if diff tests/canonical.txt $(BUILD)/canonical.txt; then \
+	    echo "canonical: $$(wc -l < tests/canonical.txt | tr -d ' ') outputs identical to tests/canonical.txt"; \
+	else echo "canonical: differs from tests/canonical.txt (< recorded, > this build)"; exit 1; fi
+
 clean:
 	rm -rf $(BUILD)
 
