@@ -449,7 +449,7 @@ std::vector<std::string> complete(const std::string& line, std::size_t& start) {
     if (cmd == "/controls") return keep_prefixed({"smoke"}, word);
     if (cmd == "/learn") {
         std::vector<std::string> numbers;
-        for (int i = 1; i <= 8; ++i) numbers.push_back(std::to_string(i));
+        for (int i = 1; i <= 9; ++i) numbers.push_back(std::to_string(i));
         return keep_prefixed(numbers, word);
     }
     return {};

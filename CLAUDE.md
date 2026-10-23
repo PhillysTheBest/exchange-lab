@@ -8,8 +8,10 @@ A price-time-priority exchange matching engine in C++20: a single-threaded match
 core fed by lock-free SPSC rings, no heap allocation after start-up, int64 fixed-point
 prices, plus the test and measurement machinery that backs its latency claims — and
 `arena/`, a seeded simulated market of strategies trading inside that engine, with a
-controllable reaction delay each and a terminal renderer — and `app/`, the terminal app
-in front of all of it. README.md is the front page; `docs/APP.md` is the app's design,
+controllable reaction delay each and a terminal renderer — and `marketdata/`, which brings
+a data file the user already has in as a tape, calibrates the market to resemble it and
+replays it — and `app/`, the terminal app in front of all of it. README.md is the front
+page; `docs/APP.md` is the app's design, `docs/DATA.md` the market data's,
 `docs/ENGINE.md` the engine's design and measurements, `docs/ARENA.md` the arena's design,
 its reasoning and the viewer, `docs/RESULTS.md` the arena's published results,
 `docs/LEARN.md` the students' path and `GLOSSARY.md` the terms; this file covers how to
@@ -18,8 +20,8 @@ work in the repo.
 **Who it is for (decided 2026-10-17).** exchange-lab is a research and learning tool for
 **students** of market microstructure and **researchers** who need controlled, reproducible
 experiments on market mechanisms and strategies. It is not a backtester and not a tool for
-deciding whether to trade a strategy: the market is invented, not fitted to data, so its
-P&L predicts nothing about a real venue. Write every user-facing document for those two
+deciding whether to trade a strategy: the market is invented, and calibrated to a data file
+it matches three statistics and nothing else, so its P&L predicts nothing about a real venue. Write every user-facing document for those two
 readers, and keep the README's opening in this order: what it is and is not, "Start here"
 (the app), the negative result, what makes it different, then the two audiences. `docs/LEARN.md` is the students' path
 (every command in it must run as written; re-run them when a command changes) and
@@ -91,7 +93,7 @@ mingw32-make compare CANDIDATES=a,b   # the standard experiment, written to runs
 mingw32-make controls   # the evaluator's own controls on the standard block (docs/CONTROLS.md)
 mingw32-make reproduce RUN=runs/x   # re-run a run from its suite.cfg, compare every file (docs/REPRODUCE.md)
 mingw32-make test-app   # the app driven through its commands (writes runs/maker-smoke)
-mingw32-make data FILE=path [OPTS='name=x']   # bring a market data file in as data/NAME.tape (docs/DATA_PLAN.md)
+mingw32-make data FILE=path [OPTS='name=x']   # bring a market data file in as data/NAME.tape (docs/DATA.md)
 mingw32-make calibrate TAPE=name   # data/NAME.tape -> markets/NAME.cfg; then compare/sweep_lab/arena_lab take a market
 mingw32-make compare CANDIDATES=a MARKET=name  # the standard experiment on a calibrated market (suite_lab only)
 mingw32-make replay TAPE=name [STRATEGY=s]   # an L3 tape through the engine: the control, or one strategy in it
@@ -213,6 +215,21 @@ worked example, written against `arena/strategy.hpp` alone. `--strategies=maker,
 composes a line-up by name; without it the registry's default line-up is used, which is
 what every published number came from. The strategy lab below turns those two steps
 into one make target for a strategy of your own; it does not change what a strategy is.
+
+**Market data** (`marketdata/`, `docs/DATA.md`) is read from a file on disk, never fetched.
+`ingest` (`/data`) converts a file once into a **tape** (`marketdata/tape.hpp`: integer text,
+prices in ticks, the source's `cksum` in the header) through one importer per format in
+`marketdata/importers.hpp` (csv, lobster, databento, tardis, binance, coinbase, kraken,
+itch); nothing downstream reads anything else, and `ingest` links none of the market.
+`marketdata/stats.hpp` measures a tape, whatever made it. Calibration
+(`marketdata/calibrate.hpp`, `/calibrate`) runs the reference market on seeds 9001-9008,
+writes the sessions out as a tape through `Session::set_event_tap` (read-only, null by
+default; a tapped session's hash is the untapped one's) and `marketdata/session_tape.hpp`,
+measures it with the same function, and moves only the four parameters
+`kMarketParamNames` lists. It writes `markets/NAME.cfg` (`marketdata/market_file.hpp`),
+which only the lab programs take (`--market=`); the evidence programs refuse it. `replay`
+(`marketdata/replay.hpp`, `/replay`) is a lab program with a `MatchingEngine` of its own
+and three owners (history's book, history's flow, one strategy); it adds no engine API.
 
 **`arena/ui.hpp`** owns a grid of coloured cells and knows nothing about trading;
 `arena/arena.cpp` is the only place the renderer and the market meet. A frame composes
@@ -418,6 +435,16 @@ loose from the fundamental is not a market and nothing read off one counts.
   in the contemporaneous column, which the code calls `spread`. Do not describe `adverse`
   reading zero as evidence that nothing adverse happened; `docs/ARENA.md` works through
   it, and the failed calibration is published in `results/arena-*/stale.*`.
+- **Never commit a tape, a source data file or a market file.** `data/` and `markets/` are
+  git-ignored; paid data usually may not be redistributed. A new importer comes with a
+  sample in `examples/data/` that is made up by hand (so it carries no licence) and a test in
+  `test_data`, and its version string moves when what it writes changes (a tape records
+  `importer=databento 2`). Importers are integer, like a session: no `double` anywhere.
+- **No calibrated result without the known-answer control.** `calibrate` runs it on the build
+  first and refuses if it does not hold; a trades-only tape is refused because it does not.
+  `calibrate --robustness` recovers 13 of 15 known-answer runs within one grid step; do not
+  describe calibration as exact. `replay`'s control has two planted defects in `test_data`;
+  keep that pairing when changing it.
 
 ## Conventions
 

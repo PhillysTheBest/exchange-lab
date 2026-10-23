@@ -1,8 +1,8 @@
 # Learning with exchange-lab
 
-A guided path through exchange-lab in eight short exercises, each building on the last. It
-starts with one order book and ends with a strategy of your own, scored, controlled and
-reproduced. It is written for students meeting market microstructure for the first time,
+A guided path through exchange-lab in nine short exercises, each building on the last. It
+starts with one order book, goes on to a strategy of your own, scored, controlled and
+reproduced, and ends with a file of market data. It is written for students meeting market microstructure for the first time,
 and for researchers who want the tour before the design documents.
 [`GLOSSARY.md`](../GLOSSARY.md) defines every term used here.
 
@@ -280,6 +280,36 @@ changed since the run (checksum ... then, ... now): not the same strategy`.
 (`docs/REPRODUCE.md`)? Cross-platform replay of an installed strategy is checked, not
 promised (`docs/REPRODUCE.md`): what in your header could break it? **Read next:**
 [`docs/REPRODUCE.md`](REPRODUCE.md).
+
+## 9. Bring a file of market data
+
+**Goal:** turn a data file into a tape, play it back through the engine, and set the
+simulated market to resemble one, keeping in mind what each can and cannot tell you.
+
+```
+> /data add examples/data/DEMO_2012-06-21_34200000_57600000_message_3.csv
+> /data show demo-2012-06-21
+> /replay demo-2012-06-21
+> /replay demo-2012-06-21 maker
+> /calibrate --known=known
+> /calibrate known
+> /compare maker smoke market=known
+```
+
+**Look for.** The sample is a made-up LOBSTER file, so it carries no licence: 771 events, read
+order by order. `/replay` alone runs the replay's control and ends `The control holds: replay
+plays this tape back as it was.` With `maker` in it, the report opens `History cannot react`
+and counts where history and the strategy collided: 1300 of history's recorded flow traded
+with the maker instead of the orders it was recorded against. `/calibrate --known=known`
+writes a tape from sessions whose parameters are known (3 / 40 / 20000); `/calibrate known`
+gives them back, `64/64 seeds pass`, and writes `markets/known.cfg`. The `/compare` report
+says `calibrated from the tape known (L3): like it in spread, size, pace, and in nothing else`,
+and its fingerprint, `85106d50923a64eb`, is not the standard suite's `d461c30ab2446acf`.
+
+**Think about.** `/calibrate demo-2012-06-21` refuses the sample as too short: why does
+calibration need many prints? A calibrated market keeps the standard informed trader, so what
+would a strategy that beats it have learned about the real market? Why does a replay flatter a
+market maker? **Read next:** [`docs/DATA.md`](DATA.md).
 
 ## Where to go from here
 

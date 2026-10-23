@@ -50,7 +50,9 @@ Each file is marked identical or DIFFERENT, then the whole run is `REPRODUCED` (
    - the run is incomplete (no `status=complete` in `outcome.cfg`);
    - its suite or block is not in this build;
    - a candidate cannot be built here;
-   - an installed strategy's checksum differs from the one recorded; or
+   - an installed strategy's checksum differs from the one recorded;
+   - the run was on a calibrated market whose file, `run.market_file`, has been calibrated
+     again since; or
    - a single condition line differs. The refusal names the first difference, for example
      `maker.quote_qty=40 in the run, maker.quote_qty=50 here`.
 2. **Re-runs the suite** into the output directory exactly as `/compare` would, with its own
@@ -74,6 +76,14 @@ Every `suite.cfg` holds four kinds of line:
 | What ran | `run.*`: the binary, the installed strategies it could see, each candidate's origin, declared delay and timer | no |
 | Which version of an installed strategy | `run.candidate.<name>.digest`: the `cksum` CRC of its header, computed by `/add` (`make strategy`). A built-in has no digest; its version is the commit | no |
 | Which build | `build.commit` (12 characters of `git rev-parse`), `build.dirty`, `build.compiler`, `build.platform`, `build.flags` | no |
+
+A run on a calibrated market (`/compare NAME market=M`) also records `calibration.*` lines:
+the market's name, the tape it was matched to and that tape's `cksum`, its depth and the
+statistics matched. They are conditions, so the market is a suite of its own with its own
+fingerprint, and the parameters it set are among the participants' lines. That is enough to
+re-run it: `/reproduce` rebuilds the market from the run's own `suite.cfg`, **without the tape
+or the market file**, so a run made from paid data can be reproduced by someone who does not
+have the data ([`DATA.md`](DATA.md)).
 
 The `build.*` lines come from `$(BUILD)/generated/px_build_info.hpp`, which the Makefile
 regenerates on every build but rewrites only when it changes, so it costs no rebuild. They are
