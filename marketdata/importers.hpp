@@ -658,6 +658,15 @@ enum class Role : std::uint8_t { Skip, Time, Price, Qty, Side, BuyerMaker, Bid, 
 
 // ---- levels from snapshots -------------------------------------------------------------
 
+// a - b, as a decimal; false when it would be negative or cannot be scaled.
+[[nodiscard]] inline bool decimal_minus(const Decimal& a, const Decimal& b, Decimal& out) {
+    const int d = std::max(a.decimals, b.decimals);
+    std::int64_t x = 0, y = 0;
+    if (!scale_to(a, d, x) || !scale_to(b, d, y) || x < y) return false;
+    out = Decimal{x - y, d};
+    return true;
+}
+
 // The fewest-decimals form of a decimal, so two spellings of one price are one key.
 [[nodiscard]] inline std::pair<std::int64_t, int> canonical(const Decimal& d) {
     std::int64_t m = d.mantissa;
@@ -719,8 +728,11 @@ private:
 //
 //   mbo      order by order (L3): adds, cancels, modifies and clears. In this
 //            schema a trade (T) or a fill (F) does not change the book; the
-//            cancel or modify that follows it does. So a trade becomes a print
-//            that leaves the book alone, and a fill is counted and left out.
+//            cancel or modify that follows it does. So each fill becomes the
+//            tape's trade, naming the order it took, and the cancel or modify
+//            after it is absorbed; a trade with no fills after it (a hidden
+//            order's) is a print that names no order. A modify to a smaller
+//            size at the same price keeps the order's place in the queue.
 //   mbp-1, mbp-10, tbbo   price levels (L2): each record carries the top levels
 //            after it, which become level updates; its trades become prints.
 //   trades   prints only.
@@ -801,6 +813,19 @@ inline constexpr std::int64_t kDbUndefPrice = 9'223'372'036'854'775'807LL; // IN
         Decimal price, qty;
     };
     std::map<std::uint64_t, Resting> book; // mbo: what each order rests with, for a modify
+    // mbo: Databento sends a trade (T, the aggressor's, changing no book), a fill
+    // (F) for each resting order it took, and then the cancel or modify that takes
+    // the filled size off that order. A fill becomes the tape's T, naming the order
+    // it took, so the book's change is the trade itself, and the cancel or modify
+    // after it is absorbed. A trade with no fills after it (a hidden order's) stays
+    // a print that names no order.
+    std::map<std::uint64_t, Decimal> filled;
+    struct Pending {
+        bool open = false;
+        DbRecord r;
+        Decimal left;
+    } print;
+    std::uint64_t through_fills = 0;
     LevelDiff diff;
     std::uint64_t unknown_modifies = 0;
     auto push = [&raw](const DbRecord& r, char kind, char side, std::uint64_t id, const Decimal& p, const Decimal& q) {
@@ -814,11 +839,32 @@ inline constexpr std::int64_t kDbUndefPrice = 9'223'372'036'854'775'807LL; // IN
         e.line = r.line;
         raw.ev.push_back(e);
     };
+    auto flush_print = [&] {
+        if (!print.open) return;
+        print.open = false;
+        if (print.left.mantissa > 0) push(print.r, 'T', print.r.side == 'B' ? 'B' : print.r.side == 'A' ? 'S' : '-', 0,
+                                          print.r.price, print.left);
+        else ++through_fills;
+    };
+    // What a cancel or modify of `id` takes off that a fill already took.
+    auto absorb = [&](std::uint64_t id, const Decimal& want) {
+        const auto f = filled.find(id);
+        if (f == filled.end()) return Decimal{0, 0};
+        Decimal rest{};
+        Decimal took = f->second;
+        if (decimal_minus(want, f->second, rest)) filled.erase(f);
+        else {
+            took = want;
+            (void)decimal_minus(f->second, want, f->second);
+        }
+        return took;
+    };
     for (DbRecord& r : recs) {
         if (r.instrument != chosen) {
             ++raw.skipped["records for other instruments"];
             continue;
         }
+        if (schema == DbSchema::Mbo && r.action != 'F') flush_print();
         const char side = r.side == 'B' ? 'B' : r.side == 'A' ? 'S' : '-';
         if (r.action == 'R') {
             push(r, 'R', '-', 0, Decimal{}, Decimal{});
@@ -851,28 +897,36 @@ inline constexpr std::int64_t kDbUndefPrice = 9'223'372'036'854'775'807LL; // IN
                     ++raw.skipped["cancels of size zero"];
                     break;
                 }
+                Decimal size{};
+                if (!decimal_minus(r.size, absorb(r.order_id, r.size), size) || size.mantissa <= 0) break;
                 const auto it = book.find(r.order_id);
                 const char s = it != book.end() ? it->second.side : side;
-                push(r, 'C', s, r.order_id, it != book.end() ? it->second.price : r.price, r.size);
+                push(r, 'C', s, r.order_id, it != book.end() ? it->second.price : r.price, size);
                 if (it != book.end()) {
-                    std::int64_t left = 0, take = 0;
-                    const int d = std::max(it->second.qty.decimals, r.size.decimals);
-                    if (scale_to(it->second.qty, d, left) && scale_to(r.size, d, take) && left > take)
-                        it->second.qty = Decimal{left - take, d};
-                    else
-                        book.erase(it);
+                    Decimal left{};
+                    if (decimal_minus(it->second.qty, size, left) && left.mantissa > 0) it->second.qty = left;
+                    else book.erase(it);
                 }
                 break;
             }
             case 'M': {
-                // A new price or size: the order leaves its level and comes back
-                // with the new values, as one cancel and one add on the tape.
+                // A smaller size at the same price keeps the order's place: a cancel
+                // of the difference. A new price or a larger size does not: the order
+                // leaves its level and comes back, as one cancel and one add.
                 if (!r.priced || r.size.mantissa <= 0) {
                     ++raw.skipped["modifies with no price or size"];
                     break;
                 }
+                filled.erase(r.order_id); // the modify states the size the fills left
                 const auto it = book.find(r.order_id);
                 const char s = it != book.end() ? it->second.side : side;
+                Decimal less{};
+                if (it != book.end() && canonical(it->second.price) == canonical(r.price) &&
+                    decimal_minus(it->second.qty, r.size, less)) {
+                    if (less.mantissa > 0) push(r, 'C', s, r.order_id, r.price, less);
+                    it->second.qty = r.size;
+                    break;
+                }
                 if (it != book.end()) push(r, 'C', s, r.order_id, it->second.price, it->second.qty);
                 else ++unknown_modifies;
                 if (s == '-') break;
@@ -881,13 +935,35 @@ inline constexpr std::int64_t kDbUndefPrice = 9'223'372'036'854'775'807LL; // IN
                 break;
             }
             case 'T':
-                if (r.priced && r.size.mantissa > 0) push(r, 'T', side, 0, r.price, r.size);
+                if (r.priced && r.size.mantissa > 0) print = Pending{true, r, r.size};
                 else ++raw.skipped["trades with no price or size"];
                 break;
-            case 'F': ++raw.skipped["fills (the book changes on the cancel or modify after each)"]; break;
+            case 'F': {
+                // A resting order's fill: the aggressor is the other side.
+                if (!r.priced || r.size.mantissa <= 0 || side == '-') {
+                    ++raw.skipped["fills with no price, size or side"];
+                    break;
+                }
+                push(r, 'T', side == 'B' ? 'S' : 'B', r.order_id, r.price, r.size);
+                filled[r.order_id] = r.size;
+                const auto it = book.find(r.order_id);
+                if (it != book.end()) {
+                    Decimal left{};
+                    if (decimal_minus(it->second.qty, r.size, left) && left.mantissa > 0) it->second.qty = left;
+                    else book.erase(it);
+                }
+                if (print.open) {
+                    Decimal left{};
+                    print.left = decimal_minus(print.left, r.size, left) ? left : Decimal{0, 0};
+                }
+                break;
+            }
             default: ++raw.skipped["records with no action"]; break;
         }
     }
+    flush_print();
+    if (through_fills > 0)
+        raw.skipped["trades read through their fills, which name the orders they took"] = through_fills;
     std::string notes;
     if (schema == DbSchema::Mbp)
         notes = std::to_string(levels) + " price level" + (levels == 1 ? "" : "s") + " a side";
@@ -935,7 +1011,7 @@ inline constexpr std::int64_t kDbUndefPrice = 9'223'372'036'854'775'807LL; // IN
         }
     }
     raw.h.format = "databento";
-    raw.h.importer = "databento 1";
+    raw.h.importer = "databento 2";
     raw.h.source_file = base_name(path);
     const bool symbols = has("symbol");
     std::vector<DbRecord> recs;
@@ -1050,7 +1126,7 @@ inline constexpr std::int64_t kDbUndefPrice = 9'223'372'036'854'775'807LL; // IN
     std::string dataset(b.substr(8, 16));
     dataset.erase(std::find(dataset.begin(), dataset.end(), '\0'), dataset.end());
     raw.h.format = "databento";
-    raw.h.importer = "databento 1 (DBN v" + std::to_string(version) + ")";
+    raw.h.importer = "databento 2 (DBN v" + std::to_string(version) + ")";
     raw.h.source_file = base_name(path);
 
     std::vector<DbRecord> recs;
@@ -1516,15 +1592,6 @@ struct BinanceFile {
     if (head.find("\"product_id\"") != std::string_view::npos) return true;
     return head.find("\"trade_id\"") != std::string_view::npos && head.find("\"side\"") != std::string_view::npos &&
            head.find("\"size\"") != std::string_view::npos;
-}
-
-// a - b, as a decimal; false when it would be negative or cannot be scaled.
-[[nodiscard]] inline bool decimal_minus(const Decimal& a, const Decimal& b, Decimal& out) {
-    const int d = std::max(a.decimals, b.decimals);
-    std::int64_t x = 0, y = 0;
-    if (!scale_to(a, d, x) || !scale_to(b, d, y) || x < y) return false;
-    out = Decimal{x - y, d};
-    return true;
 }
 
 class CoinbaseReader {

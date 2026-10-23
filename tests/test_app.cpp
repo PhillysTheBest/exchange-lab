@@ -162,6 +162,16 @@ void test_argument_vectors() {
     PX_CHECK((plan("/sweep market=demo --seeds=8").run ==
               std::vector<std::string>{"build/release/sweep_lab", "--market=demo", "--seeds=8"}));
 
+    // An order-by-order tape played back: the control alone, or one strategy in it.
+    p = plan("/replay demo");
+    PX_CHECK(p.program == Program::Replay && p.build.back() == "build/release/replay" &&
+             (p.run == std::vector<std::string>{"build/release/replay", "demo"}));
+    PX_CHECK((plan("/replay demo maker reaction=1ms from=2s for=3s").run ==
+              std::vector<std::string>{"build/release/replay", "demo", "strategy=maker", "reaction=1ms", "from=2s",
+                                       "for=3s"}));
+    PX_CHECK(!plan("/replay").error.empty() && !plan("/replay a b c").error.empty());
+    PX_CHECK(plan("/replay demo data=x").error.find("unknown setting") != std::string::npos);
+
     // A Windows build names its programs and its make differently; nothing else changes.
     Env win;
     win.exe = ".exe";
@@ -194,6 +204,7 @@ void test_exit_meanings() {
     PX_CHECK(exit_meaning(Program::Calibrate, 1).find("nothing was written") != std::string::npos);
     PX_CHECK(exit_meaning(Program::Sweep, 9).find("9") != std::string::npos);
     PX_CHECK(exit_meaning(Program::Ingest, 1).find("refused") != std::string::npos);
+    PX_CHECK(exit_meaning(Program::Replay, 1).find("control did not hold") != std::string::npos);
     PX_CHECK(exit_meaning(Program::Arena, -1).find("could not be started") != std::string::npos);
 }
 

@@ -412,6 +412,18 @@ std::vector<std::string> complete(const std::string& line, std::size_t& start) {
         options.insert(options.end(), {"--known=", "--control", "--robustness"});
         return keep_prefixed(options, word);
     }
+    if (cmd == "/replay") {
+        // The tape, then a strategy, then the settings.
+        std::size_t names = 0;
+        for (std::size_t i = 1; i < first_words.size(); ++i) names += first_words[i].find('=') == std::string::npos;
+        if (names == 0) return keep_prefixed(names_in("data", ".tape"), word);
+        std::vector<std::string> options = {"reaction=", "from=", "for="};
+        if (names == 1) {
+            const std::vector<std::string> strategies = strategy_names();
+            options.insert(options.begin(), strategies.begin(), strategies.end());
+        }
+        return keep_prefixed(options, word);
+    }
     if (cmd == "/sweep") return keep_prefixed({"market="}, word);
     if (cmd == "/compare" || cmd == "/watch") {
         const std::size_t comma = word.rfind(',');

@@ -76,9 +76,11 @@ REPL_BIN   := $(REL)/repl$(EXE)
 # affect a latency number.
 ARENA_BINS := $(REL)/sweep$(EXE) $(REL)/arena$(EXE) $(REL)/suite$(EXE) $(REL)/controls$(EXE)
 # Bringing market data in (docs/DATA.md). ingest links none of the market;
-# calibrate runs the reference market, and pins nothing.
+# calibrate runs the reference market, and pins nothing; replay is a lab
+# program (it runs installed strategies), defined with them below.
 INGEST_BIN := $(REL)/ingest$(EXE)
 CALIBRATE_BIN := $(REL)/calibrate$(EXE)
+REPLAY_BIN := $(REL)/replay$(EXE)
 
 .PHONY: all test bench latency repl arena sweep controls reproduce clean
 
@@ -276,7 +278,7 @@ strategy:
 	echo "explore it: $(REL)/sweep_lab --strategies=maker,rival,informed,noise:2,momentum,$$n --seeds=8"; \
 	echo "watch it:   $(REL)/arena_lab --strategies=maker,rival,informed,noise:2,momentum,$$n"
 
-lab: $(LAB_BINS)
+lab: $(LAB_BINS) $(REPLAY_BIN)
 
 # The standard experiment (docs/RUNNER.md): every candidate in the same seat of
 # the same market on the same named block of seeds, written to runs/.
@@ -351,7 +353,7 @@ APP_BIN := $(REL)/exchange-lab$(EXE)
 
 .PHONY: app test-app
 
-app: $(APP_BIN) $(LAB_BINS) $(REL)/controls$(EXE) $(REPL_BIN) $(INGEST_BIN) $(CALIBRATE_BIN)
+app: $(APP_BIN) $(LAB_BINS) $(REL)/controls$(EXE) $(REPL_BIN) $(INGEST_BIN) $(CALIBRATE_BIN) $(REPLAY_BIN)
 
 $(APP_BIN): $(ROBJ)/app/main.o
 	$(CXX) $(RELEASE_FLAGS) $^ -o $@ $(LDLIBS)
@@ -363,7 +365,7 @@ $(ROBJ)/app/main.o: INCLUDES += -I$(GEN)
 # /compare maker smoke would for anyone; everything else goes under $(BUILD)/app-test.
 # MSYS2_ARG_CONV_EXCL stops an MSYS2 shell rewriting `-c /help` into a Windows path,
 # and tr drops the carriage returns a Windows program writes before a line ends.
-test-app: $(APP_BIN) $(LAB_BINS) $(REL)/controls$(EXE) $(REPL_BIN) $(INGEST_BIN) $(CALIBRATE_BIN)
+test-app: $(APP_BIN) $(LAB_BINS) $(REL)/controls$(EXE) $(REPL_BIN) $(INGEST_BIN) $(CALIBRATE_BIN) $(REPLAY_BIN)
 	@set -e; export MSYS2_ARG_CONV_EXCL='*'; \
 	n=0; ok() { n=$$((n+1)); }; fail() { echo "FAIL: $$1"; exit 1; }; \
 	A=./$(APP_BIN); D=$(BUILD)/app-test; rm -rf $$D; mkdir -p $$D; \
@@ -399,6 +401,12 @@ test-app: $(APP_BIN) $(LAB_BINS) $(REL)/controls$(EXE) $(REPL_BIN) $(INGEST_BIN)
 	$$A -c '/data show app-test-trades' | grep -q '^  print size ' || fail "/data show should show it"; ok; \
 	rc=0; $$A -c '/calibrate app-test-trades' > $$D/out 2>&1 || rc=$$?; \
 	[ $$rc -eq 1 ] && grep -q 'trades-only tape is not calibrated' $$D/out || fail "/calibrate should refuse a trades-only tape"; ok; \
+	rc=0; $$A -c '/replay app-test-trades' > $$D/out 2>&1 || rc=$$?; \
+	[ $$rc -eq 1 ] && grep -q 'needs an order-by-order (L3) tape' $$D/out || fail "/replay should refuse a trades-only tape"; ok; \
+	$$A -c '/data add examples/data/DEMO_2012-06-21_34200000_57600000_message_3.csv name=app-test-l3' > /dev/null; \
+	$$A -c '/replay app-test-l3' | grep -q '^The control holds' || fail "/replay should run the control"; ok; \
+	$$A -c '/replay app-test-l3 momentum for=3s' | grep -q '^History cannot react' || fail "/replay should run a strategy, labelled"; ok; \
+	$$A -c '/data remove app-test-l3' > /dev/null; \
 	$$A -c '/data remove app-test-trades' > /dev/null && [ ! -e data/app-test-trades.tape ] \
 	    || fail "/data remove should remove it"; ok; \
 	[ "$$($$A -c /learn | grep -c '^  [0-9]\.')" -eq 8 ] || fail "/learn should list eight exercises"; ok; \
@@ -419,7 +427,7 @@ test-app: $(APP_BIN) $(LAB_BINS) $(REL)/controls$(EXE) $(REPL_BIN) $(INGEST_BIN)
 # of the market, so an importer cannot reach a session, a hash or a published
 # number. data/ and markets/ are git-ignored: a tape made from data you paid for
 # stays yours. Only the lab programs read a market (--market=NAME).
-.PHONY: data calibrate test-data
+.PHONY: data calibrate replay test-data
 
 $(INGEST_BIN): $(ROBJ)/marketdata/ingest.o
 	$(call announce,linking,$@)
@@ -439,11 +447,17 @@ calibrate: $(CALIBRATE_BIN)
 	@[ -n '$(TAPE)' ] || { echo "make calibrate: say which tape: make calibrate TAPE=name (make data lists them)" >&2; exit 2; }
 	./$(CALIBRATE_BIN) '$(TAPE)'
 
+# An order-by-order tape played back through the engine; history cannot react.
+#   make replay TAPE=name [STRATEGY=name] [OPTS='from=1h for=10m reaction=50us']
+replay: $(REPLAY_BIN)
+	@[ -n '$(TAPE)' ] || { echo "make replay: say which tape: make replay TAPE=name [STRATEGY=name]" >&2; exit 2; }
+	./$(REPLAY_BIN) '$(TAPE)' $(if $(STRATEGY),strategy=$(STRATEGY)) $(OPTS)
+
 # The command line, run against the samples, in a directory of its own; then
 # the known-answer control, which must hold, with its planted defects, which must
 # break it; then a market calibrated from the control's own tape, used by the lab
 # programs, refused by the evidence ones, and reproduced without its data.
-test-data: $(INGEST_BIN) $(CALIBRATE_BIN) $(LAB_BINS) $(REL)/suite$(EXE) $(REL)/sweep$(EXE) $(REL)/arena$(EXE)
+test-data: $(INGEST_BIN) $(CALIBRATE_BIN) $(REPLAY_BIN) $(LAB_BINS) $(REL)/suite$(EXE) $(REL)/sweep$(EXE) $(REL)/arena$(EXE)
 	@set -e; \
 	n=0; ok() { n=$$((n+1)); }; fail() { echo "FAIL: $$1"; exit 1; }; \
 	exits() { want=$$1; shift; rc=0; "$$@" > /dev/null 2>&1 || rc=$$?; [ $$rc -eq $$want ]; }; \
@@ -474,8 +488,8 @@ test-data: $(INGEST_BIN) $(CALIBRATE_BIN) $(LAB_BINS) $(REL)/suite$(EXE) $(REL)/
 	grep -q 'already exists, made from another file' $$D/out || fail "and say why"; ok; \
 	$$I add examples/data/trades.csv dir=$$D > /dev/null || fail "the trades sample should import"; ok; \
 	$$I add examples/data/databento_mbo.csv dir=$$D > $$D/out || fail "the Databento sample should import"; \
-	grep -q '^databento_mbo: DEMO, 2024-01-02, order by order (L3)$$' $$D/out && grep -q '3 fills' $$D/out \
-	    || fail "it should be read order by order, with its fills counted"; ok; \
+	grep -q '^databento_mbo: DEMO, 2024-01-02, order by order (L3)$$' $$D/out && grep -q '2 trades read through their fills' $$D/out \
+	    || fail "it should be read order by order, each trade through its fills"; ok; \
 	$$I add examples/data/demo_incremental_book_L2_2024-01-02_DEMO.csv dir=$$D > $$D/out || fail "the Tardis sample should import"; \
 	grep -q '^added demo-demo-2024-01-02 .*(with its trades file beside it)$$' $$D/out && grep -q '4 trades, 15 level updates, 1 reset$$' $$D/out \
 	    || fail "it should be read with its trades file, the second snapshot a reset"; ok; \
@@ -522,6 +536,28 @@ test-data: $(INGEST_BIN) $(CALIBRATE_BIN) $(LAB_BINS) $(REL)/suite$(EXE) $(REL)/
 	[ -f examples/data/trades.csv ] || fail "remove must never touch the source"; ok; \
 	rm -rf $$D; \
 	echo "$$n/$$n ingest checks passed"; \
+	echo "== replay"; \
+	P=./$(REPLAY_BIN); D=$(BUILD)/replay-test; rm -rf $$D; mkdir -p $$D; r=0; okr() { r=$$((r+1)); }; \
+	$$I add $$L dir=$$D > /dev/null; $$I add examples/data/coinbase_feed.jsonl dir=$$D > /dev/null; \
+	$$P --help > /dev/null || fail "replay --help should succeed"; okr; \
+	exits 2 $$P || fail "replay with no tape should exit 2"; okr; \
+	exits 2 $$P demo-2012-06-21 data=$$D colour=red || fail "an unknown setting should exit 2"; okr; \
+	exits 2 $$P demo-2012-06-21 data=$$D reaction=soon || fail "a span that is not one should exit 2"; okr; \
+	exits 1 $$P nosuch data=$$D || fail "a missing tape should exit 1"; okr; \
+	rc=0; $$P coinbase_feed data=$$D > $$D/out 2>&1 || rc=$$?; \
+	[ $$rc -eq 1 ] && grep -q 'needs an order-by-order (L3) tape' $$D/out || fail "a tape of price levels should be refused"; okr; \
+	$$P demo-2012-06-21 data=$$D > $$D/out || fail "the control should hold on the LOBSTER tape"; \
+	grep -q '^The control holds' $$D/out && grep -q 'after every one of 771 events' $$D/out || fail "and say so"; okr; \
+	exits 2 $$P demo-2012-06-21 strategy=nosuch data=$$D || fail "an unknown strategy should exit 2"; okr; \
+	exits 1 $$P demo-2012-06-21 strategy=informed data=$$D || fail "informed has no fundamental to trade on"; okr; \
+	$$P demo-2012-06-21 strategy=maker data=$$D > $$D/a || fail "a strategy should run in it"; \
+	$$P demo-2012-06-21 strategy=maker data=$$D > $$D/b; \
+	cmp -s $$D/a $$D/b && grep -q '^History cannot react' $$D/a && grep -q '^  value ' $$D/a \
+	    || fail "it should be labelled, and give the same report twice"; okr; \
+	h=$$(sed -n 's/^  hash *\([0-9a-f]*\) .*/\1/p' $$D/out); \
+	$$P demo-2012-06-21 strategy=placebo data=$$D | grep -q "^  hash *$$h " || fail "an inert strategy should leave the tape's stream as it was"; okr; \
+	rm -rf $$D; \
+	echo "$$r/$$r replay checks passed"; \
 	echo "== the known-answer control (a few hundred simulated markets; under a minute)"; \
 	C=./$(CALIBRATE_BIN); m=0; okc() { m=$$((m+1)); }; \
 	$$C --help > /dev/null || fail "calibrate --help should succeed"; okc; \
@@ -590,9 +626,13 @@ $(LAB_BINS): $(REL)/%_lab$(EXE): $(LOBJ)/arena/%.o $(LIB_REL)
 	$(call announce,linking,$@)
 	$(CXX) $(RELEASE_FLAGS) $^ -o $@ $(LDLIBS)
 
+$(REPLAY_BIN): $(LOBJ)/marketdata/replay.o $(LIB_REL)
+	$(call announce,linking,$@)
+	$(CXX) $(RELEASE_FLAGS) $^ -o $@ $(LDLIBS)
+
 # The whole path, run the way a newcomer would: refusals first, then install the
 # example, score it, and confirm the evidence binary cannot see it.
-test-lab: $(REL)/sweep$(EXE) $(REL)/suite$(EXE)
+test-lab: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(INGEST_BIN)
 	@set -e; \
 	fail() { echo "FAIL: $$1"; exit 1; }; \
 	echo "== strategy install"; \
@@ -635,9 +675,12 @@ test-lab: $(REL)/sweep$(EXE) $(REL)/suite$(EXE)
 	exits_ 2 ./$(REL)/suite$(EXE) --reproduce=$$D/suite --out=$$D/re2 || fail "the evidence suite cannot reproduce an installed strategy"; \
 	sed -i.bak 's/^\(run.candidate.imbalance.digest=\).*/\1123/' $$D/suite/suite.cfg; \
 	exits_ 2 ./$(REL)/suite_lab$(EXE) --reproduce=$$D/suite --out=$$D/re3 || fail "a changed strategy should be refused"; \
+	./$(INGEST_BIN) add examples/data/DEMO_2012-06-21_34200000_57600000_message_3.csv dir=$$D/data > /dev/null; \
+	./$(REPLAY_BIN) demo-2012-06-21 strategy=imbalance data=$$D/data | grep -q '^  value ' \
+	    || fail "replay should run an installed strategy"; \
 	echo "  fingerprint $$(fp $$D/suite), identical in suite and suite_lab"; \
 	rm -rf $$D; \
-	echo "8/8 suite checks passed"
+	echo "9/9 suite checks passed"
 
 clean:
 	rm -rf $(BUILD)

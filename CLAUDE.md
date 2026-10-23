@@ -94,6 +94,7 @@ mingw32-make test-app   # the app driven through its commands (writes runs/maker
 mingw32-make data FILE=path [OPTS='name=x']   # bring a market data file in as data/NAME.tape (docs/DATA_PLAN.md)
 mingw32-make calibrate TAPE=name   # data/NAME.tape -> markets/NAME.cfg; then compare/sweep_lab/arena_lab take a market
 mingw32-make compare CANDIDATES=a MARKET=name  # the standard experiment on a calibrated market (suite_lab only)
+mingw32-make replay TAPE=name [STRATEGY=s]   # an L3 tape through the engine: the control, or one strategy in it
 mingw32-make test-data  # ingest on the samples, the known-answer control, a calibrated market end to end (~90 s)
 mingw32-make all        # tests, command-line, lab, app and data checks, benchmarks, REPL, arena
 mingw32-make clean
