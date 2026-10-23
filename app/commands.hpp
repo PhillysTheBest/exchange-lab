@@ -86,6 +86,16 @@ inline constexpr CommandInfo kCommands[] = {
      "  /calibrate --known=known\n"
      "  /calibrate known\n"
      "  /calibrate --control"},
+    {"/replay", "NAME [STRATEGY] [reaction=T] [from=T] [for=T]",
+     "play an order-by-order tape back through the engine, with one strategy trading in it",
+     "Runs replay. With no strategy it runs the control: the replayed book must be the tape's\n"
+     "own after every event. With one, the strategy trades in the recorded market. History\n"
+     "cannot react to it, so what it earns is the most the recorded flow could have given, not\n"
+     "what would have happened. Only a tape with every order (L3) can be replayed. Times are\n"
+     "written 10us, 250ms, 30s: reaction= is 10us unless set, from= and for= pick a window.\n"
+     "  /replay demo-2012-06-21\n"
+     "  /replay demo-2012-06-21 maker\n"
+     "  /replay demo-2012-06-21 momentum reaction=1ms from=2s for=3s"},
     {"/controls", "[smoke]", "check the evaluator itself against answers known in advance",
      "Runs controls: eight controls, each of which the tests show can fail."},
     {"/book", "", "an order book you drive by hand (type help inside)",
@@ -162,7 +172,7 @@ struct Env {
     std::string latest_run;            // the newest complete run directory, or empty
 };
 
-enum class Program { None, Make, Suite, Reproduce, Controls, Arena, Sweep, Repl, Ingest, Calibrate };
+enum class Program { None, Make, Suite, Reproduce, Controls, Arena, Sweep, Repl, Ingest, Calibrate, Replay };
 
 // What one command will do. Internal commands (help, learn, strategies, runs,
 // report, quit) leave build and run empty and are answered by main.cpp.
@@ -378,6 +388,30 @@ struct Plan {
         return p;
     }
 
+    if (cmd == "/replay") {
+        std::vector<std::string> names, settings;
+        for (const std::string& a : args) {
+            if (a.find('=') == std::string::npos) {
+                names.push_back(a);
+            } else if (starts_with(a, "reaction=") || starts_with(a, "from=") || starts_with(a, "for=")) {
+                settings.push_back(a);
+            } else {
+                p.error = "unknown setting " + a + "; /help replay";
+                return p;
+            }
+        }
+        if (names.empty() || names.size() > 2) {
+            p.error = "say which tape, and at most one strategy: /replay NAME [STRATEGY]; /data lists the tapes";
+            return p;
+        }
+        p.build = make_target(env, program_path(env, "replay"));
+        p.run = {program_path(env, "replay"), names[0]};
+        if (names.size() == 2) p.run.push_back("strategy=" + names[1]);
+        p.run.insert(p.run.end(), settings.begin(), settings.end());
+        p.program = Program::Replay;
+        return p;
+    }
+
     if (cmd == "/controls") {
         if (args.size() > 1 || (args.size() == 1 && args[0] != "smoke")) {
             p.error = "/controls takes nothing, or smoke";
@@ -431,6 +465,10 @@ struct Plan {
         break;
     case Program::Calibrate:
         if (status == 1) return "refused, and nothing was written; the message above says why";
+        if (status == 2) return "the command was refused; the message above says why";
+        break;
+    case Program::Replay:
+        if (status == 1) return "refused, or the control did not hold; the message above says why";
         if (status == 2) return "the command was refused; the message above says why";
         break;
     case Program::Arena:

@@ -136,7 +136,32 @@ Each stage is a commit with every test green.
 3. **`/calibrate` and `market=`.** The health gate, `markets/NAME.cfg`, conditions recorded
    in `suite.cfg`, and `/reproduce` refusing a changed calibration.
 4. **More importers:** Databento, Tardis, Binance, Coinbase, Kraken, ITCH, one at a time.
-5. **`/replay`**, for L3 tapes only.
+5. **`/replay`**, for L3 tapes only. Designed before building (2026-10-22):
+   - A program of its own, `replay`, compiled with the lab programs so it can run an
+     installed strategy and so it can never reach a pinned hash. It owns a
+     `MatchingEngine` sized for the tape; the session is not changed, so no session hash
+     moves.
+   - The tape's orders become orders from one owner ("history's book") at their recorded
+     times: an add is a GTC limit, a cancel cancels. A recorded execution becomes an IOC
+     from a second owner ("history's flow") at the trade's price and size, so it trades with
+     whatever is first in the queue there. A print with no resting order (a hidden
+     execution) is not replayed: nothing in the book changes.
+   - The engine has no partial cancel. A partial cancel cancels that order and every order
+     of history's behind it at its price, and adds them back in the same order, so the
+     queue keeps its order; an order of the strategy's behind it moves up, and that is
+     counted. Size the tape knew only by level (LOBSTER's opening book) is one order a
+     level, ahead of everything added later.
+   - One strategy, the candidate, trades in it as a third owner with a reaction delay (the
+     suite's 10,000 ns unless `reaction=` says otherwise), woken as the session wakes a
+     strategy: on its own events, when the touch moves, on its timer.
+   - The report leads with the label (history cannot react), then what history could not
+     do: cancels that found their order taken, executions that found the price taken,
+     history's flow that traded with the strategy, adds that crossed it. Then the strategy's
+     orders, fills, position and value marked to the last mid, in the tape's currency.
+   - **The control:** with no strategy, the replayed book must equal the tape's own book
+     (`TapeBook`) after every event, and every execution must find its order first in the
+     queue. A planted defect (a partial cancel replayed as a full one, or the queue not
+     kept in order) must break it.
 
 ## Decisions for you
 

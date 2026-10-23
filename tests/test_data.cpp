@@ -10,6 +10,7 @@
 // LOBSTER's own format says it should be after every message.
 #include "marketdata/calibrate.hpp"
 #include "marketdata/importers.hpp"
+#include "marketdata/replay.hpp"
 #include "marketdata/stats.hpp"
 #include "test_harness.hpp"
 
@@ -27,6 +28,15 @@ const std::string kLobsterBook = kSamples + "DEMO_2012-06-21_34200000_57600000_o
 bool import_text(const std::string& path, const std::string& text, const ImportOptions& opts, Tape& out,
                  std::string& why) {
     return import_file(path, text, "", opts, out, why);
+}
+
+// The replay's control on a tape: with no strategy, its book is the tape's own
+// after every event and every execution finds its order first in the queue.
+bool replay_holds(const Tape& t, ReplayStats& st, ReplayConfig cfg = {}) {
+    std::string why;
+    cfg.check_book = true;
+    return Replay().run(t, nullptr, cfg, st, why) && st.checked == t.ev.size() && st.mismatches == 0 &&
+           st.exec_out_of_queue == 0;
 }
 
 void test_numbers() {
@@ -507,15 +517,17 @@ void test_databento() {
     PX_CHECK(t.h.format == "databento" && t.h.depth == Depth::L3 && t.h.instrument == "DEMO" &&
              t.h.origin_kind == TimeKind::Epoch && t.h.name == "databento_mbo");
     PX_CHECK(t.h.price_scale == 100 && t.h.tick == 1);
-    PX_CHECK(t.h.skipped == 4 && t.h.skipped_why.find("3 fills") == 0 && t.h.skipped_why.find("1 records with no action") != std::string::npos);
-    // The clear, five adds, the modify as a cancel and an add, a partial cancel,
-    // a trade that leaves the book alone and the cancels that follow it.
+    PX_CHECK(t.h.skipped == 3 && t.h.skipped_why.find("1 records with no action") == 0 &&
+             t.h.skipped_why.find("2 trades read through their fills") != std::string::npos);
+    // The clear, five adds, the modify to a new price as a cancel and an add, a
+    // partial cancel, and each trade as the fills that name the orders it took:
+    // the cancels Databento sends after them are absorbed.
     std::string kinds;
     for (const TapeEvent& e : t.ev) kinds += e.kind;
-    PX_CHECK(kinds == "RAAAAACACTCCATC");
+    PX_CHECK(kinds == "RAAAAACACTTAT");
     PX_CHECK(t.ev[6].id == 2 && t.ev[6].qty == 20 && t.ev[6].price == 9999 && t.ev[7].price == 9998 && t.ev[7].qty == 25);
-    PX_CHECK(t.ev[9].side == 'S' && t.ev[9].id == 0 && t.ev[9].price == 10000 && t.ev[9].qty == 12);
-    PX_CHECK(t.ev[13].side == 'B' && t.ev[13].price == 10001);
+    PX_CHECK(t.ev[9].side == 'S' && t.ev[9].id == 1 && t.ev[9].price == 10000 && t.ev[9].qty == 10);
+    PX_CHECK(t.ev[10].id == 5 && t.ev[10].qty == 2 && t.ev[12].side == 'B' && t.ev[12].id == 6 && t.ev[12].price == 10001);
     TapeBook b;
     for (const TapeEvent& e : t.ev) b.apply(e);
     PX_CHECK((b.top(0, 3) == std::vector<std::pair<std::int64_t, std::int64_t>>{{10000, 5}, {9998, 25}}));
@@ -568,10 +580,10 @@ void test_databento() {
     w.mbo(1'704'205'800'000'002'000ULL, 'C', 'A', 101 * D, 4, 2);
     PX_CHECK(readable("x.dbn", w.b, why) && detect_format("x.dbn", w.b.substr(0, w.b.find('\n'))) == "databento");
     PX_CHECK(import_file("xnas-itch-20240102.mbo.dbn", w.b, "", ImportOptions{}, t, why));
-    PX_CHECK(t.h.depth == Depth::L3 && t.h.importer == "databento 1 (DBN v2)" && t.h.notes.find("XNAS.ITCH") != std::string::npos);
+    PX_CHECK(t.h.depth == Depth::L3 && t.h.importer == "databento 2 (DBN v2)" && t.h.notes.find("XNAS.ITCH") != std::string::npos);
     kinds.clear();
     for (const TapeEvent& e : t.ev) kinds += e.kind;
-    PX_CHECK(kinds == "AATC" && t.ev[2].side == 'B' && t.ev[2].id == 0 && t.h.tick == 1 && t.h.price_scale == 1);
+    PX_CHECK(kinds == "AAT" && t.ev[2].side == 'B' && t.ev[2].id == 2 && t.h.tick == 1 && t.h.price_scale == 1);
     PX_CHECK(t.h.name == "xnas-itch-20240102" && t.h.instrument == "instrument_id 7");
     // A record of a type not read is skipped by its length; one cut short is refused.
     DbnWriter m;
@@ -794,6 +806,8 @@ void test_coinbase() {
     PX_CHECK(t.h.depth == Depth::L3 && t.h.notes.find("order by order") != std::string::npos &&
              t.h.notes.find("1 message about orders resting before the capture began") != std::string::npos);
     PX_CHECK(t.h.skipped_why.find("2 level2 rows") != std::string::npos);
+    ReplayStats rs;
+    PX_CHECK(replay_holds(t, rs) && rs.partial_cancels == 1 && rs.executions == 1);
     kinds.clear();
     for (const TapeEvent& e : t.ev) kinds += e.kind;
     PX_CHECK(kinds == "AATCCAC"); // a smaller size keeps its place; a new price leaves and comes back
@@ -941,6 +955,97 @@ void test_itch() {
     PX_CHECK(!import_file(path, bad, "", demo, t, why) && why.find("byte 15: a 'R' message of 40 bytes") == 0);
 }
 
+// A strategy for the replay's own test: one bid at the open, above the tape's book.
+struct BidOnce {
+    const char* name = "bid_once";
+    px::arena::SimTime reaction_ns = 10'000;
+    px::arena::SimTime timer_ns = 0;
+    void reset(std::uint64_t) {}
+    px::arena::ActionBatch on_event(const px::arena::MarketView& v) {
+        px::arena::ActionBatch b;
+        if (v.reason == px::arena::WakeReason::Open) b.push(px::arena::Action::limit(px::Side::Buy, 101, 5));
+        return b;
+    }
+};
+
+void test_replay() {
+    std::string msg, book, text, why;
+    PX_CHECK(read_file(kLobster, msg) && read_file(kLobsterBook, book));
+    Tape lob;
+    PX_CHECK(import_file(kLobster, msg, book, ImportOptions{}, lob, why));
+    ReplayStats st;
+    PX_CHECK(replay_holds(lob, st));
+    PX_CHECK(st.events == lob.ev.size() && st.partial_cancels > 10 && st.levels > 0 && st.hidden_prints > 0);
+    PX_CHECK(st.unknown == 0 && st.book_full == 0 && st.exec_unfilled == 0 && st.self_trades == 0);
+    const std::uint64_t control_hash = st.hash;
+
+    // Each planted defect must break it: a partial cancel replayed as a full one
+    // empties the book's size, and one put back behind its queue trades out of turn.
+    ReplayConfig defect;
+    defect.defect_full_cancels = true;
+    PX_CHECK(!replay_holds(lob, st, defect) && st.mismatches > 0);
+    defect = ReplayConfig{};
+    defect.defect_requeue_at_back = true;
+    PX_CHECK(!replay_holds(lob, st, defect) && st.exec_out_of_queue > 0);
+
+    // Databento and ITCH, order by order.
+    Tape t;
+    PX_CHECK(read_file(kSamples + "databento_mbo.csv", text) &&
+             import_file(kSamples + "databento_mbo.csv", text, "", ImportOptions{}, t, why));
+    PX_CHECK(replay_holds(t, st) && st.executions > 0);
+    ImportOptions demo;
+    demo.symbol = "DEMO";
+    PX_CHECK(import_itch_file(kSamples + "01022024.NASDAQ_ITCH50", demo, t, why));
+    PX_CHECK(replay_holds(t, st) && st.executions > 0 && st.hidden_prints == 1);
+
+    // A session written as a tape: two seeds, a reset between them.
+    const px::arena::suite::SuiteDef def = px::arena::suite::standard_suite();
+    const std::uint64_t seeds[] = {42, 43};
+    Tape sim;
+    PX_CHECK(simulate(def, seeds, 2, sim, why));
+    PX_CHECK(replay_holds(sim, st) && st.resets == 1 && st.executions > 1'000 && st.unknown == 0);
+    std::printf("  replay: %zu LOBSTER events and %zu of two sessions played back, book identical after each\n",
+                lob.ev.size(), sim.ev.size());
+
+    // An inert strategy is no strategy, and the same strategy gives the same stream again.
+    auto named = [](const char* n) {
+        px::arena::RosterConfig rc;
+        rc.tick = 1;
+        rc.anchor = 10'000;
+        px::arena::Roster r;
+        PX_CHECK(px::arena::add_named_strategy(n, rc, r));
+        return std::move(r.strategies[0]);
+    };
+    ReplayStats a, b;
+    PX_CHECK(Replay().run(lob, named("placebo"), ReplayConfig{}, a, why) && a.hash == control_hash && a.orders == 0);
+    PX_CHECK(Replay().run(lob, named("maker"), ReplayConfig{}, a, why) &&
+             Replay().run(lob, named("maker"), ReplayConfig{}, b, why));
+    PX_CHECK(a.hash == b.hash && a.value == b.value && a.fills > 0 && a.hash != control_hash);
+    PX_CHECK(a.value == a.cash + a.position * a.mark);
+
+    // By hand: the strategy bids 101 above history's 100, and history's sell then
+    // trades with it first, as recorded flow would with anyone ahead of the order it named.
+    Tape hand;
+    hand.h.name = "hand";
+    hand.h.depth = Depth::L3;
+    hand.ev = {{0, 'A', 'B', 1, 100, 10}, {0, 'A', 'S', 2, 103, 10}, {1'000'000, 'T', 'S', 1, 100, 10},
+               {2'000'000, 'C', 'B', 1, 100, 5}};
+    PX_CHECK(replay_holds(hand, st));
+    PX_CHECK(Replay().run(hand, px::arena::make_strategy(BidOnce{}), ReplayConfig{}, st, why));
+    PX_CHECK(st.orders == 1 && st.fills == 1 && st.position == 5 && st.flow_with_strategy == 5);
+    PX_CHECK(st.cash == -505 && st.cancels_gone == 0 && st.exec_unfilled == 0);
+    ReplayConfig late;
+    late.from_ns = 1'500'000; // after the sell: it rests, and nothing trades with it
+    PX_CHECK(Replay().run(hand, px::arena::make_strategy(BidOnce{}), late, st, why));
+    PX_CHECK(st.orders == 1 && st.fills == 0 && st.position == 0 && st.start_t == 1'500'000);
+
+    // Only an order-by-order tape can be replayed.
+    Tape l2;
+    l2.h.name = "levels";
+    l2.h.depth = Depth::L2;
+    PX_CHECK(!Replay().run(l2, nullptr, ReplayConfig{}, st, why) && why.find("calibrate a market from it") != std::string::npos);
+}
+
 // A market file round trip, its refusals, and the suite it becomes.
 void test_market_file() {
     namespace su = px::arena::suite;
@@ -1059,5 +1164,6 @@ int main() {
     test_session_tape();
     test_calibration_parts();
     test_market_file();
+    test_replay();
     PX_TEST_REPORT_AND_RETURN();
 }
