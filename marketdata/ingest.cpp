@@ -173,16 +173,16 @@ void show(const Tape& tape) {
     say("");
     switch (h.depth) {
         case Depth::L3:
-            say("Order by order: calibration can match every statistic above, and replay (a later");
-            say("stage) can play it back.");
+            say("Order by order: /calibrate can match every statistic above, and /replay can play it");
+            say("back through the engine.");
             break;
         case Depth::L2:
-            say("Price levels: calibration can match every statistic above. Replay needs order-by-order");
+            say("Price levels: /calibrate can match every statistic above. /replay needs order-by-order");
             say("data, which this is not.");
             break;
         case Depth::Trades:
-            say("Trades only: calibration can match print size against itself and prints per move;");
-            say("spread and depth need quotes, so the reference market's are kept.");
+            say("Trades only: /calibrate refuses it. From prints alone the known-answer control does not");
+            say("hold, so a tape with quotes or the book is needed (docs/DATA.md).");
             break;
     }
 }

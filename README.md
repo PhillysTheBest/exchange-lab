@@ -5,8 +5,9 @@ terminal.** Write a trading strategy, drop it into the market, and find out wher
 money comes from and whether the result is real or noise.
 
 For **students** learning how markets work and **researchers** who need experiments they
-can control. It is **not a backtester**: the market is invented, not fitted to real data,
-so what a strategy earns here says nothing about what it would earn on a real venue. Use
+can control. It is **not a backtester**: the market is invented, and even set to resemble a
+real data file it matches three statistics and nothing else, so what a strategy earns here
+says nothing about what it would earn on a real venue. Use
 it to understand *why* a strategy makes or loses money, not to decide whether to trade it.
 
 ## Start here
@@ -23,7 +24,7 @@ build/release/exchange-lab    # run it from the repository root
 You get a prompt. Try these four commands:
 
 ```
-> /learn 1                                  # the first of eight guided exercises
+> /learn 1                                  # the first of nine guided exercises
 > /add examples/strategies/imbalance.hpp    # install a strategy: one C++ header
 > /compare imbalance smoke                  # score it on 4 seeds against an empty seat
 > /watch imbalance                          # watch it trade live; q comes back
@@ -48,11 +49,14 @@ project is built to show.
 | `/learn [N]` | the guided exercises, from one order book to a strategy of your own |
 | `/strategies` | the built-in strategies, and the ones you installed |
 | `/add PATH` | install a strategy of your own |
-| `/compare NAME[,NAME...] [smoke] [wide\|busy\|all]` | score strategies in the same seat of the same market, and print the report |
+| `/compare NAME[,NAME...] [smoke] [wide\|busy\|all\|market=M]` | score strategies in the same seat of the same market, and print the report |
 | `/runs`, `/report [RUN]` | list your runs; show one's report |
 | `/reproduce [RUN]` | re-run a run from its own record and compare every file |
 | `/watch [NAME,...] [seed=N]` | watch the market trade live, full screen |
 | `/sweep FLAGS` | run one market many times, changing one thing |
+| `/data add FILE`, `/data show NAME` | bring a market data file you have in as a tape, and see what it holds |
+| `/calibrate NAME` | set the simulated market to resemble a tape, behind a known-answer control |
+| `/replay NAME [STRATEGY]` | play an order-by-order tape back through the engine, with one strategy in it |
 | `/controls` | check the evaluator itself against answers known in advance |
 | `/book` | an order book you drive by hand |
 | `/help [command]`, `/quit` | explain a command; leave |
@@ -107,7 +111,7 @@ replay of history. What it adds:
 - `/watch` to see a whole market: two makers, an informed trader, noise traders and momentum.
 - `/add` and `/compare` to write a strategy and learn where its profit really comes from:
   spread earned, the price move after each fill, carry to the close, and who paid for it.
-- `/learn` takes you through all of it in eight exercises; every command in them was run as
+- `/learn` takes you through all of it in nine exercises; every command in them was run as
   written. [`GLOSSARY.md`](GLOSSARY.md) defines every term.
 
 ## For researchers
@@ -120,6 +124,10 @@ replay of history. What it adds:
 - **Known limits.** One instrument, one informed trader, no second venue, no quote fade, and
   a thin book. Results are statements about this instrument, not about trading.
   [`docs/RUNNER.md`](docs/RUNNER.md#known-weaknesses) lists the runner's own weaknesses.
+- **Your own data, read from disk, never fetched.** LOBSTER, Databento, Nasdaq ITCH, Tardis,
+  Binance, Coinbase, Kraken or any CSV. Calibrate a market to resemble a file, with a
+  known-answer control behind the calibration, or replay an order-by-order file through the
+  engine, labelled as unable to react. [`docs/DATA.md`](docs/DATA.md) is the design.
 
 Start with [`docs/ARENA.md`](docs/ARENA.md), then [`docs/RUNNER.md`](docs/RUNNER.md),
 [`docs/REPORT.md`](docs/REPORT.md) and [`docs/CONTROLS.md`](docs/CONTROLS.md).
@@ -143,21 +151,23 @@ design, the measurement method, the slow tail and the correctness tests.
 Every command is also a `make` target or a program:
 
 ```bash
-make test                     # all 8 test programs
-make test-cli test-lab test-app
+make test                     # all 9 test programs
+make test-cli test-lab test-app test-data
 make strategy STRATEGY=examples/strategies/imbalance.hpp
 make compare CANDIDATES=imbalance,maker
 make reproduce RUN=runs/imbalance-vs-maker-standard
 make controls
+make data FILE=examples/data/DEMO_2012-06-21_34200000_57600000_message_3.csv
+make calibrate TAPE=name      # then make compare CANDIDATES=a MARKET=name
+make replay TAPE=demo-2012-06-21 STRATEGY=maker
 make bench                    # the engine's benchmarks
 ```
 
 ## Scope
 
 **Not built, on purpose:** a browser or desktop interface, an AI model, live trading, a
-network connection of any kind, order amend, stop orders and auctions. **Planned:** bringing
-your own market data, free or paid, to calibrate the simulated market
-([`docs/DATA_PLAN.md`](docs/DATA_PLAN.md)). It will still not be a backtester.
+network connection of any kind (data files are read from disk, never fetched), order amend,
+stop orders and auctions.
 
 ## Layout
 
@@ -166,9 +176,10 @@ your own market data, free or paid, to calibrate the simulated market
 | `app/` | the terminal app |
 | `include/px/`, `src/` | the matching engine |
 | `arena/` | the simulated market, its strategies, the runner, the controls and the viewer |
-| `examples/` | a complete strategy of your own to copy |
+| `marketdata/` | your own data: the tape, the importers, calibration and replay |
+| `examples/` | a complete strategy of your own to copy, and made-up data files to import |
 | `tests/`, `bench/`, `results/` | tests, benchmarks, and the committed evidence behind every number |
-| `docs/` | [`LEARN`](docs/LEARN.md), [`APP`](docs/APP.md), [`ARENA`](docs/ARENA.md), [`RESULTS`](docs/RESULTS.md), [`RUNNER`](docs/RUNNER.md), [`REPORT`](docs/REPORT.md), [`CONTROLS`](docs/CONTROLS.md), [`REPRODUCE`](docs/REPRODUCE.md), [`ENGINE`](docs/ENGINE.md) |
+| `docs/` | [`LEARN`](docs/LEARN.md), [`APP`](docs/APP.md), [`ARENA`](docs/ARENA.md), [`RESULTS`](docs/RESULTS.md), [`RUNNER`](docs/RUNNER.md), [`REPORT`](docs/REPORT.md), [`CONTROLS`](docs/CONTROLS.md), [`REPRODUCE`](docs/REPRODUCE.md), [`DATA`](docs/DATA.md), [`ENGINE`](docs/ENGINE.md) |
 
 ## Licence and issues
 

@@ -21,9 +21,10 @@
 //
 // The search makes one number small: the sum, over the statistics the data's
 // depth can show, of each one's distance from its target, as a ratio in
-// thousandths so units never matter. It scans each parameter's whole grid in
-// turn and keeps a value only if it makes the sum strictly smaller, until a pass
-// changes nothing; so it cannot cycle. The parameters are matched together
+// thousandths so units never matter. A coarse scan of the three together comes
+// first (calibrate(), below, says why); then descents, each of which scans each
+// parameter's whole grid in turn and keeps a value only if it makes the sum
+// strictly smaller, until a pass changes nothing; so it cannot cycle. The parameters are matched together
 // rather than one statistic each, because each moves all three statistics: a
 // wider spread also changes how often the mid moves. A full scan rather than
 // bisection because the statistics are not all monotone in their parameter, and

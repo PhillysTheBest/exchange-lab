@@ -41,12 +41,15 @@ need the session code compiled twice anyway.
 | `/learn [N]` | lists the exercises in `docs/LEARN.md`, or shows exercise N | reads `docs/LEARN.md` |
 | `/strategies` | the built-in strategies, and the installed ones, saying whether the lab is built with them | reads `arena/strategies/user/` and the generated manifest |
 | `/add PATH` | validates and installs a strategy, then rebuilds the lab programs | `make strategy STRATEGY=PATH` |
-| `/compare NAME[,NAME...] [smoke] [wide\|busy\|all]` | scores strategies in the standard seat, then prints the report | `suite_lab` |
+| `/compare NAME[,NAME...] [smoke] [wide\|busy\|all\|market=M]` | scores strategies in the standard seat, then prints the report | `suite_lab` |
 | `/runs` | the run directories in `runs/`, newest first: complete or not, suite, block, candidates | reads `runs/` |
 | `/report [RUN]` | a run's report; the newest complete run by default | reads `report.txt`, or `families.txt` |
 | `/reproduce [RUN]` | re-runs a run and compares every file | `suite_lab --reproduce` |
-| `/watch [NAME,...] [seed=N] [still=NS] [script=PATH] [lineup=SPEC]` | the live viewer, full screen, back to the prompt on `q` | `arena_lab` |
-| `/sweep [FLAGS]` | free exploration: change one thing, many seeds | `sweep_lab`, flags passed through |
+| `/watch [NAME,...] [seed=N] [still=NS] [script=PATH] [lineup=SPEC] [market=M]` | the live viewer, full screen, back to the prompt on `q` | `arena_lab` |
+| `/sweep [FLAGS] [market=M]` | free exploration: change one thing, many seeds | `sweep_lab`, flags passed through |
+| `/data [add FILE \| show NAME \| remove NAME]` | imports a data file you have into `data/NAME.tape`, lists the tapes, or shows one | `ingest` |
+| `/calibrate NAME` | runs the known-answer control, sets the market to resemble the tape, runs the health gate, writes `markets/NAME.cfg` | `calibrate` |
+| `/replay NAME [STRATEGY] [reaction=T] [from=T] [for=T]` | plays an order-by-order tape back through the engine: the control alone, or one strategy in it | `replay` |
 | `/controls [smoke]` | the evaluator's own controls | `controls` |
 | `/book` | an order book driven by hand | `repl` |
 | `/quit` (or `/exit`) | leaves | nothing |
@@ -107,9 +110,10 @@ just "3". After a complete `/compare`, the app says where the run was saved.
   non-header is refused, `/compare maker smoke` writes a complete run and `/runs` and
   `/report` find it, `/reproduce` of a copy says REPRODUCED and of a tampered copy exits 1
   through `-c`, `/controls smoke`, `/watch` with `still=`, `/sweep --help` and `/book` each
-  run, `/learn` lists the eight exercises, and outside the repository root it refuses. It
-  writes `runs/maker-smoke`, as that command would for anyone, and nothing else outside
-  `$(BUILD)/app-test`.
+  run, `/data` imports, lists, shows and removes a tape, `/calibrate` and `/replay` refuse a
+  trades-only tape, `/replay` runs its control and a strategy, `/learn` lists the nine
+  exercises, and outside the repository root it refuses. It writes `runs/maker-smoke`, as
+  that command would for anyone, and nothing else outside `$(BUILD)/app-test`.
 
 The interactive editor was checked through a pseudo-terminal (completion, history, Ctrl-C at
 the prompt and during a sweep, `/watch` and back on `q`); that check is not automated.
@@ -119,7 +123,5 @@ the prompt and during a sweep, `/watch` and back on `q`); that check is not auto
 - A browser, a web server, a desktop window or mouse support.
 - An AI model or natural-language commands.
 - Live trading or a network API of any kind.
-- Bringing your own market data. It is planned in [`DATA_PLAN.md`](DATA_PLAN.md): the app
-  will read files you already have from disk and never fetch anything.
 - Paging long reports: `/report` prints the whole file and the terminal scrolls.
 - Changing what any existing program does.
