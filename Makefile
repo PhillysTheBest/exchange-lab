@@ -33,7 +33,15 @@ DEPFLAGS := -MMD -MP
 # -fno-tree-loop-distribute-patterns: stop GCC from rewriting the hand-written
 # shift loops in sorted_levels.hpp into memmove calls (see that file for why).
 # It is in both flag sets because with -flto code is generated at link time.
-CODEGEN       := -fno-tree-loop-distribute-patterns
+# It is a GCC option, and clang (which is g++ on macOS) refuses it, so it is
+# passed to GCC only. Clang has no pass that does this rewrite at these sizes;
+# make memmove-check holds both compilers to that rather than assuming it.
+CXX_IS_CLANG := $(shell $(CXX) --version 2>/dev/null | grep -ci clang)
+ifeq ($(CXX_IS_CLANG),0)
+  CODEGEN     := -fno-tree-loop-distribute-patterns
+else
+  CODEGEN     :=
+endif
 SAN          ?=
 DEBUG_FLAGS   := -Og -g -DPX_DEBUG=1 -D_GLIBCXX_ASSERTIONS -fno-omit-frame-pointer $(CODEGEN) $(SAN)
 RELEASE_FLAGS := -O3 -march=native -flto -DNDEBUG $(CODEGEN)
@@ -692,6 +700,13 @@ canonical: $(DBG)/test_determinism$(EXE) $(DBG)/test_arena$(EXE) $(REL)/sweep$(E
 	@if diff tests/canonical.txt $(BUILD)/canonical.txt; then \
 	    echo "canonical: $$(wc -l < tests/canonical.txt | tr -d ' ') outputs identical to tests/canonical.txt"; \
 	else echo "canonical: differs from tests/canonical.txt (< recorded, > this build)"; exit 1; fi
+
+# The rule in CLAUDE.md, as a target: the engine's object must call no memmove,
+# whichever compiler built it.
+.PHONY: memmove-check
+memmove-check: $(DOBJ)/src/matching_engine.o
+	@n=$$(objdump -d $< | grep -c memmove || true); \
+	[ "$$n" -eq 0 ] && echo "memmove-check: 0 calls in $<" || { echo "FAIL: $$n memmove calls in $<"; exit 1; }
 
 clean:
 	rm -rf $(BUILD)
