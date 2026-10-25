@@ -1,7 +1,7 @@
 # Matching engine — build with mingw32-make (Windows, MSYS2 UCRT64) or make (Linux).
 #
 #   make app      the terminal app, build/release/exchange-lab, and every program it runs (docs/APP.md)
-#   make test     debug build (-Og, PX_DEBUG invariants, _GLIBCXX_ASSERTIONS); builds and runs every test
+#   make test     debug build (-Og, PX_DEBUG invariants, standard-library checks); builds and runs every test
 #   make bench    release build (-O3 -march=native -flto); builds and runs every benchmark
 #   make latency  builds and runs only bench_matching_latency (the 1M-order headline number)
 #   make repl     release build of the interactive REPL
@@ -52,7 +52,11 @@ endif
 # unchanged (docs/PORTABILITY_PLAN.md, stage 4).
 FPFLAGS      := -ffp-contract=off
 SAN          ?=
-DEBUG_FLAGS   := -Og -g -DPX_DEBUG=1 -D_GLIBCXX_ASSERTIONS -fno-omit-frame-pointer $(CODEGEN) $(FPFLAGS) $(SAN)
+# The standard library's own bounds checks, for whichever library it is:
+# _GLIBCXX_ASSERTIONS for libstdc++, the hardening mode for libc++ (LLVM 18 and
+# later, and Apple's). Each library ignores the other's macro.
+STDLIB_CHECKS := -D_GLIBCXX_ASSERTIONS -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE
+DEBUG_FLAGS   := -Og -g -DPX_DEBUG=1 $(STDLIB_CHECKS) -fno-omit-frame-pointer $(CODEGEN) $(FPFLAGS) $(SAN)
 RELEASE_FLAGS := -O3 -march=native -flto -DNDEBUG $(CODEGEN) $(FPFLAGS)
 
 ifeq ($(OS),Windows_NT)
