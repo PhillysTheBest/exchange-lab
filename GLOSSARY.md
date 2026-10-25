@@ -249,7 +249,11 @@ Terms are grouped and sorted alphabetically within each group.
 
 ## The engine and its measurements
 
+**Canonical record** — `make canonical`: one line for every output that must be identical on every platform (engine and session hashes, suite fingerprints, tapes, a smoke run's files), diffed with `tests/canonical.txt`. CI runs it on five targets. Lines labelled `derived.*` hold `double` statistics, so arithmetic is told apart from market state. *Where:* `docs/PLATFORMS.md`.
+
 **Determinism** — The same input gives a bit-identical event stream on every OS, checked by pinned event hashes.
+
+**Floating-point contraction** — A compiler fusing `a*b+c` into one multiply-add that rounds once instead of twice. It changes the last digit of the report's statistics, so it is turned off for every compiler. *Where:* `docs/PLATFORMS.md`.
 
 **Gate (the engine's)** — p99.9 under 2 µs, zero ring stalls, zero allocations, nothing trimmed.
 

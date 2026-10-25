@@ -79,11 +79,14 @@ it is renamed, the WSL path in the sanitizer command below changes with it.
 ## Build and test
 
 Hand-written Makefile: `mingw32-make` on Windows (MSYS2 UCRT64 g++ 13), `make` on
-Linux. No CMake, no package manager, no third-party libraries — keep it that way.
+Linux and macOS (Apple clang, GNU make 3.81). No CMake, no package manager, no third-party
+libraries — keep it that way. `docs/PLATFORMS.md` lists the targets and what each
+platform-specific flag and file is for; CI (`.github/workflows/ci.yml`) builds five of them
+on every pull request and fails if any one's `make canonical` record differs.
 
 ```bash
 mingw32-make app        # the terminal app, build/release/exchange-lab, and every program it runs
-mingw32-make test       # debug (-Og, PX_DEBUG invariants, _GLIBCXX_ASSERTIONS): builds and runs all 9 tests
+mingw32-make test       # debug (-Og, PX_DEBUG invariants, standard-library checks): builds and runs all 9 tests
 mingw32-make bench      # release (-O3 -march=native -flto): builds and runs all 3 benchmarks
 mingw32-make latency    # only the 1M-order matching-latency benchmark
 mingw32-make repl       # then: build/release/repl.exe < tools/repl_demo.txt
@@ -98,6 +101,8 @@ mingw32-make calibrate TAPE=name   # data/NAME.tape -> markets/NAME.cfg; then co
 mingw32-make compare CANDIDATES=a MARKET=name  # the standard experiment on a calibrated market (suite_lab only)
 mingw32-make replay TAPE=name [STRATEGY=s]   # an L3 tape through the engine: the control, or one strategy in it
 mingw32-make test-data  # ingest on the samples, the known-answer control, a calibrated market end to end (~90 s)
+mingw32-make canonical  # every output that must match on every platform, diffed with tests/canonical.txt
+mingw32-make memmove-check   # the engine object calls no memmove, whichever compiler built it
 mingw32-make all        # tests, command-line, lab, app and data checks, benchmarks, REPL, arena
 mingw32-make clean
 ```
@@ -388,6 +393,15 @@ loose from the fundamental is not a market and nothing read off one counts.
 
 ## Gotchas
 
+- **Flags are not dependencies.** Changing a flag in the Makefile does not rebuild existing
+  objects; `make clean` (or a fresh `BUILD=`) before comparing builds. Keep
+  `-ffp-contract=off` for every compiler: GCC fuses C++ by default, and a fused multiply-add
+  moves the report's last digit (`docs/PLATFORMS.md`).
+- **`tests/canonical.txt` is not re-recorded to make CI pass.** A line that moved means an
+  output changed; find out why, the way a moved hash is handled. It is in C glob order,
+  which `tools/canonical.sh` forces with `LC_ALL=C`.
+- **Nothing in a session may include `px/cycle_clock.hpp` or `px/platform.hpp`**;
+  `test_arena` stops compiling if one does. Simulated time never reads hardware.
 - `sim/alloc_counter.hpp` replaces global `operator new`; include it from exactly one
   translation unit per executable.
 - Changing engine behaviour changes generated streams too, because the generator runs a
