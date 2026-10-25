@@ -52,7 +52,13 @@ ifeq ($(OS),Windows_NT)
   LDLIBS := -static
   EXE := .exe
 else
-  PLATFORM_SRC := src/platform_linux.cpp
+  # Linux has thread affinity; macOS and other POSIX systems get a platform file
+  # that says it has none (src/platform_posix.cpp).
+  ifeq ($(shell uname -s),Linux)
+    PLATFORM_SRC := src/platform_linux.cpp
+  else
+    PLATFORM_SRC := src/platform_posix.cpp
+  endif
   LDLIBS := -pthread
   EXE :=
 endif

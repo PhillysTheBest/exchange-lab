@@ -107,9 +107,13 @@ before and after the fix, using the same seed-42 hash.
 
 ## How latency is measured
 
-- **What is timed.** Timing is on the matcher thread only. `lfence; rdtsc` runs right
-  after an order is dequeued, and `rdtscp; lfence` runs after its last event has been
-  written to the outbound ring. Both are `asm volatile` with a memory clobber, so LTO
+- **What is timed.** Timing is on the matcher thread only. On x86-64, `lfence; rdtsc`
+  runs right after an order is dequeued, and `rdtscp; lfence` runs after its last event
+  has been written to the outbound ring. On ARM64 the counter is `cntvct_el0` between
+  `isb`s, a fixed-frequency timer far coarser than a TSC (about 42 ns a tick on Apple
+  silicon), and elsewhere `std::chrono::steady_clock`
+  ([cycle_clock.hpp](../include/px/cycle_clock.hpp)). Every benchmark prints which
+  counter it used and its resolution. Both are `asm volatile` with a memory clobber, so LTO
   cannot move work across them. Both stamps come from the same core, so no cross-core
   clock comparison is involved.
 - **What is not timed.** Time spent waiting in the inbound ring is excluded: this is
@@ -128,7 +132,9 @@ before and after the fix, using the same seed-42 hash.
     to 60k resting orders, which gives sides of about 1,500 levels.
 - **Setup.**
   - Threads are pinned to separate performance cores; the matcher gets the last one,
-    away from CPU0's interrupts.
+    away from CPU0's interrupts. Each benchmark prints whether pinning was applied,
+    unavailable or not requested. macOS has no pinning (its affinity tags are
+    placement hints), so there it always reads unavailable.
   - The process runs at HIGH priority with EcoQoS power throttling disabled.
   - All memory is pre-faulted.
   - Warmups of 100k orders (thin) and 300k orders (deep) are processed but not
@@ -142,6 +148,10 @@ before and after the fix, using the same seed-42 hash.
   engine cost, because timing noise only ever adds time.
 - **Open-loop pacing.** With `--rate=N`, orders are sent on a fixed schedule, so the
   matcher idles between orders with cooler caches.
+- **One machine's numbers.** A timing describes the machine, counter, pinning and power
+  state that produced it. Numbers from different machines, from an unpinned run, or
+  from any shared CI runner are not comparable with each other or with those below, and
+  nothing here claims they are.
 
 ## Results
 

@@ -67,11 +67,11 @@ void run(const char* label, int iters, const TscClock& clock, Fn&& one_iteration
 int main() {
     harden_process();
     const auto cores = performance_core_ids();
-    if (!cores.empty()) pin_current_thread_to(cores.back());
+    const Affinity affinity = cores.empty() ? Affinity::unavailable : pin_current_thread_to(cores.back());
     const TscClock clock;
     std::printf("single-thread engine cost per request (counter bracket around process(); book restored untimed)\n");
-    std::printf("counter: %s, %.3f ticks/ns, resolution %.2f ns\n", kCounterName, clock.ticks_per_ns(),
-                clock.resolution_ns());
+    std::printf("counter: %s, %.3f ticks/ns, resolution %.2f ns; affinity %s\n", kCounterName, clock.ticks_per_ns(),
+                clock.resolution_ns(), affinity_name(affinity));
 
     {
         Case c;

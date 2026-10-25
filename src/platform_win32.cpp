@@ -61,16 +61,16 @@ std::vector<unsigned> performance_core_ids() {
     return result.empty() ? fallback_all : result;
 }
 
-bool pin_current_thread_to(unsigned logical_cpu) noexcept {
-    if (logical_cpu >= sizeof(DWORD_PTR) * 8) return false; // see single-group note above
+Affinity pin_current_thread_to(unsigned logical_cpu) noexcept {
+    if (logical_cpu >= sizeof(DWORD_PTR) * 8) return Affinity::unavailable; // see single-group note above
 
     const HANDLE h = GetCurrentThread();
     const DWORD_PTR mask = DWORD_PTR{1} << logical_cpu;
-    if (SetThreadAffinityMask(h, mask) == 0) return false;
+    if (SetThreadAffinityMask(h, mask) == 0) return Affinity::unavailable;
 
     // Best-effort: a failure here doesn't unwind the affinity pin already applied.
     SetThreadPriority(h, THREAD_PRIORITY_TIME_CRITICAL);
-    return true;
+    return Affinity::applied;
 }
 
 void harden_process() noexcept {
