@@ -12,12 +12,13 @@ it to understand *why* a strategy makes or loses money, not to decide whether to
 
 ## Start here
 
-You need g++ 13 or newer and make. Nothing else.
+You need a C++20 compiler and make: g++ 13 or newer on Linux and Windows, or Apple clang 15
+on macOS (Apple silicon). Nothing else.
 
 ```bash
 git clone https://github.com/PhillysTheBest/exchange-lab.git
 cd exchange-lab
-make app                      # Windows: mingw32-make app, in MSYS2 UCRT64
+make app                      # Windows: mingw32-make app, in MSYS2 UCRT64; macOS: make app
 build/release/exchange-lab    # run it from the repository root
 ```
 
@@ -103,7 +104,9 @@ replay of history. What it adds:
 - **A tested evaluator.** Eight controls with answers known in advance, each with a planted
   bug in the tests that makes it fail.
 - **Reproduction you can check.** `/reproduce` compares every output file byte for byte, and
-  the published results are identical on Windows and Linux.
+  the published results are identical on Windows and Linux. CI checks a record of hashes,
+  fingerprints and run files on Linux, Windows and macOS, x86-64 and ARM64
+  ([`docs/PLATFORMS.md`](docs/PLATFORMS.md)).
 
 ## For students
 
@@ -179,7 +182,7 @@ stop orders and auctions.
 | `marketdata/` | your own data: the tape, the importers, calibration and replay |
 | `examples/` | a complete strategy of your own to copy, and made-up data files to import |
 | `tests/`, `bench/`, `results/` | tests, benchmarks, and the committed evidence behind every number |
-| `docs/` | [`LEARN`](docs/LEARN.md), [`APP`](docs/APP.md), [`ARENA`](docs/ARENA.md), [`RESULTS`](docs/RESULTS.md), [`RUNNER`](docs/RUNNER.md), [`REPORT`](docs/REPORT.md), [`CONTROLS`](docs/CONTROLS.md), [`REPRODUCE`](docs/REPRODUCE.md), [`DATA`](docs/DATA.md), [`ENGINE`](docs/ENGINE.md) |
+| `docs/` | [`LEARN`](docs/LEARN.md), [`APP`](docs/APP.md), [`ARENA`](docs/ARENA.md), [`RESULTS`](docs/RESULTS.md), [`RUNNER`](docs/RUNNER.md), [`REPORT`](docs/REPORT.md), [`CONTROLS`](docs/CONTROLS.md), [`REPRODUCE`](docs/REPRODUCE.md), [`DATA`](docs/DATA.md), [`ENGINE`](docs/ENGINE.md), [`PLATFORMS`](docs/PLATFORMS.md) |
 
 ## Licence and issues
 

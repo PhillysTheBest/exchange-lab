@@ -49,7 +49,7 @@ endif
 # did, in paired_values, on x86-64 with -march=native; clang fuses within a
 # statement; ARM64 always has FMA. Off everywhere removes that one source of
 # difference between targets. The engine has no floating point, so its code is
-# unchanged (docs/PORTABILITY_PLAN.md, stage 4).
+# unchanged (docs/PLATFORMS.md).
 FPFLAGS      := -ffp-contract=off
 SAN          ?=
 # The standard library's own bounds checks, for whichever library it is:
@@ -710,7 +710,7 @@ test-lab: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(INGEST_BIN)
 	echo "9/9 suite checks passed"
 
 # The outputs that must be identical on every platform, compared line by line with
-# the record committed from Linux (docs/PORTABILITY_PLAN.md, stage 0). The first
+# the record committed from Linux (docs/PLATFORMS.md). The first
 # differing line names what diverged first; derived.* lines are the report's
 # double arithmetic, apart from the market's integer state.
 .PHONY: canonical

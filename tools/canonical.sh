@@ -1,6 +1,6 @@
 #!/bin/sh
 # tools/canonical.sh BUILD — one line per output that must be identical on every
-# platform (docs/PORTABILITY_PLAN.md, stage 0). `make canonical` runs it and
+# platform (docs/PLATFORMS.md). `make canonical` runs it and
 # compares with tests/canonical.txt, so the first line that differs names what
 # diverged first.
 #

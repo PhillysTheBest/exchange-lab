@@ -1,4 +1,4 @@
-# Stage 6 of docs/PORTABILITY_PLAN.md. Every job builds from source with the
+# docs/PLATFORMS.md explains what this checks and why. Every job builds from source with the
 # runner's compiler and nothing else (the project has no third-party libraries),
 # and every job that can writes its canonical record, which the last job compares
 # line by line with tests/canonical.txt.

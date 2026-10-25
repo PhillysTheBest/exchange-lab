@@ -39,7 +39,7 @@
 // A session's time is simulated and must never read hardware. Everything a
 // session, the suite or the report needs is included above, so if any of it
 // pulled in the cycle counter or the spin-wait/affinity header, this fails to
-// compile (docs/PORTABILITY_PLAN.md, stage 2).
+// compile (docs/PLATFORMS.md).
 #if defined(PX_CYCLE_CLOCK_HPP) || defined(PX_PLATFORM_HPP)
 #error "an arena header includes px/cycle_clock.hpp or px/platform.hpp: a session must not read hardware time"
 #endif
