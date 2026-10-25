@@ -402,7 +402,8 @@ void test_session_tape() {
     PX_CHECK(t.h.depth == Depth::L3 && t.h.tick == 100 && t.h.price_scale == kPriceScale && w.rested() > 0);
     std::uint64_t kinds[128] = {};
     for (const TapeEvent& e : t.ev) ++kinds[static_cast<unsigned char>(e.kind)];
-    PX_CHECK(kinds['A'] > 0 && kinds['C'] > 0 && kinds['T'] > 0 && kinds['L'] == 0 && kinds['R'] == 0);
+    const auto kind = [&kinds](char k) { return kinds[static_cast<unsigned char>(k)]; };
+    PX_CHECK(kind('A') > 0 && kind('C') > 0 && kind('T') > 0 && kind('L') == 0 && kind('R') == 0);
     std::printf("  session tape: %zu steps, %zu rows, book identical to the engine's after every step\n", steps,
                 t.ev.size());
 
