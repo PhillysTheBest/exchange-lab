@@ -81,6 +81,9 @@ struct PipelineResult {
     std::size_t recorded = 0;
     std::array<std::uint64_t, kOrderClasses> class_counts{};
     int gateway_cpu = -1, matcher_cpu = -1, publisher_cpu = -1;
+    // Each written only by its own thread, read after the joins.
+    Affinity gateway_affinity = Affinity::not_requested, matcher_affinity = Affinity::not_requested,
+             publisher_affinity = Affinity::not_requested;
     std::unique_ptr<LatencyRecorder> latency; // one sample per recorded request, in stream order
     std::vector<std::uint8_t> classes;        // OrderClass per sample
     std::vector<Tsc> start_tsc;               // dequeue TSC per sample (if record_start_times)
@@ -161,6 +164,10 @@ inline void push_event(void* c, const ExecEvent& e) {
         res.publisher_cpu = static_cast<int>(cores[1]);
         res.matcher_cpu = static_cast<int>(cores[2]);
     }
+    // Asked for, but too few cores to pin onto, is unavailable rather than default.
+    if (opt.pin_threads) {
+        res.gateway_affinity = res.matcher_affinity = res.publisher_affinity = Affinity::unavailable;
+    }
 
     std::atomic<int> ready{0};
     const auto wait_for_all = [&ready] {
@@ -170,7 +177,7 @@ inline void push_event(void* c, const ExecEvent& e) {
 
     EventHasher hasher;
     std::thread publisher([&] {
-        if (res.publisher_cpu >= 0) pin_current_thread_to(static_cast<unsigned>(res.publisher_cpu));
+        if (res.publisher_cpu >= 0) res.publisher_affinity = pin_current_thread_to(static_cast<unsigned>(res.publisher_cpu));
         wait_for_all();
         for (;;) {
             ExecEvent e;
@@ -184,7 +191,7 @@ inline void push_event(void* c, const ExecEvent& e) {
     });
 
     std::thread gateway([&] {
-        if (res.gateway_cpu >= 0) pin_current_thread_to(static_cast<unsigned>(res.gateway_cpu));
+        if (res.gateway_cpu >= 0) res.gateway_affinity = pin_current_thread_to(static_cast<unsigned>(res.gateway_cpu));
         wait_for_all();
         const bool paced = opt.pace_orders_per_sec > 0 && opt.ticks_per_ns > 0;
         const double interval = paced ? opt.ticks_per_ns * 1e9 / opt.pace_orders_per_sec : 0;
@@ -200,7 +207,7 @@ inline void push_event(void* c, const ExecEvent& e) {
     });
 
     std::thread matcher([&] {
-        if (res.matcher_cpu >= 0) pin_current_thread_to(static_cast<unsigned>(res.matcher_cpu));
+        if (res.matcher_cpu >= 0) res.matcher_affinity = pin_current_thread_to(static_cast<unsigned>(res.matcher_cpu));
         detail::MatcherCtx ctx;
         ctx.out = outbound.get();
         const EventSink sink(&ctx, &detail::push_event);

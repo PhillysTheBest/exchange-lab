@@ -57,7 +57,8 @@ void bench_cross_core(const TscClock& clock) {
         }
     });
 
-    if (pinned) pin_current_thread_to(cores[1]);
+    const Affinity affinity = pinned ? pin_current_thread_to(cores[1]) : Affinity::unavailable;
+    std::printf("affinity: producer %s\n", affinity_name(affinity));
     for (std::uint64_t i = 0; i < kWarmup + kIters; ++i) {
         const Tsc t0 = tsc_begin();
         while (!to_consumer->try_push(Msg{i, t0})) cpu_relax();

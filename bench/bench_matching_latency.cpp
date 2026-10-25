@@ -217,6 +217,8 @@ int main(int argc, char** argv) {
             classes = res.classes;
             std::printf("threads    gateway cpu %d, matcher cpu %d, publisher cpu %d%s\n", res.gateway_cpu,
                         res.matcher_cpu, res.publisher_cpu, pin ? "" : " (pinning disabled)");
+            std::printf("affinity   gateway %s, matcher %s, publisher %s\n", affinity_name(res.gateway_affinity),
+                        affinity_name(res.matcher_affinity), affinity_name(res.publisher_affinity));
             std::printf("book       at the end: %zu resting orders on %zu levels, deepest side %u of %u levels\n",
                         engine->resting_orders(), engine->live_levels(), deepest, engine->config().levels_per_side);
             std::printf("\nrun 1 of %u, every recorded order, by kind of work:\n", repeat);

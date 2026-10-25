@@ -28,11 +28,11 @@ std::vector<unsigned> performance_core_ids() {
     return ids;
 }
 
-bool pin_current_thread_to(unsigned logical_cpu) noexcept {
+Affinity pin_current_thread_to(unsigned logical_cpu) noexcept {
     cpu_set_t set;
     CPU_ZERO(&set);
     CPU_SET(static_cast<int>(logical_cpu), &set);
-    if (pthread_setaffinity_np(pthread_self(), sizeof(set), &set) != 0) return false;
+    if (pthread_setaffinity_np(pthread_self(), sizeof(set), &set) != 0) return Affinity::unavailable;
 
     // SCHED_FIFO at a modest static priority keeps a pinned, busy-spinning
     // thread from being preempted by ordinary SCHED_OTHER work landing on the
@@ -42,7 +42,7 @@ bool pin_current_thread_to(unsigned logical_cpu) noexcept {
     sched_param sp{};
     sp.sched_priority = 10;
     pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
-    return true;
+    return Affinity::applied;
 }
 
 void harden_process() noexcept {
