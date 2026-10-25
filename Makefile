@@ -42,9 +42,18 @@ ifeq ($(CXX_IS_CLANG),0)
 else
   CODEGEN     :=
 endif
+# -ffp-contract=off: never fuse a multiply and an add into one FMA. The report's
+# statistics (arena/suite_report.hpp) are double, and a fused a*b+c rounds once
+# where the unfused one rounds twice, so whether a compiler fuses decides the
+# last digit. GCC fuses C++ by default (its "off" default is for ISO C only) and
+# did, in paired_values, on x86-64 with -march=native; clang fuses within a
+# statement; ARM64 always has FMA. Off everywhere removes that one source of
+# difference between targets. The engine has no floating point, so its code is
+# unchanged (docs/PORTABILITY_PLAN.md, stage 4).
+FPFLAGS      := -ffp-contract=off
 SAN          ?=
-DEBUG_FLAGS   := -Og -g -DPX_DEBUG=1 -D_GLIBCXX_ASSERTIONS -fno-omit-frame-pointer $(CODEGEN) $(SAN)
-RELEASE_FLAGS := -O3 -march=native -flto -DNDEBUG $(CODEGEN)
+DEBUG_FLAGS   := -Og -g -DPX_DEBUG=1 -D_GLIBCXX_ASSERTIONS -fno-omit-frame-pointer $(CODEGEN) $(FPFLAGS) $(SAN)
+RELEASE_FLAGS := -O3 -march=native -flto -DNDEBUG $(CODEGEN) $(FPFLAGS)
 
 ifeq ($(OS),Windows_NT)
   PLATFORM_SRC := src/platform_win32.cpp
