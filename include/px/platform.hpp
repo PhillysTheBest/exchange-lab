@@ -2,8 +2,11 @@
 // Two implementations: src/platform_win32.cpp (what runs on the development
 // machine) and src/platform_linux.cpp; the Makefile picks one by OS.
 #pragma once
+#define PX_PLATFORM_HPP 1
 
+#if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
+#endif
 
 #include <vector>
 
@@ -25,10 +28,16 @@ bool pin_current_thread_to(unsigned logical_cpu) noexcept;
 //   Linux   — mlockall(MCL_CURRENT | MCL_FUTURE) where permitted.
 void harden_process() noexcept;
 
-// PAUSE: yields pipeline resources to the SMT sibling for one spin iteration
-// without giving up the OS time slice (which std::this_thread::yield would).
+// One spin iteration's hint to the CPU, without giving up the OS time slice
+// (which std::this_thread::yield would). x86-64: PAUSE, which yields pipeline
+// resources to the SMT sibling. ARM64: YIELD, the same hint. Elsewhere nothing:
+// it is only a hint, so a spin loop without it is still correct.
 inline void cpu_relax() noexcept {
+#if defined(__x86_64__) || defined(_M_X64)
     _mm_pause();
+#elif defined(__aarch64__)
+    asm volatile("yield" ::: "memory");
+#endif
 }
 
 } // namespace px

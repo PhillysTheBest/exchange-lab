@@ -4,7 +4,7 @@
 #include "px/histogram.hpp"
 #include "px/platform.hpp"
 #include "px/spsc_ring.hpp"
-#include "px/tsc_clock.hpp"
+#include "px/cycle_clock.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -91,7 +91,8 @@ void bench_same_thread(const TscClock& clock) {
 int main() {
     harden_process();
     const TscClock clock;
-    std::printf("invariant TSC: %s, %.3f ticks/ns\n", clock.invariant_tsc() ? "yes" : "no", clock.ticks_per_ns());
+    std::printf("counter: %s, constant rate: %s, %.3f ticks/ns, resolution %.2f ns\n", kCounterName,
+                clock.invariant_tsc() ? "yes" : "no", clock.ticks_per_ns(), clock.resolution_ns());
     bench_same_thread(clock);
     bench_cross_core(clock);
     return 0;
