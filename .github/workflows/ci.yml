@@ -7,8 +7,11 @@
 # a shared runner cannot arbitrate service time (docs/ENGINE.md).
 name: ci
 
+# Pushes to main, and every pull request. A branch with a pull request open would
+# otherwise run everything twice per push, and macOS minutes count tenfold.
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
