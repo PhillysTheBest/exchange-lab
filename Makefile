@@ -149,7 +149,7 @@ test-cli: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(REL)/controls$(EXE)
 	S=./$(REL)/suite$(EXE); W=./$(REL)/sweep$(EXE); D=$(BUILD)/cli; \
 	exits() { want=$$1; shift; rc=0; "$$@" > /dev/null 2>&1 || rc=$$?; [ $$rc -eq $$want ]; }; \
 	files="suite.cfg sessions.csv participants.csv comparison.csv evaluation.csv attribution.csv report.txt outcome.cfg"; \
-	same() { for f in $$files; do cmp -s $$1/$$f $$2/$$f || return 1; done; }; \
+	same() { for f in $$files; do cmp -s $$1/$$f $$2/$$f || { echo "differs: $$f"; diff $$1/$$f $$2/$$f | head -n 8; return 1; }; done; }; \
 	placebo42() { awk -F, 'NR==1{for(i=1;i<=NF;i++) c[$$i]=i; next} \
 	    $$c["arm"]=="placebo" && $$c["seed"]==42 {print $$c["session_hash"]}' $$1/sessions.csv; }; \
 	sweephash() { $$W "$$@" --quiet | sed -n 's/.*session hash at seed 42, per point: *//p'; }; \
