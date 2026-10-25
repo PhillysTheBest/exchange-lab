@@ -1,0 +1,162 @@
+# Stage 6 of docs/PORTABILITY_PLAN.md. Every job builds from source with the
+# runner's compiler and nothing else (the project has no third-party libraries),
+# and every job that can writes its canonical record, which the last job compares
+# line by line with tests/canonical.txt.
+#
+# Benchmarks run here only to prove they start. Their timings are never read:
+# a shared runner cannot arbitrate service time (docs/ENGINE.md).
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-gcc:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: g++ --version
+      - name: tests, command lines, lab, app, data
+        # One target at a time: test-app and test-data both write under runs/.
+        run: |
+          make -j4 test
+          make test-cli
+          make test-lab
+          make test-app
+          make test-data
+      - run: make memmove-check
+      - name: canonical record
+        run: make canonical
+      - name: benchmarks start
+        run: |
+          make -j4 build/release/bench_engine build/release/bench_ring build/release/bench_matching_latency
+          timeout 300 build/release/bench_engine > /dev/null
+          timeout 300 build/release/bench_ring > /dev/null
+          timeout 300 build/release/bench_matching_latency --orders=20000 > /dev/null
+      - name: sanitizers
+        run: make -j4 BUILD=build-asan SAN='-fsanitize=address,undefined -fno-sanitize-recover=all' test
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canonical-linux-gcc
+          path: build/canonical.txt
+          if-no-files-found: ignore
+
+  linux-clang-libcxx:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y clang-18 libc++-18-dev libc++abi-18-dev
+      - run: make -j4 CXX='clang++-18 -stdlib=libc++' test
+      - run: make CXX='clang++-18 -stdlib=libc++' memmove-check
+      - run: make CXX='clang++-18 -stdlib=libc++' canonical
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canonical-linux-clang-libcxx
+          path: build/canonical.txt
+          if-no-files-found: ignore
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          install: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-make
+      - run: g++ --version
+      - name: tests, command lines, lab, app, data
+        run: |
+          mingw32-make -j4 test
+          mingw32-make test-cli
+          mingw32-make test-lab
+          mingw32-make test-app
+          mingw32-make test-data
+      - run: mingw32-make memmove-check
+      - run: mingw32-make canonical
+      - name: benchmarks start
+        run: |
+          mingw32-make -j4 build/release/bench_engine.exe build/release/bench_ring.exe build/release/bench_matching_latency.exe
+          timeout 300 build/release/bench_engine.exe > /dev/null
+          timeout 300 build/release/bench_ring.exe > /dev/null
+          timeout 300 build/release/bench_matching_latency.exe --orders=20000 > /dev/null
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canonical-windows
+          path: build/canonical.txt
+          if-no-files-found: ignore
+
+  macos-arm64:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - run: g++ --version && make --version | head -1
+      - run: |
+          make -j3 test
+          make test-app
+          make test-data
+      - run: make canonical
+      - name: benchmarks start
+        run: |
+          make -j3 build/release/bench_engine build/release/bench_ring build/release/bench_matching_latency
+          build/release/bench_engine > /dev/null
+          build/release/bench_ring > /dev/null
+          build/release/bench_matching_latency --orders=20000 > /dev/null
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canonical-macos-arm64
+          path: build/canonical.txt
+          if-no-files-found: ignore
+
+  # Experimental, as the plan says: a failure here is reported, not blocking.
+  linux-arm64:
+    runs-on: ubuntu-24.04-arm
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - run: make -j4 test
+      - run: make canonical
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canonical-linux-arm64
+          path: build/canonical.txt
+          if-no-files-found: ignore
+
+  compare:
+    needs: [linux-gcc, linux-clang-libcxx, windows, macos-arm64, linux-arm64]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: got
+      - name: every target's canonical record against tests/canonical.txt
+        run: |
+          status=0
+          for t in linux-gcc linux-clang-libcxx windows macos-arm64 linux-arm64; do
+            f=got/canonical-$t/canonical.txt
+            # linux-arm64 is experimental: its result is printed and never fails the run.
+            fail=1; [ "$t" = linux-arm64 ] && fail=0
+            if [ ! -f "$f" ]; then
+              echo "$t: no canonical record (the job failed before writing one)"; [ $fail = 1 ] && status=1; continue
+            fi
+            tr -d '\r' < "$f" > got/$t.txt
+            if diff tests/canonical.txt got/$t.txt > got/$t.diff; then
+              echo "$t: $(wc -l < tests/canonical.txt | tr -d ' ') outputs identical"
+            else
+              echo "$t: differs from tests/canonical.txt (< recorded, > $t)"; cat got/$t.diff; [ $fail = 1 ] && status=1
+            fi
+          done
+          exit $status
