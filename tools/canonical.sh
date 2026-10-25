@@ -11,6 +11,10 @@
 #
 # POSIX sh and cksum only, so it runs unchanged on Linux, macOS and MSYS2.
 set -e
+# Glob order follows the locale: the Windows runner sorted examples/data/*
+# case-insensitively, which reordered the tape lines. The record is in C order.
+LC_ALL=C
+export LC_ALL
 B=${1:-build}
 R=$B/release
 D=$B/canonical
