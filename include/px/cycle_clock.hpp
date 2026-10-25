@@ -9,9 +9,8 @@
 //             end:   RDTSCP; LFENCE  — the read waits for the timed work, and nothing
 //                                      after it can start before the read
 //   ARM64   CNTVCT_EL0, the generic timer's virtual count. It ticks at a fixed
-//           frequency (CNTFRQ_EL0, typically 24 MHz on Apple silicon, so about
-//           42 ns a tick), which makes it constant-rate by architecture but far
-//           coarser than a TSC. ISB on both sides orders the read against the
+//           frequency (CNTFRQ_EL0), which makes it constant-rate by architecture
+//           but far coarser than a TSC: resolution_ns() says how coarse. ISB on both sides orders the read against the
 //           timed work, the role LFENCE plays on x86.
 //   other   std::chrono::steady_clock, in nanoseconds. Correct, and the slowest.
 // Every stamp is asm volatile with a "memory" clobber (or an opaque library

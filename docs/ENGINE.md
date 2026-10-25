@@ -110,8 +110,8 @@ before and after the fix, using the same seed-42 hash.
 - **What is timed.** Timing is on the matcher thread only. On x86-64, `lfence; rdtsc`
   runs right after an order is dequeued, and `rdtscp; lfence` runs after its last event
   has been written to the outbound ring. On ARM64 the counter is `cntvct_el0` between
-  `isb`s, a fixed-frequency timer far coarser than a TSC (about 42 ns a tick on Apple
-  silicon), and elsewhere `std::chrono::steady_clock`
+  `isb`s, a fixed-frequency timer far coarser than a TSC, and elsewhere
+  `std::chrono::steady_clock`
   ([cycle_clock.hpp](../include/px/cycle_clock.hpp)). Every benchmark prints which
   counter it used and its resolution. Both are `asm volatile` with a memory clobber, so LTO
   cannot move work across them. Both stamps come from the same core, so no cross-core
