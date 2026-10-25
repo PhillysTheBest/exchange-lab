@@ -15,7 +15,7 @@
 // WHAT IS TIMED (matching latency): on the matcher thread only, from the instant a
 // request has been dequeued (tsc_begin() right after try_pop returns) to the
 // instant its last resulting event has been written to the outbound ring
-// (tsc_end() after process() returns). Both stamps come from the same core's TSC,
+// (tsc_end() after process() returns). Both stamps come from the same core's counter,
 // so no cross-core clock comparison is involved. Time a request spends waiting in
 // the inbound ring is NOT included: this is the engine's service time per order.
 // If the outbound ring is ever full, the matcher spins inside the timed region;
@@ -27,9 +27,7 @@
 #include "px/messages.hpp"
 #include "px/platform.hpp"
 #include "px/spsc_ring.hpp"
-#include "px/tsc_clock.hpp"
-
-#include <x86intrin.h>
+#include "px/cycle_clock.hpp"
 
 #include <array>
 #include <atomic>
@@ -193,9 +191,9 @@ inline void push_event(void* c, const ExecEvent& e) {
         Tsc schedule_start = 0;
         for (std::size_t i = 0; i < n; ++i) {
             if (paced && i >= warmup) {
-                if (i == warmup) schedule_start = __rdtsc();
+                if (i == warmup) schedule_start = tsc_now();
                 const Tsc due = schedule_start + static_cast<Tsc>(static_cast<double>(i - warmup) * interval);
-                while (__rdtsc() < due) cpu_relax();
+                while (tsc_now() < due) cpu_relax();
             }
             while (!inbound->try_push(stream[i])) cpu_relax();
         }
@@ -215,11 +213,11 @@ inline void push_event(void* c, const ExecEvent& e) {
             OrderRequest req;
             if (!inbound->try_pop(req)) {
                 const bool in_window = meter && i > warmup;
-                Tsc prev = __rdtsc();
+                Tsc prev = tsc_now();
                 do {
                     cpu_relax();
                     if (in_window) {
-                        const Tsc now = __rdtsc();
+                        const Tsc now = tsc_now();
                         if (now - prev > opt.hiccup_threshold_ticks) {
                             if (hiccups_kept < opt.hiccup_capacity) res.hiccups[hiccups_kept++] = {prev, now - prev};
                             ++res.hiccup_count;
