@@ -149,7 +149,8 @@ test-cli: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(REL)/controls$(EXE)
 	S=./$(REL)/suite$(EXE); W=./$(REL)/sweep$(EXE); D=$(BUILD)/cli; \
 	exits() { want=$$1; shift; rc=0; "$$@" > /dev/null 2>&1 || rc=$$?; [ $$rc -eq $$want ]; }; \
 	files="suite.cfg sessions.csv participants.csv comparison.csv evaluation.csv attribution.csv report.txt outcome.cfg"; \
-	same() { for f in $$files; do cmp -s $$1/$$f $$2/$$f || { echo "differs: $$f"; diff $$1/$$f $$2/$$f | head -n 8; return 1; }; done; }; \
+	identical() { rc=0; cmp -s $$1 $$2 || rc=$$?; [ $$rc -le 1 ] || fail "cmp could not compare $$1 (exit $$rc): is diffutils installed?"; [ $$rc -eq 0 ]; }; \
+	same() { for f in $$files; do identical $$1/$$f $$2/$$f || { echo "differs: $$f"; diff $$1/$$f $$2/$$f | head -n 8; return 1; }; done; }; \
 	placebo42() { awk -F, 'NR==1{for(i=1;i<=NF;i++) c[$$i]=i; next} \
 	    $$c["arm"]=="placebo" && $$c["seed"]==42 {print $$c["session_hash"]}' $$1/sessions.csv; }; \
 	sweephash() { $$W "$$@" --quiet | sed -n 's/.*session hash at seed 42, per point: *//p'; }; \
@@ -488,6 +489,7 @@ test-data: $(INGEST_BIN) $(CALIBRATE_BIN) $(REPLAY_BIN) $(LAB_BINS) $(REL)/suite
 	@set -e; \
 	n=0; ok() { n=$$((n+1)); }; fail() { echo "FAIL: $$1"; exit 1; }; \
 	exits() { want=$$1; shift; rc=0; "$$@" > /dev/null 2>&1 || rc=$$?; [ $$rc -eq $$want ]; }; \
+	identical() { rc=0; cmp -s $$1 $$2 || rc=$$?; [ $$rc -le 1 ] || fail "cmp could not compare $$1 (exit $$rc): is diffutils installed?"; [ $$rc -eq 0 ]; }; \
 	I=./$(INGEST_BIN); D=$(BUILD)/data-test; rm -rf $$D; mkdir -p $$D; \
 	L=examples/data/DEMO_2012-06-21_34200000_57600000_message_3.csv; \
 	echo "== ingest"; \
@@ -509,7 +511,7 @@ test-data: $(INGEST_BIN) $(CALIBRATE_BIN) $(REPLAY_BIN) $(LAB_BINS) $(REL)/suite
 	    || fail "the tape should record the source's cksum, as cksum prints it"; ok; \
 	cp $$D/demo-2012-06-21.tape $$D/first.tape; \
 	$$I add $$L dir=$$D | grep -q '^replaced demo-2012-06-21 ' || fail "the same file again should replace it"; ok; \
-	cmp -s $$D/first.tape $$D/demo-2012-06-21.tape || fail "the same file should give the same tape, byte for byte"; ok; \
+	identical $$D/first.tape $$D/demo-2012-06-21.tape || fail "the same file should give the same tape, byte for byte"; ok; \
 	rm $$D/first.tape; \
 	$$I add examples/data/trades.csv dir=$$D name=demo-2012-06-21 > $$D/out 2>&1 && fail "a name taken by another file should be refused"; \
 	grep -q 'already exists, made from another file' $$D/out || fail "and say why"; ok; \
@@ -579,7 +581,7 @@ test-data: $(INGEST_BIN) $(CALIBRATE_BIN) $(REPLAY_BIN) $(LAB_BINS) $(REL)/suite
 	exits 1 $$P demo-2012-06-21 strategy=informed data=$$D || fail "informed has no fundamental to trade on"; okr; \
 	$$P demo-2012-06-21 strategy=maker data=$$D > $$D/a || fail "a strategy should run in it"; \
 	$$P demo-2012-06-21 strategy=maker data=$$D > $$D/b; \
-	cmp -s $$D/a $$D/b && grep -q '^History cannot react' $$D/a && grep -q '^  value ' $$D/a \
+	identical $$D/a $$D/b && grep -q '^History cannot react' $$D/a && grep -q '^  value ' $$D/a \
 	    || fail "it should be labelled, and give the same report twice"; okr; \
 	h=$$(sed -n 's/^  hash *\([0-9a-f]*\) .*/\1/p' $$D/out); \
 	$$P demo-2012-06-21 strategy=placebo data=$$D | grep -q "^  hash *$$h " || fail "an inert strategy should leave the tape's stream as it was"; okr; \
@@ -716,9 +718,11 @@ test-lab: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(INGEST_BIN)
 .PHONY: canonical
 canonical: $(DBG)/test_determinism$(EXE) $(DBG)/test_arena$(EXE) $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(INGEST_BIN) $(CALIBRATE_BIN)
 	@sh tools/canonical.sh $(BUILD) > $(BUILD)/canonical.txt
-	@if diff tests/canonical.txt $(BUILD)/canonical.txt; then \
+	@rc=0; diff tests/canonical.txt $(BUILD)/canonical.txt || rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
 	    echo "canonical: $$(wc -l < tests/canonical.txt | tr -d ' ') outputs identical to tests/canonical.txt"; \
-	else echo "canonical: differs from tests/canonical.txt (< recorded, > this build)"; exit 1; fi
+	elif [ $$rc -eq 1 ]; then echo "canonical: differs from tests/canonical.txt (< recorded, > this build)"; exit 1; \
+	else echo "canonical: diff could not compare (exit $$rc): is diffutils installed?"; exit 1; fi
 
 # The rule in CLAUDE.md, as a target: the engine's object must call no memmove,
 # whichever compiler built it.

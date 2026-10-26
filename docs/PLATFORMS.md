@@ -127,10 +127,16 @@ Two things the Windows runner found that the development laptop had not:
 
 - **Glob order.** `examples/data/*` expanded case-insensitively there, which reordered
   three tape lines whose values were identical. `tools/canonical.sh` now sets `LC_ALL=C`.
-- **One intermittent failure, cause not established.** On the first Windows run,
-  `test-cli` reported that two identical smoke runs wrote a different `suite.cfg`. Every
-  run since has passed, on CI and under MSYS2 on the laptop. The check now prints the file
-  and the differing lines, so a repeat will show what differed.
+- **A missing `cmp`, reported as two runs differing.** The first two Windows runs failed
+  `test-cli` on "two runs should write byte-identical files", and the second named
+  `suite.cfg`. The runs were never compared. The minimal MSYS2 install has no diffutils,
+  so `cmp` did not exist, and the check read its failure as a difference; `suite.cfg` is
+  only the first file it compares. Installing `diffutils` fixed it, and the laptop's
+  MSYS2 had it all along. An earlier version of this document called this an
+  intermittent failure whose cause was not established, without reading the logs, which
+  established it (issue #3). `test-cli`, `test-data` and `make canonical` now report a
+  difference only when `cmp` or `diff` finds one, and fail with "could not compare" when
+  either cannot run.
 
 ## Not done, and why
 
