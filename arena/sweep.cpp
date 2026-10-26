@@ -80,6 +80,9 @@ struct Options {
     std::string strategies; // empty: the registry's default line-up
     std::vector<std::pair<std::string, std::int64_t>> overrides;
     std::string market;     // --market: a calibrated market's name, or empty
+    // A --param or --set NAME.KEY that no built-in field takes: a setting of the
+    // participant NAME in --strategies (docs/RUNNER.md, "A strategy's own settings").
+    std::string param_strategy; // non-empty: --param is a setting of this participant
 };
 
 void usage() {
@@ -100,6 +103,10 @@ void usage() {
         "  --label=NAME          a name for the run, written into both CSVs\n"
         "  --replay-check        run every session twice and compare hashes\n"
         "  --quiet               tables only\n\n"
+#if defined(PX_ARENA_USER_STRATEGIES)
+        "A strategy of your own takes its settings on its name in --strategies=, as\n"
+        "NAME+KEY=VALUE, and --param=NAME.KEY or --set=NAME.KEY=VALUE sweeps or fixes one.\n\n"
+#endif
         "participants: %s\n\n"
         "fields:\n  %s\n  %s\n\n"
         "Every number this prints is simulated. The engine's measured latency is in\n"
@@ -121,9 +128,58 @@ void usage() {
     return true;
 }
 
+[[nodiscard]] std::vector<std::string> split_tokens(std::string_view spec) {
+    std::vector<std::string> out;
+    while (!spec.empty()) {
+        const std::size_t comma = spec.find(',');
+        if (comma != 0) out.emplace_back(spec.substr(0, comma));
+        if (comma == std::string_view::npos) break;
+        spec = spec.substr(comma + 1);
+    }
+    return out;
+}
+
 [[nodiscard]] bool apply_field(RosterConfig& rc, SessionConfig& sc, std::string_view key, std::int64_t value) {
     if (set_roster_param(rc, key, value)) return true;
     return Session::set_param(sc, key, value);
+}
+
+// A name the built-in fields take (maker.*, session.*, ...): never a setting.
+[[nodiscard]] bool is_field(std::string_view key) {
+    std::int64_t v = 0;
+    return get_roster_param(RosterConfig{}, key, v) || Session::get_param(SessionConfig{}, key, v);
+}
+
+// The base strategy of each line-up token, whatever its settings and count.
+[[nodiscard]] std::vector<std::string> lineup_bases(std::string_view spec) {
+    std::vector<std::string> out;
+    for (const std::string& tok : split_tokens(spec)) out.push_back(tok.substr(0, tok.find_first_of("+:")));
+    return out;
+}
+
+// The line-up with KEY=VALUE added to every token whose strategy is `name`.
+[[nodiscard]] bool with_setting(const std::string& spec, std::string_view name, std::string_view key,
+                                std::int64_t value, std::string& out, std::string& why) {
+    out.clear();
+    for (const std::string& tok : split_tokens(spec)) {
+        std::string t = tok;
+        if (tok.substr(0, tok.find_first_of("+:")) == name) {
+            const bool plus = tok.find('+') != std::string::npos;
+            const std::size_t colon = plus ? tok.rfind(':') : tok.find(':');
+            const std::string head = tok.substr(0, colon), count = colon == std::string::npos ? "" : tok.substr(colon);
+            StrategySpec s;
+            if (!parse_strategy_spec(head, s, why)) return false;
+            for (const auto& [k, v] : s.settings) {
+                if (k == key) {
+                    why = std::string(name) + "." + std::string(key) + " is set twice: on its name and by --param or --set";
+                    return false;
+                }
+            }
+            t = head + "+" + std::string(key) + "=" + std::to_string(value) + count;
+        }
+        out += (out.empty() ? "" : ",") + t;
+    }
+    return true;
 }
 
 // Median and full range of a set of samples, computed once the sessions are over.
@@ -172,10 +228,27 @@ struct Cell {
     SessionConfig sc;
     sc.max_requests = opt.requests;
     sc.seed = seed;
+    // A setting goes onto its strategy's name in the line-up; a field into the configs.
+    std::string spec = opt.strategies;
+    auto apply = [&](const std::string& key, std::int64_t value) {
+        if (!is_field(key) && !opt.strategies.empty()) {
+            const std::size_t dot = key.find('.');
+            std::string why, next;
+            if (dot == std::string::npos ||
+                !with_setting(spec, std::string_view(key).substr(0, dot), std::string_view(key).substr(dot + 1), value,
+                              next, why)) {
+                std::fprintf(stderr, "%s\n", why.empty() ? ("unknown field " + key).c_str() : why.c_str());
+                return false;
+            }
+            spec = next;
+            return true;
+        }
+        return apply_field(rc, sc, key, value);
+    };
     for (const auto& o : opt.overrides) {
-        if (!apply_field(rc, sc, o.first, o.second)) return false;
+        if (!apply(o.first, o.second)) return false;
     }
-    if (!apply_field(rc, sc, opt.param, swept_value)) return false;
+    if (!apply(opt.param, swept_value)) return false;
 
     Session s;
     Session::StartError bad = Session::StartError::None;
@@ -186,8 +259,8 @@ struct Cell {
         // parameters; the spec only decides who is in the room.
         Roster roster;
         std::string why;
-        if (!roster_from_spec(opt.strategies, rc, roster, why)) {
-            std::fprintf(stderr, "--strategies=%s: %s\n", opt.strategies.c_str(), why.c_str());
+        if (!roster_from_spec(spec, rc, roster, why)) {
+            std::fprintf(stderr, "--strategies=%s: %s\n", spec.c_str(), why.c_str());
             return false;
         }
         bad = s.start(sc, std::move(roster));
@@ -215,7 +288,7 @@ struct Cell {
         } else {
             Roster roster;
             std::string why;
-            if (!roster_from_spec(opt.strategies, rc, roster, why)) return false;
+            if (!roster_from_spec(spec, rc, roster, why)) return false;
             again.start(sc, std::move(roster));
         }
         again.run();
@@ -381,6 +454,38 @@ int main(int argc, char** argv) {
     if (opt.values.empty()) {
         std::fprintf(stderr, "nothing to sweep\n");
         return 2;
+    }
+    // A NAME.KEY no built-in field takes is a setting of the participant NAME,
+    // which only the lab programs accept; refused before anything runs.
+    std::vector<std::string> keys{opt.param};
+    for (const auto& o : opt.overrides) keys.push_back(o.first);
+    for (const std::string& key : keys) {
+        if (is_field(key)) continue;
+        const std::string name = key.substr(0, key.find('.'));
+        const std::vector<std::string> bases = lineup_bases(opt.strategies);
+        const bool in_lineup = std::find(bases.begin(), bases.end(), name) != bases.end();
+        if (!in_lineup || key.find('.') == std::string::npos) {
+            std::fprintf(stderr, "unknown field '%s': not a built-in field (--help lists them), and %s\n", key.c_str(),
+                         opt.strategies.empty() ? "a strategy's setting needs --strategies= naming it"
+                                                : "no participant in --strategies= is called that");
+            return 2;
+        }
+        if (!kTakesSettings) {
+            std::fprintf(stderr, "'%s' is a strategy's setting: settings are taken by sweep_lab only, never by the "
+                                 "evidence programs\n", key.c_str());
+            return 2;
+        }
+        if (key == opt.param) opt.param_strategy = name;
+    }
+    // A line-up with settings is checked once, here, so a refused one says why and
+    // nothing else. One without them runs exactly as it always did.
+    if (opt.strategies.find('+') != std::string::npos) {
+        Roster r;
+        std::string why;
+        if (!roster_from_spec(opt.strategies, RosterConfig{}, r, why)) {
+            std::fprintf(stderr, "--strategies=%s: %s\n", opt.strategies.c_str(), why.c_str());
+            return 2;
+        }
     }
     std::string market_note;
     if (!opt.market.empty()) {
@@ -555,6 +660,32 @@ int main(int argc, char** argv) {
                             column(row, get(&Part::orders)).median, column(row, get(&Part::fills)).median,
                             column(row, get(&Part::rejects)).median);
             }
+        }
+    }
+
+    // A swept setting is about its own strategy, so it gets the paired table the
+    // maker has above: the same seeds at every point, the difference taken seed by seed.
+    if (!opt.param_strategy.empty() && !grid.empty() && !grid[0].empty()) {
+        std::size_t who = grid[0].front().parts.size();
+        for (std::size_t i = 0; i < grid[0].front().parts.size() && who == grid[0].front().parts.size(); ++i) {
+            const std::string& n = grid[0].front().parts[i].name;
+            if (n.substr(0, n.find('+')) == opt.param_strategy) who = i;
+        }
+        if (who < grid[0].front().parts.size()) {
+            std::printf("\n%s's value, paired against %s = %lld, seed by seed - medians, range in brackets\n",
+                        opt.param_strategy.c_str(), opt.param.c_str(), static_cast<long long>(opt.values.front()));
+            std::printf("  %-14s | %-34s | %-34s | %s\n", opt.param.c_str(), "value", "value, paired",
+                        "value separated?");
+            std::printf("  %s\n", std::string(106, '-').c_str());
+            for (std::size_t p = 0; p < grid.size(); ++p) {
+                auto get = [who](const Cell& c) { return c.parts[who].value; };
+                const Spread v = column(grid[p], get), d = paired(grid[p], grid[0], get);
+                const bool straddles = d.lo <= 0 && d.hi >= 0;
+                std::printf("  %-14lld | %+11.2f (%+10.2f..%+10.2f) | %+11.2f (%+10.2f..%+10.2f) | %s\n",
+                            static_cast<long long>(opt.values[p]), v.median, v.lo, v.hi, d.median, d.lo, d.hi,
+                            p == 0 ? "baseline" : (straddles ? "no" : "yes"));
+            }
+            std::printf("  A paired range that straddles zero is not a difference at this seed count.\n");
         }
     }
 

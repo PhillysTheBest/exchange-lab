@@ -70,7 +70,9 @@ constexpr const char* kBinary = "suite";
 }
 
 // An installed strategy's header checksum, as this binary was built with it.
-[[nodiscard]] std::string digest_of(std::string_view name) {
+// `label` may carry settings; the header is its base strategy's.
+[[nodiscard]] std::string digest_of(std::string_view label) {
+    const std::string name = candidate_base(label);
 #if defined(PX_ARENA_USER_STRATEGIES)
     if (!is_builtin(name)) return user_strategy_digest(name);
 #endif
@@ -82,6 +84,10 @@ void usage() {
     std::printf(
         "arena suite - every candidate in the same seat of the same market, on the same seeds.\n\n"
         "  --candidates=A[,B,...]  1 to 8 strategies; the first is the baseline of the paired rows\n"
+#if defined(PX_ARENA_USER_STRATEGIES)
+        "                          a strategy of your own takes settings on its name: imbalance+ratio=5\n"
+#endif
+
         "  --block=NAME            standard (64 seeds, the default), smoke (4 seeds), or holdout\n"
         "                          (64 other seeds: confirmatory, reported once after tuning on standard)\n"
         "  --suite=NAME            standard (the default), wide, busy, or all: every one, one directory each;\n"
@@ -371,16 +377,16 @@ int reproduce_one(const fs::path& from, const fs::path& out) {
         std::fprintf(stderr, "%s: block '%s' is not in this build\n", from.string().c_str(), block_name.c_str());
         return 2;
     }
-    const std::vector<std::string> names = split_commas(cfg_value(cfg, "run.candidates"));
+    std::vector<std::string> names = split_commas(cfg_value(cfg, "run.candidates"));
     std::string why;
-    if (!check_candidates(names, why)) {
+    if (!canonical_candidates(names, why) || !check_candidates(names, why)) {
         std::fprintf(stderr, "%s: %s%s\n", from.string().c_str(), why.c_str(),
                      kBinary == std::string_view("suite") ? " (an installed strategy needs suite_lab)" : "");
         return 2;
     }
     // The same version of every installed strategy, or nothing runs.
     for (const std::string& n : names) {
-        const std::string was = cfg_value(cfg, "run.candidate." + n + ".digest");
+        const std::string was = cfg_value(cfg, "run.candidate." + candidate_id(n) + ".digest");
         const std::string now = digest_of(n);
         if (was != now) {
             std::fprintf(stderr, "%s: %s has changed since the run (checksum %s then, %s now): not the same strategy\n",
@@ -544,8 +550,8 @@ int main(int argc, char** argv) {
     }
 
     std::string why;
-    const std::vector<std::string> names = split_commas(candidates_arg);
-    if (!check_candidates(names, why)) {
+    std::vector<std::string> names = split_commas(candidates_arg);
+    if (!canonical_candidates(names, why) || !check_candidates(names, why)) {
         std::fprintf(stderr, "--candidates=%s: %s\n", candidates_arg.c_str(), why.c_str());
         return 2;
     }
@@ -566,7 +572,7 @@ int main(int argc, char** argv) {
         dir = out_arg;
     } else {
         std::string leaf;
-        for (std::size_t i = 0; i < names.size(); ++i) leaf += (i == 0 ? "" : "-vs-") + names[i];
+        for (std::size_t i = 0; i < names.size(); ++i) leaf += (i == 0 ? "" : "-vs-") + candidate_id(names[i]);
         if (suite_name != "standard") leaf += "-" + suite_name;
         dir = fs::path("runs") / (leaf + "-" + block->name);
     }

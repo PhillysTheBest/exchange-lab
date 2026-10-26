@@ -1238,6 +1238,141 @@ void test_zi_floor() {
     }
 }
 
+// ---- a strategy's own settings (arena/strategy_settings.hpp) ------------------
+
+// A strategy with the optional sixth member: three settings of three integer
+// types, one whose range is wider than its type.
+struct Tunable {
+    const char* name = "tunable";
+    SimTime reaction_ns = 10'000;
+    SimTime timer_ns = 0;
+    Qty qty = 10;
+    std::int64_t edge = 0;
+    std::uint8_t lean = 1;
+    template <class F>
+    void settings(F&& f) {
+        f("qty", qty, 1, 100);
+        f("edge", edge, -5, 5);
+        f("lean", lean, 0, 1000); // the type stops it at 255
+    }
+    void reset(std::uint64_t) {}
+    ActionBatch on_event(const MarketView&) { return ActionBatch{}; }
+};
+
+// The same strategy without the member: it must compile and refuse every setting.
+struct Plain {
+    const char* name = "plain";
+    SimTime reaction_ns = 10'000;
+    SimTime timer_ns = 0;
+    Qty qty = 10;
+    void reset(std::uint64_t) {}
+    ActionBatch on_event(const MarketView&) { return ActionBatch{}; }
+};
+
+using ApplyFn = bool (*)(StrategyHandle&, std::string_view, std::int64_t, std::string&);
+
+bool apply_real(StrategyHandle& h, std::string_view k, std::int64_t v, std::string& why) {
+    return h.apply_setting(k, v, why);
+}
+// Planted defects: one adapter that accepts a key it does not know, one that
+// clamps a value into range instead of refusing it.
+bool apply_lenient(StrategyHandle& h, std::string_view k, std::int64_t v, std::string& why) {
+    return h.apply_setting(k, v, why) || why.find("has no setting") != std::string::npos;
+}
+bool apply_clamping(StrategyHandle& h, std::string_view k, std::int64_t v, std::string& why) {
+    if (k == "qty") v = std::clamp<std::int64_t>(v, 1, 100);
+    if (k == "edge") v = std::clamp<std::int64_t>(v, -5, 5);
+    if (k == "lean") v = std::clamp<std::int64_t>(v, 0, 255);
+    return h.apply_setting(k, v, why);
+}
+
+// The checks, which the real adapter must pass and each defect must fail.
+bool refuses_unknown_key(ApplyFn apply) {
+    StrategyAdapter<Tunable> h(Tunable{});
+    std::string why;
+    return !apply(h, "qtty", 5, why) && !apply(h, "", 5, why) && h.get().qty == 10;
+}
+bool refuses_out_of_range(ApplyFn apply) {
+    StrategyAdapter<Tunable> h(Tunable{});
+    std::string why;
+    return !apply(h, "qty", 0, why) && !apply(h, "qty", 101, why) && !apply(h, "edge", -6, why) &&
+           !apply(h, "lean", 256, why) && h.get().qty == 10 && h.get().edge == 0 && h.get().lean == 1;
+}
+
+void test_strategy_settings() {
+    StrategyAdapter<Tunable> t(Tunable{});
+    StrategyAdapter<Plain> p(Plain{});
+    PX_CHECK(t.has_settings() && !p.has_settings());
+    PX_CHECK(t.setting_names() == "qty edge lean" && p.setting_names().empty());
+    std::string why;
+    PX_CHECK(t.apply_setting("qty", 42, why) && t.get().qty == 42);
+    PX_CHECK(t.apply_setting("edge", -5, why) && t.get().edge == -5);
+    PX_CHECK(t.apply_setting("lean", 255, why) && t.get().lean == 255);
+    PX_CHECK(!t.apply_setting("qtty", 1, why) && why == "tunable has no setting 'qtty'; its settings: qty edge lean");
+    PX_CHECK(!t.apply_setting("qty", 101, why) && why == "tunable+qty=101: outside 1..100");
+    PX_CHECK(!p.apply_setting("qty", 5, why) && why.find("plain has no settings member") == 0 && p.get().qty == 10);
+    // The pairing: each check holds for the real adapter and fails for its defect.
+    PX_CHECK(refuses_unknown_key(apply_real) && !refuses_unknown_key(apply_lenient));
+    PX_CHECK(refuses_out_of_range(apply_real) && !refuses_out_of_range(apply_clamping));
+
+    // The spec: canonical label, an id with no '=', and every refusal naming the token.
+    StrategySpec s;
+    PX_CHECK(parse_strategy_spec("imbalance+ratio=5+qty=20", s, why) && s.label() == "imbalance+qty=20+ratio=5" &&
+             s.id() == "imbalance+qty_20+ratio_5");
+    PX_CHECK(parse_strategy_spec("imbalance+qty=20+ratio=5", s, why) && s.label() == "imbalance+qty=20+ratio=5");
+    PX_CHECK(parse_strategy_spec("noise", s, why) && s.name == "noise" && s.settings.empty() && s.label() == "noise");
+    PX_CHECK(parse_strategy_spec("x+edge=-3", s, why) && s.settings.front().second == -3);
+    PX_CHECK(!parse_strategy_spec("x+ratio=five", s, why) && why.find("'ratio=five'") == 0);
+    PX_CHECK(!parse_strategy_spec("x+ratio=", s, why) && !parse_strategy_spec("x+=3", s, why));
+    PX_CHECK(!parse_strategy_spec("x+Ratio=3", s, why) && !parse_strategy_spec("+ratio=3", s, why));
+    PX_CHECK(!parse_strategy_spec("x+a=1+a=2", s, why) && why == "'x+a=1+a=2' sets a twice");
+    // A settings member reached through every wrapper the session uses.
+    LabelledHandle l(std::make_unique<StrategyAdapter<Tunable>>(Tunable{}), "tunable+qty=7");
+    PX_CHECK(std::string(l.name()) == "tunable+qty=7" && l.has_settings() && l.apply_setting("qty", 7, why));
+
+    // This build is an evidence build: a line-up or a candidate with a setting is
+    // refused, naming the token; one without is read exactly as before.
+    Roster r;
+    PX_CHECK(!roster_from_spec("maker,zi+band_ticks=4", RosterConfig{}, r, why) &&
+             why.find("'zi+band_ticks=4': settings are taken by the lab programs only") == 0);
+    PX_CHECK(roster_from_spec("maker,noise:2", RosterConfig{}, r, why) && r.size() == 3);
+    PX_CHECK(!roster_from_spec("maker,noise:x", RosterConfig{}, r, why) && why == "count after ':' is not a number");
+    std::vector<std::string> c{"zi+band_ticks=4"};
+    PX_CHECK(!suite::check_candidates(c, why) && why.find("settings are taken by the lab programs only") != std::string::npos);
+    // In a lab build a built-in is still refused, because its fields are --set= names.
+    Roster one;
+    PX_CHECK(!add_strategy_spec(StrategySpec{"zi", {{"band_ticks", 4}}}, RosterConfig{}, one, why, true) &&
+             why.find("zi is built in") != std::string::npos);
+    c = {"maker", "zi"};
+    PX_CHECK(suite::canonical_candidates(c, why) && c == (std::vector<std::string>{"maker", "zi"}));
+
+    // Recorded as conditions, never fingerprinted, and only when there are any.
+    const suite::SuiteDef def = suite::standard_suite();
+    auto named = [](const char* n) {
+        suite::CandidateInfo ci;
+        ci.name = n;
+        return ci;
+    };
+    suite::RunInfo info;
+    info.candidates.push_back(named("imbalance+qty=20+ratio=5"));
+    info.candidates.push_back(named("maker"));
+    const std::string cfg = suite::suite_cfg_text(def, smoke_block(), info);
+    PX_CHECK(cfg.find("\nsetting.imbalance+qty_20+ratio_5.qty=20\nsetting.imbalance+qty_20+ratio_5.ratio=5\n") !=
+             std::string::npos);
+    PX_CHECK(cfg.find("run.candidate.imbalance+qty_20+ratio_5.origin=") != std::string::npos);
+    const std::vector<std::string> cond = suite::condition_lines(cfg);
+    PX_CHECK(std::find(cond.begin(), cond.end(), "setting.imbalance+qty_20+ratio_5.ratio=5") != cond.end());
+    PX_CHECK(suite::conditions_text(def, smoke_block()).find("setting.") == std::string::npos);
+    suite::RunInfo plain_info;
+    plain_info.candidates.push_back(named("maker"));
+    PX_CHECK(suite::suite_cfg_text(def, smoke_block(), plain_info).find("setting.") == std::string::npos);
+    // A run whose candidate's setting was changed has different condition lines,
+    // which is what reproduce refuses on.
+    suite::RunInfo changed = info;
+    changed.candidates[0].name = "imbalance+qty=20+ratio=6";
+    PX_CHECK(suite::condition_lines(suite::suite_cfg_text(def, smoke_block(), changed)) != cond);
+}
+
 void test_suite_ceiling() {
     suite::SuiteDef def = suite::standard_suite();
     def.step_ceiling = 5'000;
@@ -2018,6 +2153,7 @@ int main() {
     test_suite_arm_determinism();
     test_suite_inert_arm();
     test_suite_ceiling();
+    test_strategy_settings();
     test_zi_floor();
     test_suite_closed_identity();
     test_suite_param_dump();

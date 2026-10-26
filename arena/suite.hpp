@@ -36,6 +36,7 @@
 #include "arena/strategies/registry.hpp"
 #include "arena/strategy.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <memory>
@@ -337,7 +338,38 @@ inline constexpr std::size_t kMaxCandidates = 8;
     return s;
 }
 
-// Refuses a candidate list before anything runs, naming the cause.
+// A candidate token's canonical label (name+key=value, keys sorted), or false
+// with `why` naming the token.
+[[nodiscard]] inline bool candidate_label(std::string_view token, std::string& label, std::string& why) {
+    StrategySpec spec;
+    if (!parse_strategy_spec(token, spec, why)) return false;
+    label = spec.label();
+    return true;
+}
+
+// The base strategy of a candidate label: what it was built from.
+[[nodiscard]] inline std::string candidate_base(std::string_view label) {
+    return std::string(label.substr(0, label.find('+')));
+}
+
+// A candidate label as it appears in a suite.cfg key or a directory name.
+[[nodiscard]] inline std::string candidate_id(std::string_view label) {
+    std::string s(label);
+    std::replace(s.begin(), s.end(), '=', '_');
+    return s;
+}
+
+// Refuses a candidate list before anything runs, naming the cause. Every name
+// is rewritten to its canonical label, which every later step uses.
+[[nodiscard]] inline bool canonical_candidates(std::vector<std::string>& names, std::string& why) {
+    for (std::string& n : names) {
+        std::string label;
+        if (!candidate_label(n, label, why)) return false;
+        n = label;
+    }
+    return true;
+}
+
 [[nodiscard]] inline bool check_candidates(const std::vector<std::string>& names, std::string& why) {
     if (names.empty()) {
         why = "name at least one candidate";
@@ -348,7 +380,9 @@ inline constexpr std::size_t kMaxCandidates = 8;
         return false;
     }
     for (std::size_t i = 0; i < names.size(); ++i) {
-        const std::string& n = names[i];
+        StrategySpec spec;
+        if (!parse_strategy_spec(names[i], spec, why)) return false;
+        const std::string& n = spec.name;
         if (n.empty()) {
             why = "an empty candidate name";
             return false;
@@ -362,14 +396,15 @@ inline constexpr std::size_t kMaxCandidates = 8;
             return false;
         }
         for (std::size_t j = 0; j < i; ++j) {
-            if (names[j] == n) {
-                why = "'" + n + "' is named twice";
+            std::string a, b, ignore;
+            if (candidate_label(names[j], a, ignore) && candidate_label(names[i], b, ignore) && a == b) {
+                why = "'" + b + "' is named twice";
                 return false;
             }
         }
         Roster scratch;
-        if (!add_named_strategy(n, RosterConfig{}, scratch)) {
-            why = "unknown strategy '" + n + "'; " + known_candidates_text();
+        if (!add_strategy_spec(spec, RosterConfig{}, scratch, why)) {
+            if (why.empty()) why = "unknown strategy '" + n + "'; " + known_candidates_text();
             return false;
         }
     }
@@ -409,12 +444,14 @@ inline constexpr std::size_t kMaxCandidates = 8;
                                            Origin& origin, std::string& why) {
     origin = Origin::Reference;
     if (candidate.empty()) return build_arm_roster(def, std::unique_ptr<StrategyHandle>{}, out, why);
+    StrategySpec spec;
+    if (!parse_strategy_spec(candidate, spec, why)) return false;
     Roster one;
-    if (!add_named_strategy(candidate, suite_roster_config(def), one) || one.strategies.size() != 1) {
-        why = "unknown strategy '" + std::string(candidate) + "'; " + known_candidates_text();
+    if (!add_strategy_spec(spec, suite_roster_config(def), one, why) || one.strategies.size() != 1) {
+        if (why.empty()) why = "unknown strategy '" + spec.name + "'; " + known_candidates_text();
         return false;
     }
-    if (candidate != "placebo") origin = is_builtin(candidate) ? Origin::Builtin : Origin::Installed;
+    if (spec.name != "placebo") origin = is_builtin(spec.name) ? Origin::Builtin : Origin::Installed;
     return build_arm_roster(def, std::move(one.strategies.front()), out, why);
 }
 
@@ -930,6 +967,20 @@ inline void append_participant_rows(std::string& s, const std::vector<Participan
     s += conditions_text(def, block);
     s += "# Every reference participant's parameters, under the names --set= takes.\n";
     s += roster_text(def);
+    // A candidate's own settings (name+key=value): conditions of the run, which
+    // reproduce compares, but not fingerprinted, because they belong to the
+    // candidate and not to the market it faced. Written only when there are any.
+    std::string settings;
+    for (const CandidateInfo& c : info.candidates) {
+        StrategySpec spec;
+        std::string ignore;
+        if (!parse_strategy_spec(c.name, spec, ignore)) continue;
+        for (const auto& [k, v] : spec.settings) append_kv(settings, "setting." + spec.id() + "." + k, v);
+    }
+    if (!settings.empty()) {
+        s += "# Each candidate's own settings. Conditions, compared by reproduce; not fingerprinted.\n";
+        s += settings;
+    }
     s += "# What this invocation ran. Not conditions.\n";
     append_kv(s, "run.binary", info.binary);
     append_kv(s, "run.user_strategies", info.user_strategies);
@@ -940,7 +991,7 @@ inline void append_participant_rows(std::string& s, const std::vector<Participan
     }
     append_kv(s, "run.candidates", names);
     for (const CandidateInfo& c : info.candidates) {
-        const std::string k = "run.candidate." + c.name;
+        const std::string k = "run.candidate." + candidate_id(c.name);
         append_kv(s, k + ".origin", origin_name(c.origin));
         append_kv(s, k + ".declared_reaction_ns", c.declared_reaction_ns);
         append_kv(s, k + ".timer_ns", c.timer_ns);

@@ -45,7 +45,10 @@ inline constexpr CommandInfo kCommands[] = {
      "scenario families; all runs every family, side by side, never pooled. sensitivity runs\n"
      "the fixed grid (seat delay, liquidity, line-up) and says whether each result holds.\n"
      "market= runs on a market made by /calibrate instead: a family of its own.\n"
+     "A strategy of your own takes settings on its name: imbalance+ratio=5 runs it with\n"
+     "ratio 5, and imbalance+ratio=5,imbalance compares the two, paired.\n"
      "  /compare imbalance smoke\n"
+     "  /compare imbalance+ratio=5,imbalance\n"
      "  /compare imbalance,maker\n"
      "  /compare imbalance all\n"
      "  /compare imbalance sensitivity\n"
@@ -67,9 +70,11 @@ inline constexpr CommandInfo kCommands[] = {
      "  /watch script=tools/arena_script_demo.txt"},
     {"/sweep", "[FLAGS...] [market=M]", "explore: run one market many times, changing one thing",
      "Runs sweep_lab with the flags as given; /sweep --help lists them. market= starts from\n"
-     "a market made by /calibrate.\n"
+     "a market made by /calibrate. --param=NAME.KEY sweeps a setting of a strategy of your\n"
+     "own named in --strategies=, on the same seeds at every value.\n"
      "  /sweep --seeds=8 --values=1000,1000000\n"
-     "  /sweep --null --seeds=8"},
+     "  /sweep --null --seeds=8\n"
+     "  /sweep --strategies=maker,rival,informed,noise:2,momentum,imbalance --param=imbalance.ratio --values=3,5,8 --seeds=8"},
     {"/data", "[add FILE [SETTINGS] | show NAME | remove NAME]",
      "bring a market data file in as a tape, and see what it holds",
      "Runs ingest. A file you already have is read from disk, never fetched, and written to\n"
@@ -275,7 +280,8 @@ struct Plan {
                     p.error = "say which market: market=NAME; /calibrate makes one";
                     return p;
                 }
-            } else if (a.find('=') != std::string::npos) {
+            } else if (a.find('=') != std::string::npos && a.find('+') > a.find('=')) {
+                // A '=' before any '+' is a setting of the command; after one, of a strategy.
                 p.error = "unknown setting " + a + "; /help compare";
                 return p;
             } else {
