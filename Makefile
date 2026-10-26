@@ -453,7 +453,7 @@ test-app: $(APP_BIN) $(LAB_BINS) $(REL)/controls$(EXE) $(REPL_BIN) $(INGEST_BIN)
 	$$A -c '/data remove app-test-l3' > /dev/null; \
 	$$A -c '/data remove app-test-trades' > /dev/null && [ ! -e data/app-test-trades.tape ] \
 	    || fail "/data remove should remove it"; ok; \
-	[ "$$($$A -c /learn | grep -c '^  [0-9]\.')" -eq 9 ] || fail "/learn should list nine exercises"; ok; \
+	[ "$$($$A -c /learn | grep -c '^  [0-9][0-9]*\.')" -eq 10 ] || fail "/learn should list ten exercises"; ok; \
 	$$A -c '/learn 1' | grep -q '^1\. ' || fail "/learn 1 should show the first"; ok; \
 	rc=0; (cd $$D && $(CURDIR)/$(APP_BIN) -c /help > /dev/null 2>&1) || rc=$$?; \
 	[ $$rc -eq 2 ] || fail "outside the repository root it should refuse"; ok; \

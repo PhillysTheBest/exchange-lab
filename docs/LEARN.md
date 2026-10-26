@@ -1,8 +1,9 @@
 # Learning with exchange-lab
 
-A guided path through exchange-lab in nine short exercises, each building on the last. It
+A guided path through exchange-lab in ten short exercises, each building on the last. It
 starts with one order book, goes on to a strategy of your own, scored, controlled and
-reproduced, and ends with a file of market data. It is written for students meeting market microstructure for the first time,
+reproduced, brings in a file of market data, and ends with an advanced exercise: one study
+run the way a paper should run it. It is written for students meeting market microstructure for the first time,
 and for researchers who want the tour before the design documents.
 [`GLOSSARY.md`](../GLOSSARY.md) defines every term used here.
 
@@ -311,9 +312,77 @@ calibration need many prints? A calibrated market keeps the standard informed tr
 would a strategy that beats it have learned about the real market? Why does a replay flatter a
 market maker? **Read next:** [`docs/DATA.md`](DATA.md).
 
+## 10. A study, start to finish (advanced)
+
+**Goal:** the whole discipline in one go: say what you expect before you look, tune on one set
+of seeds, confirm once on another, read the uncertainty, check the market you ran on, and ask
+whether the answer survives a change. Do exercises 4, 5 and 9 first: this one uses `imbalance`
+and the `known` tape.
+
+**1. A hypothesis, written down first.** "`imbalance` does better than chance." Chance is
+`zi`, the built-in zero-intelligence strategy: random limit orders around the mid, no view at
+all. What would refute it: the row `imbalance vs zi` not separating, or separating below zero.
+
+```
+> /compare zi,imbalance
+```
+
+**2. Tune on the standard block, and only there.** A pickier variant that acts only when the
+touch is five times lopsided, not three:
+
+```bash
+mkdir -p ~/strategies
+sed 's/Imbalance/Picky/; s/"imbalance"/"picky"/; s/ratio = 3;/ratio = 5;/' examples/strategies/imbalance.hpp > ~/strategies/picky.hpp
+```
+
+```
+> /add ~/strategies/picky.hpp
+> /compare imbalance,picky
+```
+
+**3. Confirm once, on seeds you have not looked at.**
+
+```
+> /compare imbalance,picky holdout
+```
+
+**4. Check the market, then whether the answer survives a change.**
+
+```
+> /calibrate known holdback=30
+> /facts known
+> /compare picky sensitivity
+```
+
+**Look for.** Step 1: `imbalance vs zi` is +56.90 ± 4.87, separated, ahead on 61 of 64 seeds:
+`imbalance` loses (−34.92) but loses much less than chance (−91.82). Its `pairing` is −52%:
+pairing *added* variance, because two unrelated strategies share little noise. With three
+value comparisons, the report prints a Holm correction beside them, and all three survive it.
+Step 2: `picky vs imbalance` is +19.05 ± 1.88, `pairing` 81%: two versions of one strategy share
+most of their noise, so a small change is resolvable (±5.25). Step 3: the holdout report says
+`confirmatory`, and the gain holds on seeds the tuning never saw, +18.27 ± 2.27. Report both
+runs, side by side, never pooled. Step 4: the calibration prints `NOT UNIQUELY IDENTIFIED`
+(3 / 50 / 20000 fits as well as the 3 / 40 / 20000 it recovered). Its held-back part puts the
+market 9.3% from the unseen pace, against the 12.0% by which the tape's own two parts differ.
+`/facts` shows the standard market's lag-1 return autocorrelation, +0.131, outside its ±0.066
+band. `picky vs placebo` holds its sign in 6 of 6 conditions, but its size runs from 26%
+(`no-rival`) to 111% of standard's.
+
+**Think about.** What would you have concluded from step 1 against the placebo alone? If you
+had tried twenty ratios on the standard block and kept the best, what would the holdout run
+still tell you, and what would it not? The gain held, but `picky` still loses money against
+the placebo in every condition: what is the hypothesis you have actually confirmed? Without the
+rival maker, `picky` loses a quarter as much: whose spread was it paying (`/report` the
+`no-rival` condition, and read its attribution)? Why can a calibration that recovers its known
+answer still not identify it? **Read next:** [The seeds](RUNNER.md#the-seeds),
+[The floor: `zi`](RUNNER.md#the-floor-zi) and [Sensitivity](RUNNER.md#sensitivity) in
+`docs/RUNNER.md`; [Many comparisons](REPORT.md#many-comparisons) in `docs/REPORT.md`;
+[Stylised facts](DATA.md#stylised-facts-what-was-not-fitted) in `docs/DATA.md`.
+
 ## Where to go from here
 
-Write a second strategy, compare it with your first on the standard block and `SUITE=all`, and
-report it as the project does: health first, the paired difference with its standard error, and
-a plain statement when an interval straddles zero. Then work out from `arena/fair_value.hpp` why
+Write a second strategy and run exercise 10 on it: a hypothesis first, tuning on the standard
+block, one confirmation on `holdout`, `zi` beside it, and `sensitivity` after. Report it as the
+project does: health first, the paired difference with its standard error, the Holm line when
+there is more than one comparison, and a plain statement when an interval straddles zero. Then work out from `arena/fair_value.hpp` why
 the expected adverse markout must be zero for any strategy you write ([And the control says it is not adverse selection](RESULTS.md#and-the-control-says-it-is-not-adverse-selection)).
