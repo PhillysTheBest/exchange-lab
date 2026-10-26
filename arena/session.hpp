@@ -11,7 +11,7 @@
 // latency path. What it does add is *when* orders arrive, which the engine has
 // no opinion about.
 //
-// BOTS RUN OUTSIDE THE EVENT SINK. The sink the engine is handed appends to a
+// STRATEGIES RUN OUTSIDE THE EVENT SINK. The sink the engine is handed appends to a
 // buffer and does nothing else. Every consequence — accounting, feeds, wakes — is
 // drawn afterwards, once process() has returned. Calling a strategy from inside
 // the sink would run arbitrary code inside the engine's matching loop, which is
@@ -26,7 +26,7 @@
 // REPLAY. Same seed plus same roster gives the same session, which hash() makes
 // checkable in one number. Three things make that true and all three are load
 // bearing: the scheduler's total (time, sequence) order, the absence of any
-// floating point or wall-clock read inside a session, and the fact that a bot
+// floating point or wall-clock read inside a session, and the fact that a strategy
 // only ever sees its own delayed feed. test_arena asserts it.
 //
 // ALLOCATION. The arena allocates: maps, deques and vectors, by design. The
@@ -38,8 +38,8 @@
 
 #include "arena/accounting.hpp"
 #include "arena/book_mirror.hpp"
-#include "arena/bot.hpp"
-#include "arena/bots/registry.hpp"
+#include "arena/strategy.hpp"
+#include "arena/strategies/registry.hpp"
 #include "arena/clock.hpp"
 #include "arena/fair_value.hpp"
 #include "px/matching_engine.hpp"
@@ -163,9 +163,9 @@ public:
     // Checks a roster and config without building anything, so a caller can
     // refuse before it starts rather than hang or mis-trade.
     //
-    // TOO MANY PARTICIPANTS. deliver_order() marks which bots an event concerned
+    // TOO MANY PARTICIPANTS. deliver_order() marks which strategies an event concerned
     // in a fixed `bool own[kMaxParticipants]` array. Past that bound the marks
-    // were silently dropped, so those bots never got an own-event wake: measured
+    // were silently dropped, so those strategies never got an own-event wake: measured
     // with 104 identical noise traders, participants 0-63 took 151.9 fills each
     // and the rest took 55.9. Rejecting is deliberately chosen over widening the
     // array into a dynamic bitset, because the bound is not the real cost —
@@ -211,7 +211,7 @@ public:
 
     // The same session with a roster assembled by the caller. This is how
     // test_arena puts a probe participant in the market, and it is the proof
-    // that the bot contract is genuinely open: nothing in here knows which
+    // that the strategy contract is genuinely open: nothing in here knows which
     // strategies it is running.
     //
     // Returns the reason it refused, or StartError::None. A refused session is
@@ -260,12 +260,12 @@ public:
             Participant& p = parts_[i];
             p.mirror = BookMirror(instr_);
             p.owner = static_cast<OwnerId>(i + 1); // distinct owners: see registry.hpp
-            p.reaction = roster_.bots[i]->reaction_ns();
+            p.reaction = roster_.strategies[i]->reaction_ns();
             if (p.reaction < 0) p.reaction = 0;
-            p.timer = roster_.bots[i]->timer_ns();
+            p.timer = roster_.strategies[i]->timer_ns();
             p.informed = roster_.informed[i];
             p.signal_known = p.informed ? cfg_.start_price : 0;
-            roster_.bots[i]->reset(cfg_.seed + 0x9E37U * (i + 1));
+            roster_.strategies[i]->reset(cfg_.seed + 0x9E37U * (i + 1));
         }
 
         ev_hash_ = EventHasher{};
@@ -275,19 +275,19 @@ public:
         last_request_at_ = 0;
         done_ = false;
 
-        // The first fundamental jump, each bot's heartbeat, and one opening look
-        // per bot so that somebody quotes into an empty book.
+        // The first fundamental jump, each strategy's heartbeat, and one opening look
+        // per strategy so that somebody quotes into an empty book.
         sched_.push(fv_.next_interval(), WakeKind::FairValueStep);
         for (std::size_t i = 0; i < parts_.size(); ++i) {
             Participant& p = parts_[i];
             const auto who = static_cast<std::uint16_t>(i);
             if (p.timer > 0) {
                 p.pending_timer = p.timer;
-                sched_.push(p.pending_timer, WakeKind::BotTimer, who);
+                sched_.push(p.pending_timer, WakeKind::StrategyTimer, who);
             }
             p.pending_reason = WakeReason::Open;
             p.pending_event = p.reaction;
-            sched_.push(p.pending_event, WakeKind::BotEvent, who);
+            sched_.push(p.pending_event, WakeKind::StrategyEvent, who);
         }
         return StartError::None;
     }
@@ -315,9 +315,9 @@ public:
         const Wake w = sched_.pop();
         switch (w.kind) {
             case WakeKind::FairValueStep: on_fair_value_step(w.at); break;
-            case WakeKind::BotEvent:
-            case WakeKind::BotTimer:
-            case WakeKind::BotSignal: run_bot(w); break;
+            case WakeKind::StrategyEvent:
+            case WakeKind::StrategyTimer:
+            case WakeKind::StrategySignal: run_strategy(w); break;
             case WakeKind::OrderArrival: deliver_order(w); break;
         }
         stats_.elapsed_ns = w.at;
@@ -357,9 +357,19 @@ public:
     [[nodiscard]] const FairValue& fair_value() const noexcept { return fv_; }
     [[nodiscard]] const SessionConfig& config() const noexcept { return cfg_; }
     [[nodiscard]] const SessionStats& stats() const noexcept { return stats_; }
+
+    // A read-only tap on the event stream: every event the engine emits, with
+    // the simulated instant it happened, as it happens. It cannot act, so it
+    // cannot move a hash; marketdata/session_tape.hpp writes a session out as a
+    // tape with it (docs/DATA.md). Survives start(); null turns it off.
+    using EventTap = void (*)(void* ctx, SimTime at, const ExecEvent& e);
+    void set_event_tap(EventTap fn, void* ctx) noexcept {
+        tap_fn_ = fn;
+        tap_ctx_ = ctx;
+    }
     [[nodiscard]] const std::vector<TapePrint>& tape() const noexcept { return tape_; }
     [[nodiscard]] std::size_t participants() const noexcept { return parts_.size(); }
-    [[nodiscard]] const char* name_of(std::size_t i) const noexcept { return roster_.bots[i]->name(); }
+    [[nodiscard]] const char* name_of(std::size_t i) const noexcept { return roster_.strategies[i]->name(); }
     [[nodiscard]] SimTime reaction_of(std::size_t i) const noexcept { return parts_[i].reaction; }
     [[nodiscard]] bool informed(std::size_t i) const noexcept { return parts_[i].informed; }
     [[nodiscard]] std::uint64_t wakes_of(std::size_t i) const noexcept { return parts_[i].wakes; }
@@ -391,6 +401,21 @@ public:
         else if (key == "session.fee_per_qty") c.fee_per_qty = value;
         else if (key == "fair.step_mean_ns") c.fair_step_mean_ns = value;
         else if (key == "fair.band_ticks") c.fair_band_ticks = value;
+        else return false;
+        return true;
+    }
+
+    // Reads one session field by name, the counterpart of set_param(), so a run
+    // can record every field it ran with under the names --set= takes.
+    [[nodiscard]] static bool get_param(const SessionConfig& c, std::string_view key, std::int64_t& out) {
+        if (key == "session.seed") out = static_cast<std::int64_t>(c.seed);
+        else if (key == "session.max_requests") out = static_cast<std::int64_t>(c.max_requests);
+        else if (key == "session.max_time_ns") out = c.max_time_ns;
+        else if (key == "session.markout_horizon_ns") out = c.markout_horizon_ns;
+        else if (key == "session.stall_limit_ns") out = c.stall_limit_ns;
+        else if (key == "session.fee_per_qty") out = c.fee_per_qty;
+        else if (key == "fair.step_mean_ns") out = c.fair_step_mean_ns;
+        else if (key == "fair.band_ticks") out = c.fair_band_ticks;
         else return false;
         return true;
     }
@@ -452,13 +477,13 @@ private:
             p.signal_feed.push_back({at, fv_.value()});
             if (p.pending_signal == kNever) {
                 p.pending_signal = at + p.reaction;
-                sched_.push(p.pending_signal, WakeKind::BotSignal, static_cast<std::uint16_t>(i));
+                sched_.push(p.pending_signal, WakeKind::StrategySignal, static_cast<std::uint16_t>(i));
             }
         }
     }
 
     // Brings a participant's view up to `cutoff` — and no further. Everything a
-    // bot knows passes through here.
+    // strategy knows passes through here.
     void advance_feed(Participant& p, SimTime cutoff) {
         while (!p.feed.empty() && p.feed.front().at <= cutoff) {
             const ExecEvent& e = p.feed.front().e;
@@ -476,21 +501,21 @@ private:
         }
     }
 
-    void run_bot(const Wake& w) {
+    void run_strategy(const Wake& w) {
         Participant& p = parts_[w.who];
         const SimTime now = w.at;
 
         WakeReason reason = p.pending_reason;
         switch (w.kind) {
-            case WakeKind::BotTimer:
+            case WakeKind::StrategyTimer:
                 reason = WakeReason::Timer;
                 p.pending_timer = kNever;
                 if (p.timer > 0) {
                     p.pending_timer = now + p.timer;
-                    sched_.push(p.pending_timer, WakeKind::BotTimer, w.who);
+                    sched_.push(p.pending_timer, WakeKind::StrategyTimer, w.who);
                 }
                 break;
-            case WakeKind::BotSignal:
+            case WakeKind::StrategySignal:
                 reason = WakeReason::Signal;
                 p.pending_signal = kNever;
                 break;
@@ -520,7 +545,7 @@ private:
         v.signal = p.informed ? p.signal_known : 0;
         ++p.wakes;
 
-        const ActionBatch batch = roster_.bots[w.who]->on_event(v);
+        const ActionBatch batch = roster_.strategies[w.who]->on_event(v);
         stats_.action_drops += batch.dropped;
         for (std::uint8_t i = 0; i < batch.n; ++i) submit(w.who, batch.a[i], now);
     }
@@ -546,7 +571,7 @@ private:
             case Action::Kind::None:
                 return;
         }
-        // The order reaches the engine at the instant the bot acted: the delay
+        // The order reaches the engine at the instant the strategy acted: the delay
         // is already spent, in the wake that produced this decision.
         const std::uint64_t seq = sched_.push(at, WakeKind::OrderArrival, static_cast<std::uint16_t>(who));
         pending_req_.emplace(seq, req);
@@ -571,6 +596,7 @@ private:
 
         bool own[kMaxParticipants] = {};
         for (const ExecEvent& e : buf_) {
+            if (tap_fn_ != nullptr) tap_fn_(tap_ctx_, now, e);
             ev_hash_.add(e);
             time_hash_ = mix(time_hash_, static_cast<std::uint64_t>(now));
             ++stats_.events;
@@ -621,10 +647,10 @@ private:
             Participant& p = parts_[i];
             const bool mine = i < kMaxParticipants && own[i];
             if (!mine && !touch_moved) continue;
-            if (p.pending_event != kNever) continue; // one outstanding look per bot
+            if (p.pending_event != kNever) continue; // one outstanding look per strategy
             p.pending_reason = mine ? WakeReason::Own : WakeReason::Touch;
             p.pending_event = now + p.reaction;
-            sched_.push(p.pending_event, WakeKind::BotEvent, static_cast<std::uint16_t>(i));
+            sched_.push(p.pending_event, WakeKind::StrategyEvent, static_cast<std::uint16_t>(i));
         }
 
         ledger_.resolve_due(now, fv_.value());
@@ -681,6 +707,8 @@ private:
     EventHasher ev_hash_{};
     std::uint64_t time_hash_ = 0xcbf29ce484222325ULL;
     SessionStats stats_{};
+    EventTap tap_fn_ = nullptr;
+    void* tap_ctx_ = nullptr;
     OrderId next_order_id_ = 1;
     SimTime last_request_at_ = 0;
     bool done_ = false;

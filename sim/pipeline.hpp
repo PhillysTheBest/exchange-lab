@@ -15,7 +15,7 @@
 // WHAT IS TIMED (matching latency): on the matcher thread only, from the instant a
 // request has been dequeued (tsc_begin() right after try_pop returns) to the
 // instant its last resulting event has been written to the outbound ring
-// (tsc_end() after process() returns). Both stamps come from the same core's TSC,
+// (tsc_end() after process() returns). Both stamps come from the same core's counter,
 // so no cross-core clock comparison is involved. Time a request spends waiting in
 // the inbound ring is NOT included: this is the engine's service time per order.
 // If the outbound ring is ever full, the matcher spins inside the timed region;
@@ -27,9 +27,7 @@
 #include "px/messages.hpp"
 #include "px/platform.hpp"
 #include "px/spsc_ring.hpp"
-#include "px/tsc_clock.hpp"
-
-#include <x86intrin.h>
+#include "px/cycle_clock.hpp"
 
 #include <array>
 #include <atomic>
@@ -83,6 +81,9 @@ struct PipelineResult {
     std::size_t recorded = 0;
     std::array<std::uint64_t, kOrderClasses> class_counts{};
     int gateway_cpu = -1, matcher_cpu = -1, publisher_cpu = -1;
+    // Each written only by its own thread, read after the joins.
+    Affinity gateway_affinity = Affinity::not_requested, matcher_affinity = Affinity::not_requested,
+             publisher_affinity = Affinity::not_requested;
     std::unique_ptr<LatencyRecorder> latency; // one sample per recorded request, in stream order
     std::vector<std::uint8_t> classes;        // OrderClass per sample
     std::vector<Tsc> start_tsc;               // dequeue TSC per sample (if record_start_times)
@@ -163,6 +164,10 @@ inline void push_event(void* c, const ExecEvent& e) {
         res.publisher_cpu = static_cast<int>(cores[1]);
         res.matcher_cpu = static_cast<int>(cores[2]);
     }
+    // Asked for, but too few cores to pin onto, is unavailable rather than default.
+    if (opt.pin_threads) {
+        res.gateway_affinity = res.matcher_affinity = res.publisher_affinity = Affinity::unavailable;
+    }
 
     std::atomic<int> ready{0};
     const auto wait_for_all = [&ready] {
@@ -172,7 +177,7 @@ inline void push_event(void* c, const ExecEvent& e) {
 
     EventHasher hasher;
     std::thread publisher([&] {
-        if (res.publisher_cpu >= 0) pin_current_thread_to(static_cast<unsigned>(res.publisher_cpu));
+        if (res.publisher_cpu >= 0) res.publisher_affinity = pin_current_thread_to(static_cast<unsigned>(res.publisher_cpu));
         wait_for_all();
         for (;;) {
             ExecEvent e;
@@ -186,23 +191,23 @@ inline void push_event(void* c, const ExecEvent& e) {
     });
 
     std::thread gateway([&] {
-        if (res.gateway_cpu >= 0) pin_current_thread_to(static_cast<unsigned>(res.gateway_cpu));
+        if (res.gateway_cpu >= 0) res.gateway_affinity = pin_current_thread_to(static_cast<unsigned>(res.gateway_cpu));
         wait_for_all();
         const bool paced = opt.pace_orders_per_sec > 0 && opt.ticks_per_ns > 0;
         const double interval = paced ? opt.ticks_per_ns * 1e9 / opt.pace_orders_per_sec : 0;
         Tsc schedule_start = 0;
         for (std::size_t i = 0; i < n; ++i) {
             if (paced && i >= warmup) {
-                if (i == warmup) schedule_start = __rdtsc();
+                if (i == warmup) schedule_start = tsc_now();
                 const Tsc due = schedule_start + static_cast<Tsc>(static_cast<double>(i - warmup) * interval);
-                while (__rdtsc() < due) cpu_relax();
+                while (tsc_now() < due) cpu_relax();
             }
             while (!inbound->try_push(stream[i])) cpu_relax();
         }
     });
 
     std::thread matcher([&] {
-        if (res.matcher_cpu >= 0) pin_current_thread_to(static_cast<unsigned>(res.matcher_cpu));
+        if (res.matcher_cpu >= 0) res.matcher_affinity = pin_current_thread_to(static_cast<unsigned>(res.matcher_cpu));
         detail::MatcherCtx ctx;
         ctx.out = outbound.get();
         const EventSink sink(&ctx, &detail::push_event);
@@ -215,11 +220,11 @@ inline void push_event(void* c, const ExecEvent& e) {
             OrderRequest req;
             if (!inbound->try_pop(req)) {
                 const bool in_window = meter && i > warmup;
-                Tsc prev = __rdtsc();
+                Tsc prev = tsc_now();
                 do {
                     cpu_relax();
                     if (in_window) {
-                        const Tsc now = __rdtsc();
+                        const Tsc now = tsc_now();
                         if (now - prev > opt.hiccup_threshold_ticks) {
                             if (hiccups_kept < opt.hiccup_capacity) res.hiccups[hiccups_kept++] = {prev, now - prev};
                             ++res.hiccup_count;

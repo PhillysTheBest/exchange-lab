@@ -1,4 +1,4 @@
-// arena/bots/market_maker.hpp — quotes both sides, learns from who trades with
+// arena/strategies/market_maker.hpp — quotes both sides, learns from who trades with
 // it, and manages inventory.
 //
 // This is the participant the headline experiment is about. It has no
@@ -38,7 +38,7 @@
 //   * update beliefs on every fill, so a quote that is wrong gets fixed;
 //   * lean against inventory, because being run over on one side shows up as a
 //     position before it shows up as a loss.
-// Both only happen when the bot is awake, so a bot that is awake more often
+// Both only happen when the strategy is awake, so a strategy that is awake more often
 // defends better. Nothing in here reads reaction_ns: the advantage of being fast
 // is mechanical, not asserted.
 //
@@ -47,9 +47,9 @@
 // window, which is a bug in a real system and would be an artefact here.
 #pragma once
 
-#include "arena/bot.hpp"
+#include "arena/strategy.hpp"
 
-namespace px::arena::bots {
+namespace px::arena::strategies {
 
 struct MarketMaker {
     const char* name = "maker";
@@ -153,4 +153,4 @@ private:
     bool seen_flow_ = false;
 };
 
-} // namespace px::arena::bots
+} // namespace px::arena::strategies

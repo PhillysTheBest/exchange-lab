@@ -1,4 +1,4 @@
-// arena/bots/momentum.hpp — buys strength, sells weakness.
+// arena/strategies/momentum.hpp — buys strength, sells weakness.
 //
 // It watches the tape and takes when the last few prints have moved the same
 // way. That makes it *partly* informed, but only second-hand: the information it
@@ -7,14 +7,14 @@
 // price impact to look like, and it gives the maker a second kind of adverse
 // flow that is not simply "somebody knew".
 //
-// It is the smallest of the four bots and it is here for texture. It is also the
+// It is the smallest of the four strategies and it is here for texture. It is also the
 // one to delete first if the roster ever needs to be shorter: three good
 // participants beat ten mediocre ones, and this is the fourth.
 #pragma once
 
-#include "arena/bot.hpp"
+#include "arena/strategy.hpp"
 
-namespace px::arena::bots {
+namespace px::arena::strategies {
 
 struct Momentum {
     const char* name = "momentum";
@@ -62,4 +62,4 @@ private:
     std::int64_t run_ = 0;
 };
 
-} // namespace px::arena::bots
+} // namespace px::arena::strategies

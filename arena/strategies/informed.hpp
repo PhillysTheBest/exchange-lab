@@ -1,4 +1,4 @@
-// arena/bots/informed.hpp — the one participant that knows something.
+// arena/strategies/informed.hpp — the one participant that knows something.
 //
 // It can see the fundamental value (MarketView::signal) and nobody else can. Its
 // whole strategy is the obvious one: when a resting quote is on the wrong side
@@ -6,7 +6,7 @@
 //
 // WHY THE SESSION NEEDS IT. Without an informed trader the latency experiment
 // measures nothing. In a market of participants who all infer price from each
-// other, "the slow maker lost money" is a statement about whatever the fast bots
+// other, "the slow maker lost money" is a statement about whatever the fast strategies
 // were written to do. Here the maker's loss has a cause outside the order book:
 // the value moved, and somebody saw it first. The maker's reaction delay then
 // decides how long its stale quote sits there to be taken — which is a mechanism
@@ -23,9 +23,9 @@
 // already moved, its order simply does not fill — that race is the experiment.
 #pragma once
 
-#include "arena/bot.hpp"
+#include "arena/strategy.hpp"
 
-namespace px::arena::bots {
+namespace px::arena::strategies {
 
 struct Informed {
     const char* name = "informed";
@@ -69,4 +69,4 @@ private:
     }
 };
 
-} // namespace px::arena::bots
+} // namespace px::arena::strategies

@@ -1,4 +1,4 @@
-// arena/bots/script.hpp — a participant that does what a file tells it.
+// arena/strategies/script.hpp — a participant that does what a file tells it.
 //
 // This is the replayable answer to trading by hand. Live keystrokes cannot go
 // into a session: reading when a key arrived means reading a wall clock, and a
@@ -27,19 +27,19 @@
 // silently reordered itself would be a file that does not mean what it says.
 //
 // Its reaction delay applies as it does to every other participant: an order
-// stamped at `at` is submitted when the bot wakes at `at`, and what it saw is
+// stamped at `at` is submitted when the strategy wakes at `at`, and what it saw is
 // the market as of `at - reaction_ns`. Typing a time does not buy you
 // clairvoyance.
 #pragma once
 
-#include "arena/bot.hpp"
+#include "arena/strategy.hpp"
 
 #include <cstdio>
 #include <string>
 #include <string_view>
 #include <vector>
 
-namespace px::arena::bots {
+namespace px::arena::strategies {
 
 struct ScriptedOrder {
     SimTime at = 0;
@@ -207,7 +207,7 @@ struct Scripted {
     const char* name = "you";
 
     SimTime reaction_ns = 10'000;
-    // How often it looks at the clock. The bot contract offers a periodic timer
+    // How often it looks at the clock. The strategy contract offers a periodic timer
     // and not a "wake me at T", so a scripted time is honoured at the first wake
     // at or after it: granularity is this value, plus the reaction delay on top
     // as for any participant. 10 us is finer than anyone writes a script by hand,
@@ -248,4 +248,4 @@ private:
     std::size_t next_ = 0;
 };
 
-} // namespace px::arena::bots
+} // namespace px::arena::strategies

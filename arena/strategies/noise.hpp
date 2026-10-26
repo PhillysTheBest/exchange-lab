@@ -1,4 +1,4 @@
-// arena/bots/noise.hpp — uninformed flow, and the maker's only source of income.
+// arena/strategies/noise.hpp — uninformed flow, and the maker's only source of income.
 //
 // It trades for reasons the session does not model: on its timer it either posts
 // a limit near where it last saw the market, takes a small amount at the touch,
@@ -16,9 +16,9 @@
 // open or an empty book has no price at all.
 #pragma once
 
-#include "arena/bot.hpp"
+#include "arena/strategy.hpp"
 
-namespace px::arena::bots {
+namespace px::arena::strategies {
 
 struct Noise {
     const char* name = "noise";
@@ -80,4 +80,4 @@ private:
     SimRng rng_{42};
 };
 
-} // namespace px::arena::bots
+} // namespace px::arena::strategies

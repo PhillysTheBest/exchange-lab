@@ -4,7 +4,7 @@
 // The engine never tells a participant where its order stands in the queue, and
 // nothing here asks it to: MatchingEngine's public surface is unchanged. Every
 // field below is derived from the ExecEvent stream, which is the only thing a
-// real venue sends out, so a bot built on this provably sees no more than a real
+// real venue sends out, so a strategy built on this provably sees no more than a real
 // participant would — and queue position is earned by tracking the feed rather
 // than handed over by the exchange.
 //
@@ -20,7 +20,7 @@
 //              removed per order id and never per price.
 //   Cancelled  `qty` leaves order_id, whatever the reason: a user cancel, an
 //              IOC/market remainder, or a resting order killed by self-trade
-//              prevention. All three remove liquidity, and a bot must handle the
+//              prevention. All three remove liquidity, and a strategy must handle the
 //              third or its own quotes will appear to vanish without a fill.
 //   Rejected   nothing happened. Admission is decided before matching, so a
 //              rejected order never acked and never entered the book.
@@ -118,7 +118,7 @@ public:
     [[nodiscard]] std::size_t live_orders() const noexcept { return live_.size(); }
     [[nodiscard]] std::uint64_t total_qty() const noexcept { return total_qty_; }
 
-    // 0 when that side is empty, which is the convention every bot here uses.
+    // 0 when that side is empty, which is the convention every strategy here uses.
     [[nodiscard]] Price best(Side s) const noexcept {
         const auto& m = side_[idx(s)];
         return m.empty() ? 0 : price_of(s, m.begin()->first);
