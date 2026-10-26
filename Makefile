@@ -111,7 +111,7 @@ REPLAY_BIN := $(REL)/replay$(EXE)
 
 .PHONY: all test bench latency repl arena sweep controls reproduce clean
 
-all: test test-cli test-lab test-app test-data $(BENCH_BINS) $(REPL_BIN) $(ARENA_BINS)
+all: recipe-check test test-cli test-lab test-app test-data $(BENCH_BINS) $(REPL_BIN) $(ARENA_BINS)
 
 test: $(TEST_BINS)
 	@set -e; for t in $(TEST_BINS); do echo "== $$t"; ./$$t; done
@@ -119,7 +119,9 @@ test: $(TEST_BINS)
 # The sweep runner's command line, checked the only way a command line can be:
 # by running it. A bad field, flag or value must fail loudly (exit 2) and a
 # configuration that could never terminate must be refused, not hang. These were
-# all verified by hand once; this target is so they stay verified.
+# all verified by hand once; this target is so they stay verified. Each section is
+# a shell command of its own: MSYS2's make cuts a command off at 8,191 bytes, and
+# what is cut off silently never runs (docs/PLATFORMS.md).
 .PHONY: test-cli
 test-cli: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(REL)/controls$(EXE)
 	@set -e; \
@@ -144,7 +146,9 @@ test-cli: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(REL)/controls$(EXE)
 	./$< --values=1000 --seeds=1 --requests=2000 --strategies=maker,rival,informed,noise:2 --quiet > /dev/null \
 	    || fail "a named line-up should succeed"; \
 	./$< --values=1000 --seeds=1 --requests=2000 --quiet > /dev/null || fail "a normal sweep should succeed"; \
-	echo "11/11 command-line checks passed"; \
+	echo "11/11 command-line checks passed"
+	@set -e; \
+	fail() { echo "FAIL: $$1"; exit 1; }; \
 	echo "== suite command line"; \
 	S=./$(REL)/suite$(EXE); W=./$(REL)/sweep$(EXE); D=$(BUILD)/cli; \
 	exits() { want=$$1; shift; rc=0; "$$@" > /dev/null 2>&1 || rc=$$?; [ $$rc -eq $$want ]; }; \
@@ -207,7 +211,10 @@ test-cli: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(REL)/controls$(EXE)
 	! grep -nwE 'double|float' arena/suite.hpp || fail "arena/suite.hpp must stay integer-only"; \
 	rm -rf $$D; \
 	echo "  placebo arm at seed 42: $$ref, the sweep's market"; \
-	echo "34/34 suite command-line checks passed"; \
+	echo "34/34 suite command-line checks passed"
+	@set -e; \
+	fail() { echo "FAIL: $$1"; exit 1; }; \
+	exits() { want=$$1; shift; rc=0; "$$@" > /dev/null 2>&1 || rc=$$?; [ $$rc -eq $$want ]; }; \
 	echo "== the evaluator's controls"; \
 	C=./$(REL)/controls$(EXE); \
 	$$C --help > /dev/null || fail "controls --help should succeed"; \
@@ -484,7 +491,8 @@ replay: $(REPLAY_BIN)
 # The command line, run against the samples, in a directory of its own; then
 # the known-answer control, which must hold, with its planted defects, which must
 # break it; then a market calibrated from the control's own tape, used by the lab
-# programs, refused by the evidence ones, and reproduced without its data.
+# programs, refused by the evidence ones, and reproduced without its data. Three
+# shell commands, each under MSYS2 make's 8,191-byte cut-off (docs/PLATFORMS.md).
 test-data: $(INGEST_BIN) $(CALIBRATE_BIN) $(REPLAY_BIN) $(LAB_BINS) $(REL)/suite$(EXE) $(REL)/sweep$(EXE) $(REL)/arena$(EXE)
 	@set -e; \
 	n=0; ok() { n=$$((n+1)); }; fail() { echo "FAIL: $$1"; exit 1; }; \
@@ -564,7 +572,12 @@ test-data: $(INGEST_BIN) $(CALIBRATE_BIN) $(REPLAY_BIN) $(LAB_BINS) $(REL)/suite
 	exits 1 $$I remove trades dir=$$D || fail "removing it twice should exit 1"; ok; \
 	[ -f examples/data/trades.csv ] || fail "remove must never touch the source"; ok; \
 	rm -rf $$D; \
-	echo "$$n/$$n ingest checks passed"; \
+	echo "$$n/$$n ingest checks passed"
+	@set -e; \
+	fail() { echo "FAIL: $$1"; exit 1; }; \
+	exits() { want=$$1; shift; rc=0; "$$@" > /dev/null 2>&1 || rc=$$?; [ $$rc -eq $$want ]; }; \
+	identical() { rc=0; cmp -s $$1 $$2 || rc=$$?; [ $$rc -le 1 ] || fail "cmp could not compare $$1 (exit $$rc): is diffutils installed?"; [ $$rc -eq 0 ]; }; \
+	I=./$(INGEST_BIN); L=examples/data/DEMO_2012-06-21_34200000_57600000_message_3.csv; \
 	echo "== replay"; \
 	P=./$(REPLAY_BIN); D=$(BUILD)/replay-test; rm -rf $$D; mkdir -p $$D; r=0; okr() { r=$$((r+1)); }; \
 	$$I add $$L dir=$$D > /dev/null; $$I add examples/data/coinbase_feed.jsonl dir=$$D > /dev/null; \
@@ -597,7 +610,11 @@ test-data: $(INGEST_BIN) $(CALIBRATE_BIN) $(REPLAY_BIN) $(LAB_BINS) $(REL)/suite
 	[ "$$(echo "$$out" | grep -c 'no, as it must not$$')" -eq 2 ] || fail "both planted defects should break it"; okc; \
 	echo "$$out" | grep -Eq '^  trades .* no$$' || fail "trades alone should not be enough"; okc; \
 	echo "$$out" | grep -E '^  (L3|trades) ' | sed 's/^/  /'; \
-	echo "$$m/$$m control checks passed"; \
+	echo "$$m/$$m control checks passed"
+	@set -e; \
+	fail() { echo "FAIL: $$1"; exit 1; }; \
+	exits() { want=$$1; shift; rc=0; "$$@" > /dev/null 2>&1 || rc=$$?; [ $$rc -eq $$want ]; }; \
+	I=./$(INGEST_BIN); C=./$(CALIBRATE_BIN); L=examples/data/DEMO_2012-06-21_34200000_57600000_message_3.csv; \
 	echo "== a calibrated market (the control again, then 64 sessions of the health gate)"; \
 	D=$(BUILD)/market-test; rm -rf $$D; mkdir -p $$D; k=0; okm() { k=$$((k+1)); }; \
 	R=./$(REL); M=$$D/markets/known.cfg; \
@@ -730,6 +747,15 @@ canonical: $(DBG)/test_determinism$(EXE) $(DBG)/test_arena$(EXE) $(REL)/sweep$(E
 memmove-check: $(DOBJ)/src/matching_engine.o
 	@n=$$(objdump -d $< | grep -c memmove || true); \
 	[ "$$n" -eq 0 ] && echo "memmove-check: 0 calls in $<" || { echo "FAIL: $$n memmove calls in $<"; exit 1; }
+
+# MSYS2's make cuts a shell command off at 8,191 bytes and runs what is left, so the
+# end of a long check would never run on Windows and the check would still pass.
+# Every command in this file, before expansion, stays under 7,500 (expanding $$
+# to $ only shortens them).
+.PHONY: recipe-check
+recipe-check:
+	@awk '/^\t/ { c = c $$0 "\n"; if ($$0 !~ /\\$$/) { if (length(c) >= 7500) { print "FAIL: the command ending at Makefile:" NR " is " length(c) " bytes"; bad = 1 } c = "" } } \
+	    END { exit bad }' Makefile && echo "recipe-check: every command in the Makefile is under 7,500 bytes"
 
 clean:
 	rm -rf $(BUILD)

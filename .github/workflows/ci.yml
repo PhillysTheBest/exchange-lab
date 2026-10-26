@@ -77,6 +77,8 @@ jobs:
           # diffutils: test-cli, test-data and make canonical compare files with cmp and diff.
           install: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-make diffutils
       - run: g++ --version
+      # MSYS2's make silently drops whatever follows byte 8,191 of a command.
+      - run: mingw32-make recipe-check
       - name: tests, command lines, lab, app, data
         run: |
           mingw32-make -j4 test
