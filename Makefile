@@ -176,6 +176,7 @@ test-cli: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(REL)/controls$(EXE)
 	for f in $$files; do [ -f $$D/suite-a/$$f ] || fail "a run should write $$f"; done; \
 	head -n1 $$D/suite-a/sessions.csv | grep -q '^suite,version,block,seed,arm,origin,' || fail "sessions.csv header"; \
 	head -n1 $$D/suite-a/participants.csv | grep -q '^suite,version,block,seed,arm,index,' || fail "participants.csv header"; \
+	grep -q '^  Holm across the value comparisons above: 3 tests' $$D/suite-a/report.txt || fail "two candidates: Holm across 3 value tests"; \
 	grep -qx 'status=complete' $$D/suite-a/outcome.cfg || fail "outcome.cfg should say status=complete"; \
 	head -n1 $$D/suite-a/evaluation.csv | grep -q '^kind,baseline,arm,metric,' || fail "evaluation.csv header"; \
 	grep -q '^paired,maker,momentum,spread_earned,' $$D/suite-a/evaluation.csv || fail "evaluation.csv should pair the candidates"; \
@@ -214,7 +215,7 @@ test-cli: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(REL)/controls$(EXE)
 	! grep -nwE 'double|float' arena/suite.hpp || fail "arena/suite.hpp must stay integer-only"; \
 	rm -rf $$D; \
 	echo "  placebo arm at seed 42: $$ref, the sweep's market"; \
-	echo "37/37 suite command-line checks passed"
+	echo "38/38 suite command-line checks passed"
 	@set -e; \
 	fail() { echo "FAIL: $$1"; exit 1; }; \
 	exits() { want=$$1; shift; rc=0; "$$@" > /dev/null 2>&1 || rc=$$?; [ $$rc -eq $$want ]; }; \

@@ -51,6 +51,104 @@ namespace px::arena::suite {
     return z + (z3 + z) / (4 * n) + (5 * z5 + 16 * z3 + 3 * z) / (96 * n * n);
 }
 
+// ---- the multiple-comparison correction ------------------------------------
+//
+// Holm's step-down correction needs a p-value per test. It is computed here
+// from + - * / and sqrt only, which IEEE 754 rounds exactly on every platform,
+// so the same digits come out everywhere: no std::atan, std::exp or std::log,
+// which a library is free to round differently.
+
+// atan for x >= 0: reduced to |u| <= tan(pi/8) by atan(x) = pi/2 - atan(1/x)
+// and atan(x) = pi/4 + atan((x - 1) / (x + 1)), then a Taylor series that has
+// converged to double precision by about 22 terms.
+[[nodiscard]] inline double atan_portable(double x) noexcept {
+    constexpr double kPi2 = 1.57079632679489661923, kPi4 = 0.78539816339744830962;
+    constexpr double kTanPi8 = 0.41421356237309504880;
+    if (x < 0) return -atan_portable(-x);
+    double base = 0, sign = 1;
+    if (x > 1) {
+        base = kPi2;
+        sign = -1;
+        x = 1 / x;
+    }
+    if (x > kTanPi8) {
+        base += sign * kPi4;
+        x = (x - 1) / (x + 1);
+    }
+    const double x2 = x * x;
+    double term = x, sum = 0;
+    for (int k = 0; k < 40; ++k) {
+        const double add = term / static_cast<double>(2 * k + 1);
+        sum += (k % 2 == 0) ? add : -add;
+        term *= x2;
+        if ((term < 0 ? -term : term) < 1e-18) break;
+    }
+    return base + sign * sum;
+}
+
+// P(|T| >= |t|) for Student's t with an integer df, by the finite sums of
+// Abramowitz and Stegun 26.7.3 (odd df) and 26.7.4 (even df). Exact up to
+// rounding; it is not the t975 table, so at a boundary the two can disagree in
+// the fourth digit, which the report says.
+[[nodiscard]] inline double t_two_sided_p(double t, std::size_t df) noexcept {
+    constexpr double kTwoOverPi = 0.63661977236758134308;
+    if (df == 0) return 1;
+    if (t < 0) t = -t;
+    const double nu = static_cast<double>(df);
+    const double r = std::sqrt(nu + t * t);
+    const double s = t / r, c2 = nu / (r * r);
+    double a = 0;
+    if (df % 2 == 0) {
+        double term = 1, sum = 1;
+        for (std::size_t k = 1; k < df / 2; ++k) {
+            term *= c2 * static_cast<double>(2 * k - 1) / static_cast<double>(2 * k);
+            sum += term;
+        }
+        a = s * sum;
+    } else {
+        const double theta = atan_portable(t / std::sqrt(nu));
+        double inner = 0;
+        if (df > 1) {
+            double term = 1, sum = 1;
+            for (std::size_t k = 1; k <= (df - 3) / 2; ++k) {
+                term *= c2 * static_cast<double>(2 * k) / static_cast<double>(2 * k + 1);
+                sum += term;
+            }
+            inner = s * std::sqrt(c2) * sum;
+        }
+        a = kTwoOverPi * (theta + inner);
+    }
+    const double p = 1 - a;
+    return p < 0 ? 0 : (p > 1 ? 1 : p);
+}
+
+// Holm's step-down adjustment, in the input's order: sort ascending, multiply
+// the i-th smallest by (m - i), carry the running maximum, cap at 1. It
+// controls the chance of any false separation among the m tests at the level
+// used, for any dependence between them.
+[[nodiscard]] inline std::vector<double> holm_adjusted(const std::vector<double>& p) {
+    const std::size_t m = p.size();
+    std::vector<std::size_t> order(m);
+    for (std::size_t i = 0; i < m; ++i) order[i] = i;
+    std::stable_sort(order.begin(), order.end(), [&p](std::size_t a, std::size_t b) { return p[a] < p[b]; });
+    std::vector<double> out(m, 1.0);
+    double running = 0;
+    for (std::size_t i = 0; i < m; ++i) {
+        double v = static_cast<double>(m - i) * p[order[i]];
+        if (v > 1) v = 1;
+        if (v > running) running = v;
+        out[order[i]] = running;
+    }
+    return out;
+}
+
+[[nodiscard]] inline std::string p_text(double p) {
+    if (p < 0.0001) return "<0.0001";
+    char b[16];
+    std::snprintf(b, sizeof b, "%.4f", p);
+    return b;
+}
+
 struct Paired {
     std::size_t n = 0;
     double mean = 0, sd = 0, se = 0, t = 0, lo = 0, hi = 0, resolvable = 0;
@@ -176,6 +274,62 @@ struct ComparisonRow {
         out.push_back(std::move(r));
     }
     return out;
+}
+
+// The two-sided p-value of a paired difference, against t with n - 1 degrees
+// of freedom. A constant non-zero difference has no spread at all: p is 0.
+[[nodiscard]] inline double paired_p(const Paired& p) noexcept {
+    if (p.n < 2) return 1;
+    if (p.se == 0) return p.mean == 0 ? 1 : 0;
+    return t_two_sided_p(p.mean / p.se, p.n - 1);
+}
+
+// The value comparisons that are tests at all (admissible, not identical),
+// with their raw and Holm-adjusted p-values. These are the run's hypotheses;
+// the metric-by-metric rows describe how the money was made and are counted,
+// not corrected (docs/REPORT.md, "Many comparisons").
+struct HolmRow {
+    std::string label;
+    double p = 1, p_holm = 1;
+    bool raw_separated = false;
+    [[nodiscard]] bool separated() const noexcept { return p_holm < 0.05; }
+};
+
+[[nodiscard]] inline std::vector<HolmRow> holm_rows(const std::vector<std::pair<std::string, const ComparisonRow*>>& tests) {
+    std::vector<HolmRow> out;
+    std::vector<double> ps;
+    for (const auto& [label, r] : tests) {
+        if (r->verdict != "separated" && r->verdict != "not_separated") continue;
+        HolmRow h;
+        h.label = label;
+        h.p = paired_p(r->stats);
+        h.raw_separated = r->verdict == "separated";
+        ps.push_back(h.p);
+        out.push_back(std::move(h));
+    }
+    const std::vector<double> adj = holm_adjusted(ps);
+    for (std::size_t i = 0; i < out.size(); ++i) out[i].p_holm = adj[i];
+    return out;
+}
+
+[[nodiscard]] inline std::string holm_text(const std::vector<HolmRow>& h, const char* across) {
+    std::string s;
+    char b[256];
+    std::snprintf(b, sizeof b, "\n  Holm across %s: %zu tests, family-wise 5%%\n", across, h.size());
+    s += b;
+    std::snprintf(b, sizeof b, "  %-34s | %-8s | %-8s | %-13s | %s\n", "test", "p", "p Holm", "raw verdict",
+                  "after Holm");
+    s += b;
+    s += "  " + std::string(88, '-') + "\n";
+    for (const HolmRow& r : h) {
+        std::snprintf(b, sizeof b, "  %-34s | %-8s | %-8s | %-13s | %s\n", r.label.c_str(), p_text(r.p).c_str(),
+                      p_text(r.p_holm).c_str(), r.raw_separated ? "separated" : "not separated",
+                      r.separated() ? "separated" : "not separated");
+        s += b;
+    }
+    s += "  p is two-sided, from t with n - 1 degrees of freedom; derived, like every number here. At a\n"
+         "  boundary it can disagree with the interval, whose t is a three-digit table, in the fourth digit.\n";
+    return s;
 }
 
 [[nodiscard]] inline std::string fmt(const char* f, double v) {
@@ -492,6 +646,19 @@ struct FamilyResult {
     }
     s += "  sep: the 95% interval excludes 0; n.s.: it does not; same: identical on every seed;\n"
          "  N/A: not admissible. Full tables are in each suite's report.txt.\n";
+    // One family of tests across every cell: a strategy tried in three markets
+    // has three chances to separate. Cells stay separate; only the threshold moves.
+    std::vector<std::pair<std::string, const ComparisonRow*>> cells;
+    for (const std::string& c : candidates) {
+        for (const FamilyResult& f : fams) {
+            if (!f.reference_admissible) continue;
+            for (const ComparisonRow& r : f.rows) {
+                if (r.baseline == "placebo" && r.arm == c) cells.emplace_back(c + " vs placebo, " + f.suite, &r);
+            }
+        }
+    }
+    const std::vector<HolmRow> holm = holm_rows(cells);
+    if (holm.size() > 1) s += holm_text(holm, "every cell of the table");
     return s;
 }
 
@@ -682,6 +849,12 @@ struct ArmHealth {
             }
         }
     }
+    // With more than one value test, the correction is printed beside them.
+    // One test needs none, and its report is unchanged.
+    std::vector<std::pair<std::string, const ComparisonRow*>> value_tests;
+    for (const ComparisonRow& r : rows) value_tests.emplace_back(r.arm + " vs " + r.baseline, &r);
+    const std::vector<HolmRow> holm = holm_rows(value_tests);
+    if (holm.size() > 1) s += holm_text(holm, "the value comparisons above");
 
     // Step 3: how the seat made its money, metric by metric.
     const std::vector<MetricRow> metrics = evaluate(run);
@@ -785,7 +958,17 @@ struct ArmHealth {
         s += identity_ok ? "  On every seed these sum to minus the seat's value exactly: the market is closed.\n"
                          : "  THE CLOSED IDENTITY FAILED: these do not sum to minus the seat's value on every seed.\n";
     }
-    if (tests > 0) {
+    if (tests > 0 && holm.size() > 1) {
+        std::size_t holm_separated = 0;
+        for (const HolmRow& h : holm) holm_separated += h.separated() ? 1 : 0;
+        std::snprintf(b, sizeof b,
+                      "\n  %zu interval tests above, %zu separated. At 95%% each, about %.1f would separate by chance if\n"
+                      "  nothing were there. The %zu value comparisons carry a Holm correction (%zu separate after it);\n"
+                      "  the metric rows are description and are not corrected, so read a lone separation there with that\n"
+                      "  in mind.\n",
+                      tests, separated, 0.05 * static_cast<double>(tests), holm.size(), holm_separated);
+        s += b;
+    } else if (tests > 0) {
         std::snprintf(b, sizeof b,
                       "\n  %zu interval tests above, %zu separated. At 95%% each, about %.1f would separate by chance if\n"
                       "  nothing were there; no correction is applied, so read a lone separation with that in mind.\n",
