@@ -13,6 +13,20 @@
 //     void reset(std::uint64_t seed);      // called once per session
 //     ActionBatch on_event(const MarketView& v);
 //
+// and, optionally, a sixth: the settings a run may change by name.
+//
+//     template <class F> void settings(F&& f) {
+//         f("ratio", ratio, 1, 100);       // name, field, smallest and largest value
+//     }
+//
+// The harness calls settings() with a visitor and the strategy hands it each
+// setting in turn, so one member both names the settings and gives write access
+// to them. The harness, never the strategy, checks a value: a whole number inside
+// the range and inside the field's integer type, or the run is refused naming the
+// token. `name+ratio=5` in a lab program's line-up or candidate list sets it
+// (docs/RUNNER.md, "A strategy's own settings"). A strategy without the member
+// compiles and behaves exactly as before, and refuses every setting.
+//
 // `name` is a per-instance field rather than a static constant so that the same
 // strategy can appear twice in one roster under two names — which the headline
 // experiment needs, because the swept maker is measured against a rival maker
@@ -55,9 +69,14 @@
 #include "px/messages.hpp"
 #include "px/types.hpp"
 
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <string_view>
+#include <type_traits>
+#include <utility>
 
 namespace px::arena {
 
@@ -190,7 +209,28 @@ public:
     [[nodiscard]] virtual SimTime timer_ns() const noexcept = 0;
     virtual void reset(std::uint64_t seed) = 0;
     virtual ActionBatch on_event(const MarketView& v) = 0;
+    // The optional sixth member, reached without knowing the strategy's type.
+    // A handle with no settings refuses every one; `why` names what was wrong.
+    [[nodiscard]] virtual bool has_settings() const noexcept { return false; }
+    [[nodiscard]] virtual std::string setting_names() const { return {}; }
+    [[nodiscard]] virtual bool apply_setting(std::string_view key, std::int64_t value, std::string& why) {
+        (void)key;
+        (void)value;
+        why = std::string(name()) + " has no settings member, so it takes no settings";
+        return false;
+    }
 };
+
+// The visitor shape settings() is called with, as a named type: detecting the
+// member with a lambda in an unevaluated context is not portable to every
+// compiler this builds on.
+struct SettingProbe {
+    template <class T>
+    void operator()(const char*, T&, std::int64_t, std::int64_t) const {}
+};
+
+template <class S>
+concept HasSettings = requires(S& s, SettingProbe p) { s.settings(p); };
 
 template <class Strategy>
 class StrategyAdapter final : public StrategyHandle {
@@ -202,6 +242,45 @@ public:
     void reset(std::uint64_t seed) override { strategy_.reset(seed); }
     ActionBatch on_event(const MarketView& v) override { return strategy_.on_event(v); }
     [[nodiscard]] Strategy& get() noexcept { return strategy_; }
+
+    [[nodiscard]] bool has_settings() const noexcept override { return HasSettings<Strategy>; }
+
+    [[nodiscard]] std::string setting_names() const override {
+        std::string out;
+        if constexpr (HasSettings<Strategy>) {
+            Strategy copy = strategy_; // settings() takes its fields by reference
+            copy.settings([&out](const char* n, auto&, std::int64_t, std::int64_t) {
+                if (!out.empty()) out += ' ';
+                out += n;
+            });
+        }
+        return out;
+    }
+
+    [[nodiscard]] bool apply_setting(std::string_view key, std::int64_t value, std::string& why) override {
+        if constexpr (!HasSettings<Strategy>) {
+            return StrategyHandle::apply_setting(key, value, why);
+        } else {
+            bool found = false, ok = false;
+            strategy_.settings([&](const char* n, auto& field, std::int64_t lo, std::int64_t hi) {
+                using T = std::remove_cvref_t<decltype(field)>;
+                static_assert(std::integral<T> && !std::same_as<T, bool>, "a setting is an integer field");
+                if (found || key != n) return;
+                found = true;
+                if (value < lo || value > hi || !std::in_range<T>(value)) {
+                    why = std::string(strategy_.name) + "+" + std::string(key) + "=" + std::to_string(value) +
+                          ": outside " + std::to_string(lo) + ".." + std::to_string(hi);
+                    return;
+                }
+                field = static_cast<T>(value);
+                ok = true;
+            });
+            if (!found)
+                why = std::string(strategy_.name) + " has no setting '" + std::string(key) + "'; its settings: " +
+                      setting_names();
+            return ok;
+        }
+    }
 
 private:
     Strategy strategy_;

@@ -123,7 +123,7 @@ test: $(TEST_BINS)
 # a shell command of its own: MSYS2's make cuts a command off at 8,191 bytes, and
 # what is cut off silently never runs (docs/PLATFORMS.md).
 .PHONY: test-cli
-test-cli: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(REL)/controls$(EXE)
+test-cli: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(REL)/controls$(EXE) $(REL)/arena$(EXE)
 	@set -e; \
 	fail() { echo "FAIL: $$1"; exit 1; }; \
 	echo "== sweep command line"; \
@@ -221,6 +221,23 @@ test-cli: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(REL)/controls$(EXE)
 	rm -rf $$D; \
 	echo "  placebo arm at seed 42: $$ref, the sweep's market"; \
 	echo "42/42 suite command-line checks passed"
+	@set -e; \
+	fail() { echo "FAIL: $$1"; exit 1; }; \
+	exits() { want=$$1; shift; rc=0; "$$@" > /dev/null 2>&1 || rc=$$?; [ $$rc -eq $$want ]; }; \
+	S=./$(REL)/suite$(EXE); D=$(BUILD)/cli-settings; rm -rf $$D; mkdir -p $$D; \
+	echo "== the evidence programs refuse a strategy's setting"; \
+	rc=0; $$S --block=smoke --candidates=zi+band_ticks=4 --out=$$D/x > $$D/err 2>&1 || rc=$$?; \
+	[ $$rc -eq 2 ] && grep -q "'zi+band_ticks=4': settings are taken by the lab programs only" $$D/err \
+	    || fail "the evidence suite must refuse a setting, naming it"; \
+	exits 2 ./$(REL)/sweep$(EXE) --strategies=maker,rival,informed,noise:2,zi+band_ticks=4 --values=1000 --seeds=1 \
+	    || fail "the evidence sweep must refuse a setting in a line-up"; \
+	exits 2 ./$(REL)/sweep$(EXE) --strategies=maker,zi --param=zi.band_ticks --values=1,2 --seeds=1 \
+	    || fail "the evidence sweep must refuse a swept setting"; \
+	exits 2 ./$(REL)/arena$(EXE) --strategies=maker,zi+band_ticks=4 --still=1000000 || fail "the evidence viewer must refuse a setting"; \
+	! grep -q 'settings on its name' $$D/err && ! $$S --help | grep -q 'settings on its name' \
+	    || fail "the evidence suite should not advertise settings"; \
+	rm -rf $$D; \
+	echo "5/5 evidence-refusal checks passed"
 	@set -e; \
 	fail() { echo "FAIL: $$1"; exit 1; }; \
 	exits() { want=$$1; shift; rc=0; "$$@" > /dev/null 2>&1 || rc=$$?; [ $$rc -eq $$want ]; }; \
@@ -781,6 +798,38 @@ test-lab: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(INGEST_BIN)
 	    || fail "the run should record the header's cksum"; \
 	rm -rf $$D; \
 	echo "5/5 frozen-model checks passed"
+	@set -e; \
+	fail() { echo "FAIL: $$1"; exit 1; }; \
+	exits() { want=$$1; shift; rc=0; "$$@" > /dev/null 2>&1 || rc=$$?; [ $$rc -eq $$want ]; }; \
+	echo "== a strategy's own settings (name+key=value)"; \
+	$(MAKE) --no-print-directory strategy STRATEGY=examples/strategies/imbalance.hpp > /dev/null || fail "imbalance should install"; \
+	S=./$(REL)/suite_lab$(EXE); W=./$(REL)/sweep_lab$(EXE); D=$(BUILD)/lab-settings; rm -rf $$D; mkdir -p $$D; n=0; ok() { n=$$((n+1)); }; \
+	L=maker,rival,informed,noise:2,momentum; \
+	refused() { rc=0; $$S --block=smoke --candidates=$$1 --out=$$D/x > $$D/err 2>&1 || rc=$$?; [ $$rc -eq 2 ] && grep -q -- "$$2" $$D/err; }; \
+	refused imbalance+ratoi=5 "no setting 'ratoi'; its settings: ratio qty max_position" || fail "an unknown key should be refused, named"; ok; \
+	refused imbalance+ratio=five "'ratio=five'" || fail "a value that is not a whole number should be refused"; ok; \
+	refused imbalance+ratio=0 "outside 1..100" || fail "a value outside the range should be refused"; ok; \
+	refused frozen+ratio=5 "frozen has no settings member" || fail "a strategy without the member should refuse a setting"; ok; \
+	refused zi+band_ticks=4 "zi is built in" || fail "a built-in should refuse a setting"; ok; \
+	refused imbalance+qty=5+ratio=5,imbalance+ratio=5+qty=5 "named twice" || fail "one setting in two orders is one candidate"; ok; \
+	$$S --block=smoke --candidates=imbalance+ratio=5,imbalance --out=$$D/run > /dev/null 2>&1 || fail "suite_lab should run a setting"; ok; \
+	grep -qx 'setting.imbalance+ratio_5.ratio=5' $$D/run/suite.cfg && grep -qx 'run.candidates=imbalance+ratio=5,imbalance' $$D/run/suite.cfg \
+	    || fail "the setting should be recorded as a condition, under the candidate's label"; ok; \
+	grep -qx 'fingerprint=d461c30ab2446acf' $$D/run/outcome.cfg || fail "a setting must not move the market's fingerprint"; ok; \
+	grep -q '^  imbalance vs imbalance+ratio=5 ' $$D/run/report.txt && ! grep -q '^  imbalance vs imbalance+ratio=5 .*identical' $$D/run/report.txt \
+	    || fail "the setting should change what the strategy does"; ok; \
+	$$S --reproduce=$$D/run --out=$$D/re > /dev/null 2>&1 || fail "a run with a setting should reproduce"; ok; \
+	sed 's/^setting.imbalance+ratio_5.ratio=5$$/setting.imbalance+ratio_5.ratio=6/' $$D/run/suite.cfg > $$D/cfg; cp $$D/cfg $$D/run/suite.cfg; \
+	rc=0; $$S --reproduce=$$D/run --out=$$D/re2 > $$D/err 2>&1 || rc=$$?; \
+	[ $$rc -eq 2 ] && grep -q 'ratio=6 in the run' $$D/err || fail "a changed setting should be refused by reproduce"; ok; \
+	h1=$$($$W --strategies=$$L,imbalance --values=10000 --seeds=1 --requests=20000 --quiet | sed -n 's/.*per point: //p'); \
+	h2=$$($$W --strategies=$$L,imbalance --set=imbalance.ratio=3 --values=10000 --seeds=1 --requests=20000 --quiet | sed -n 's/.*per point: //p'); \
+	[ -n "$$h1" ] && [ "$$h1" = "$$h2" ] || fail "setting a strategy to its own default should change nothing"; ok; \
+	$$W --strategies=$$L,imbalance --param=imbalance.ratio --values=3,5 --seeds=2 --requests=20000 --quiet > $$D/sw \
+	    && grep -q "^imbalance's value, paired against imbalance.ratio = 3" $$D/sw || fail "sweep_lab should sweep a setting, paired"; ok; \
+	exits 2 $$W --strategies=$$L,imbalance+ratio=5 --param=imbalance.ratio --values=3,5 --seeds=1 || fail "a setting given twice should be refused"; ok; \
+	rm -rf $$D; \
+	echo "$$n/$$n strategy-settings checks passed"
 
 # The outputs that must be identical on every platform, compared line by line with
 # the record committed from Linux (docs/PLATFORMS.md). The first

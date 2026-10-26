@@ -103,6 +103,15 @@ void test_argument_vectors() {
     p = plan("/compare imbalance holdout");
     PX_CHECK((p.run == std::vector<std::string>{"build/release/suite_lab", "--candidates=imbalance", "--block=holdout"}));
     PX_CHECK(!plan("/compare maker smoke holdout").error.empty());
+    PX_CHECK((plan("/compare imbalance+ratio=5,imbalance").run ==
+              std::vector<std::string>{"build/release/suite_lab", "--candidates=imbalance+ratio=5,imbalance"}));
+    PX_CHECK((plan("/compare imbalance+ratio=5 imbalance smoke").run ==
+              std::vector<std::string>{"build/release/suite_lab", "--candidates=imbalance+ratio=5,imbalance",
+                                       "--block=smoke"}));
+    PX_CHECK(!plan("/compare imbalance ratio=5").error.empty());
+    PX_CHECK((plan("/sweep --strategies=maker,imbalance --param=imbalance.ratio --values=3,5").run ==
+              std::vector<std::string>{"build/release/sweep_lab", "--strategies=maker,imbalance",
+                                       "--param=imbalance.ratio", "--values=3,5"}));
     PX_CHECK((plan("/compare imbalance sensitivity").run ==
               std::vector<std::string>{"build/release/suite_lab", "--candidates=imbalance", "--suite=sensitivity"}));
     PX_CHECK(!plan("/compare maker all sensitivity").error.empty());
