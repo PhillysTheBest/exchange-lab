@@ -187,10 +187,71 @@ struct SuiteDef {
 // has come loose is not a market, so it is not shipped; docs/REPORT.md.
 inline constexpr const char* kSuiteNames = "standard wide busy";
 
+// ---- the sensitivity protocol -------------------------------------------------
+//
+// A fixed grid, so that "does it survive a change?" has one answer per strategy
+// rather than whatever somebody tried. Each condition changes one thing about
+// standard along one of three axes: the seat's reaction delay, how much
+// uninformed flow there is (liquidity), and who else is in the market. Each is
+// a suite of its own, with its own name, fingerprint, placebo and health gate,
+// like a scenario family, and like a family it is never pooled. `busy` is the
+// family of that name, reused. docs/RUNNER.md, "Sensitivity", has the grid's
+// reasoning and what it found.
+[[nodiscard]] inline SuiteDef delay5_suite() {
+    SuiteDef d = standard_suite();
+    d.name = "delay-5us";
+    d.seat_reaction_ns = 5'000;
+    d.change = "seat reaction 5,000 ns";
+    return d;
+}
+
+[[nodiscard]] inline SuiteDef delay20_suite() {
+    SuiteDef d = standard_suite();
+    d.name = "delay-20us";
+    d.seat_reaction_ns = 20'000;
+    d.change = "seat reaction 20,000 ns";
+    return d;
+}
+
+[[nodiscard]] inline SuiteDef thin_suite() {
+    SuiteDef d = standard_suite();
+    d.name = "thin";
+    d.roster.noise_timer_ns = 20'000;
+    d.change = "noise.timer_ns=20000";
+    return d;
+}
+
+[[nodiscard]] inline SuiteDef no_momentum_suite() {
+    SuiteDef d = standard_suite();
+    d.name = "no-momentum";
+    d.lineup = "maker,rival,informed,noise:2";
+    d.change = "line-up maker,rival,informed,noise:2";
+    return d;
+}
+
+// No rival maker: the swept maker's competitor gone, which docs/ARENA.md found is
+// where a maker's money goes. A third noise trader was tried first and is not
+// here: its placebo failed the health gate on 3 of 64 standard seeds (79, 94,
+// 105: the book came loose), so it is not a market.
+[[nodiscard]] inline SuiteDef no_rival_suite() {
+    SuiteDef d = standard_suite();
+    d.name = "no-rival";
+    d.lineup = "maker,informed,noise:2,momentum";
+    d.change = "line-up maker,informed,noise:2,momentum";
+    return d;
+}
+
+inline constexpr const char* kSensitivityNames = "standard delay-5us delay-20us thin busy no-momentum no-rival";
+
 [[nodiscard]] inline bool find_suite(std::string_view name, SuiteDef& out) {
     if (name == "standard") out = standard_suite();
     else if (name == "wide") out = wide_suite();
     else if (name == "busy") out = busy_suite();
+    else if (name == "delay-5us") out = delay5_suite();
+    else if (name == "delay-20us") out = delay20_suite();
+    else if (name == "thin") out = thin_suite();
+    else if (name == "no-momentum") out = no_momentum_suite();
+    else if (name == "no-rival") out = no_rival_suite();
     else return false;
     return true;
 }

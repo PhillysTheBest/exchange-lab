@@ -50,7 +50,7 @@ project is built to show.
 | `/learn [N]` | the guided exercises, from one order book to a strategy of your own |
 | `/strategies` | the built-in strategies, and the ones you installed |
 | `/add PATH` | install a strategy of your own |
-| `/compare NAME[,NAME...] [smoke\|holdout] [wide\|busy\|all\|market=M]` | score strategies in the same seat of the same market, and print the report; tune on the standard block, confirm once on `holdout` |
+| `/compare NAME[,NAME...] [smoke\|holdout] [wide\|busy\|all\|sensitivity\|market=M]` | score strategies in the same seat of the same market, and print the report; tune on the standard block, confirm once on `holdout` |
 | `/runs`, `/report [RUN]` | list your runs; show one's report |
 | `/reproduce [RUN]` | re-run a run from its own record and compare every file |
 | `/watch [NAME,...] [seed=N]` | watch the market trade live, full screen |
@@ -126,9 +126,10 @@ replay of history. What it adds:
 - **Honest statistics.** Paired differences with intervals, the smallest effect a seed count
   can resolve, a count of interval tests with a Holm correction across the value comparisons,
   and a measured noise floor of about ±2 a session.
-- **A floor and a holdout.** `zi`, a zero-intelligence strategy, is the baseline a candidate
-  has to beat, not just the empty seat. Tune on the standard seeds, then confirm once on the
-  `holdout` block, which no example touches.
+- **A floor, a holdout and a sensitivity grid.** `zi`, a zero-intelligence strategy, is the
+  baseline a candidate has to beat, not just the empty seat. Tune on the standard seeds,
+  confirm once on the `holdout` block, which no example touches, and ask whether the result
+  survives a fixed grid of changed conditions (`/compare NAME sensitivity`).
 - **Known limits.** One instrument, one informed trader, no second venue, no quote fade, and
   a thin book. Results are statements about this instrument, not about trading.
   [`docs/RUNNER.md`](docs/RUNNER.md#known-weaknesses) lists the runner's own weaknesses.
