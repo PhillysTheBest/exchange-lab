@@ -201,6 +201,7 @@ Apache License 2.0 ([`LICENSE`](LICENSE), [`NOTICE`](NOTICE)). The licence cover
 repository: the code, the documentation, the committed evidence and the sample data files in
 `examples/data/`, which were made up by hand. To cite exchange-lab, use
 [`CITATION.cff`](CITATION.cff) (GitHub shows it as "Cite this repository"); cite a tagged
-release, not `main`. Questions and bugs go in
+release, not `main`; [`CHANGELOG.md`](CHANGELOG.md) says what each release changed and which
+fingerprints moved. Questions and bugs go in
 [GitHub Issues](https://github.com/PhillysTheBest/exchange-lab/issues), and
 [`CONTRIBUTING.md`](CONTRIBUTING.md) sets out the rules a change has to keep.
