@@ -220,10 +220,11 @@ test-cli: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(REL)/controls$(EXE)
 	$$C --help > /dev/null || fail "controls --help should succeed"; \
 	exits 2 $$C --bogus || fail "controls: an unknown flag should exit 2"; \
 	exits 2 $$C --block=bogus || fail "controls: an unknown block should exit 2"; \
+	exits 2 $$C --block=holdout || fail "controls: the holdout is for confirming a strategy, not for the controls"; \
 	out=$$($$C 2>/dev/null) || fail "every control should hold on the standard block"; \
 	echo "$$out" | grep -qx '8/8 controls held' || fail "controls should report 8/8"; \
 	echo "$$out" | grep -A1 'noise floor' | sed -n 's/^ *measured: /  noise floor: /p'; \
-	echo "4/4 controls checks passed"
+	echo "5/5 controls checks passed"
 
 bench: $(BENCH_BINS)
 	@set -e; for b in $(BENCH_BINS); do echo "== $$b"; ./$$b; done

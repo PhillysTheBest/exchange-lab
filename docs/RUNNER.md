@@ -10,6 +10,7 @@ files. [`REPORT.md`](REPORT.md) explains the report it prints.
 > /compare imbalance smoke          # 4 seeds: does it run, does it trade
 > /compare imbalance,maker          # the standard block -> runs/imbalance-vs-maker-standard/
 > /compare imbalance,maker all      # every scenario family, one directory each
+> /compare imbalance holdout        # once, when it is final: 64 seeds nobody tuned on
 ```
 
 With one candidate the comparison is against the placebo, whose seat value is exactly zero,
@@ -31,7 +32,7 @@ make compare CANDIDATES=imbalance,maker
 build/release/suite --candidates=maker,momentum            # built-ins only; cannot see installed code
 ```
 
-`make compare` takes `CANDIDATES` (required; empty exits 2), `BLOCK` (`standard` or `smoke`),
+`make compare` takes `CANDIDATES` (required; empty exits 2), `BLOCK` (`standard`, `smoke` or `holdout`),
 `SUITE` (`standard`, `wide`, `busy` or `all`) and `OUT`. It is `BLOCK`, not `SEEDS`, because
 `bench/run_arena_evidence.sh` reads a numeric `SEEDS` from the environment.
 
@@ -40,7 +41,7 @@ The flags of `suite` and `suite_lab`:
 | Flag | Meaning |
 |---|---|
 | `--candidates=A[,B,...]` | 1 to 8 strategies; the first is the baseline of the paired rows |
-| `--block=NAME` | `standard` (64 seeds, the default) or `smoke` (4 seeds) |
+| `--block=NAME` | `standard` (64 seeds, the default), `smoke` (4 seeds) or `holdout` (64 seeds kept for confirmation) |
 | `--suite=NAME` | `standard` (the default), `wide`, `busy`, or `all`: one directory each |
 | `--out=DIR` | default `runs/<a>[-vs-<b>...]-<block>/`; a previous run there is replaced |
 | `--reproduce=DIR` | re-run DIR from its `suite.cfg` and compare every file ([`REPRODUCE.md`](REPRODUCE.md)) |
@@ -119,9 +120,42 @@ wakes without ordering. Placebo sessions take 18,155 to 20,051 steps.
 ### The seeds
 
 Named blocks only. `standard` is 42..105 (64 seeds). `smoke` is its first four, 42..45, which
-shows a strategy runs and cannot separate anything. Paired standard errors at 64 seeds were 1.0
-to 1.8 currency units for small changes to one strategy (probe) and 3.26 to 17.02 between
-unrelated strategies (runner). 24 seeds would make every interval about 1.6 times wider.
+shows a strategy runs and cannot separate anything. `holdout` is 1,000,000..1,000,063 (64
+seeds, overlapping neither). Paired standard errors at 64 seeds were 1.0 to 1.8 currency units
+for small changes to one strategy (probe) and 3.26 to 17.02 between unrelated strategies
+(runner). 24 seeds would make every interval about 1.6 times wider.
+
+### The holdout
+
+**Tune on `standard`; run `holdout` once, when the strategy is final, and report it whatever it
+says.** If you try ten variants on `standard` and keep the best, its interval is the best of ten
+draws: the seeds chose the variant as much as the variant earned the result. The holdout is 64
+seeds that no tuning has seen. A run on it is *confirmatory*, and one on `standard` is
+*exploratory*. It has as many seeds as `standard`, so a confirmation is as precise as the
+exploration it checks.
+
+- **Nothing in the project runs a candidate on it.** No test, example or document does, and
+  the controls refuse it (`controls --block=holdout` exits 2), so nobody has seen a strategy's
+  result there. That is what keeps it a holdout.
+- **The pins come from the placebo arm alone.** The placebo arm is the market with an empty
+  seat, which says nothing about any strategy. `test_arena` pins one holdout fingerprint per
+  family: `6e1fe05931a6f560` (`standard`), `8d95ab9f5a9e2d80` (`wide`) and
+  `b66de703b5562711` (`busy`). It also checks that the reference market is admissible on all
+  64 seeds of every family. The pins add about six seconds to the debug test.
+- **A holdout run says what it is.** Its `report.txt` ends: *holdout block: confirmatory. Tune
+  on standard; run this once, when the strategy is final, and report it whatever it says.
+  Never pool it with standard.*
+- **It is never pooled.** Nothing in the tool combines runs from different blocks. Each run
+  directory names its block in `suite.cfg`, its fingerprint and its path
+  (`runs/<name>-holdout/`).
+- **"Once" is not enforced.** The tool cannot know whether you tuned, short of keeping a
+  register of runs across sessions, which would make a result depend on history. The rule is
+  printed where the result is. A holdout that has been looked at is spent; a fresh one would
+  be a new named block, recorded in `CHANGELOG.md`.
+
+`confirmatory` is a property of the block, not a condition. It is not in `suite.cfg`'s
+condition lines, so adding the holdout moved no fingerprint, and the canonical record is
+unchanged.
 
 ### The health gate
 
@@ -279,8 +313,7 @@ A directory without `status=complete` is incomplete. The verdicts are `not_admis
 - **A wrong premise, corrected:** the first plan assumed that adding a participant
   re-interleaves the session. For an appended inert seat it does not.
 
-Not built: a holdout block (seeds 1,000,000..1,000,063 were admissible in a probe) and showing
-a scored arm in the viewer.
+Not built: showing a scored arm in the viewer.
 
 ## Where it lives
 

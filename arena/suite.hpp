@@ -54,13 +54,20 @@ struct SeedBlock {
     const char* name;
     std::uint64_t first;
     std::uint32_t count;
+    // A block kept for confirming a finished strategy once, never for tuning. Not
+    // a condition: conditions_text() leaves it out, so it moves no fingerprint.
+    bool confirmatory = false;
 };
 
 // `smoke` is a prefix of `standard`, so smoke numbers are a subset of standard
 // ones. It shows that a strategy runs and trades; it cannot separate anything.
+// `holdout` overlaps neither, and has as many seeds as `standard` so that a
+// confirmation is as precise as the exploration it checks. No test, example or
+// document runs a candidate on it: that is what keeps it a holdout.
 inline constexpr SeedBlock kSeedBlocks[] = {
     {"standard", 42, 64},
     {"smoke", 42, 4},
+    {"holdout", 1000000, 64, true},
 };
 
 [[nodiscard]] inline const SeedBlock* find_block(std::string_view name) noexcept {

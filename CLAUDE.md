@@ -289,7 +289,8 @@ make test-lab                                              # the whole path, che
 - **`make compare` is how a strategy is scored** (`docs/RUNNER.md` is the design). Every
   candidate sits in one seat (index 6, owner 7, appended after the default line-up
   `maker,rival,informed,noise:2,momentum`, never informed) on a named seed block
-  (`standard` is 42..105, `smoke` is 42..45), beside a placebo arm with an inert strategy
+  (`standard` is 42..105, `smoke` is 42..45, `holdout` is 1,000,000..1,000,063), beside a
+  placebo arm with an inert strategy
   in the seat. Every candidate session is replayed; every placebo session is checked
   against the market with no seat. No condition can be set on the command line: a
   different set of conditions is a new suite in `arena/suite.hpp`, and ad-hoc
@@ -326,6 +327,10 @@ make test-lab                                              # the whole path, che
   `reaction_ns`.** The declared value is recorded in `suite.cfg` and not used. A
   strategy that reads its own `reaction_ns` member sees what it declared; the delay it
   actually has is `now_ns - as_of_ns` in its `MarketView`.
+- **Never run a candidate on the `holdout` block** in a test, an example, a doc or a probe.
+  It is kept for confirming a finished strategy once, and a holdout that has been looked
+  at is spent. Its fingerprints are pinned from the placebo arm alone, and `controls`
+  refuses it (`docs/RUNNER.md`, "The holdout").
 - **The suite fingerprints are pinned** (`kPinnedSmokeFingerprint` in `test_arena`,
   `d461c30ab2446acf`, and one per family). A change to a reference strategy, a default, the session or the
   engine moves it and needs a suite version bump in `standard_suite()`, not a silent

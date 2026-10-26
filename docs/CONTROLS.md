@@ -18,7 +18,9 @@ against a real arm that differs, and against a defect planted on purpose.
 Without the app: `make controls`, or `build/release/controls --block=smoke`. `controls` is
 built only on the evidence side, without `PX_ARENA_USER_STRATEGIES`, so it runs built-in
 strategies only. Every number in this file was printed by `build/release/controls` on the
-standard block, on Linux with g++ 13.
+standard block, on Linux with g++ 13. It refuses the `holdout` block, which is kept for
+confirming a finished strategy ([`RUNNER.md`](RUNNER.md#the-holdout)): the controls run
+strategies on their block, and that would spend it.
 
 ## What you see
 
@@ -141,5 +143,3 @@ which no test produced before.
 
 - **A zero-intelligence baseline.** `roundtrip` is the dumbest possible strategy, but a
   random limit-order strategy would be a better floor to publish beside real candidates.
-- **A holdout block** of seeds used by no test or example, for reporting after tuning on
-  `standard`. It is one row in `kSeedBlocks`, left until people tune against the report.

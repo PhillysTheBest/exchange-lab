@@ -37,12 +37,13 @@ inline constexpr CommandInfo kCommands[] = {
      "Runs make strategy STRATEGY=PATH: checks the name, copies the header into\n"
      "arena/strategies/user/ and rebuilds the lab programs, the only ones that can see it.\n"
      "  /add examples/strategies/imbalance.hpp"},
-    {"/compare", "NAME[,NAME...] [smoke] [wide|busy|all|market=M]",
+    {"/compare", "NAME[,NAME...] [smoke|holdout] [wide|busy|all|market=M]",
      "score strategies in the standard seat against an empty one, then show the report",
      "Runs suite_lab. Every candidate sits in the same seat of the same market on the same\n"
-     "64 seeds (smoke: 4), beside a placebo arm whose seat never acts. wide and busy are\n"
-     "scenario families; all runs every family, side by side, never pooled. market= runs\n"
-     "on a market made by /calibrate instead: a family of its own.\n"
+     "64 seeds (smoke: 4), beside a placebo arm whose seat never acts. holdout is 64 seeds\n"
+     "kept for confirming a finished strategy: tune on the standard ones, then run it once.\n"
+     "wide and busy are scenario families; all runs every family, side by side, never\n"
+     "pooled. market= runs on a market made by /calibrate instead: a family of its own.\n"
      "  /compare imbalance smoke\n"
      "  /compare imbalance,maker\n"
      "  /compare imbalance all\n"
@@ -244,8 +245,12 @@ struct Plan {
     if (cmd == "/compare") {
         std::string candidates, block, suite, market;
         for (const std::string& a : args) {
-            if (a == "smoke") {
-                block = "smoke";
+            if (a == "smoke" || a == "holdout") {
+                if (!block.empty()) {
+                    p.error = "say one block: smoke or holdout";
+                    return p;
+                }
+                block = a;
             } else if (a == "wide" || a == "busy" || a == "all") {
                 if (!suite.empty()) {
                     p.error = "say one family: wide, busy or all";

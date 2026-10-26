@@ -169,11 +169,15 @@ Terms are grouped and sorted alphabetically within each group.
 
 **Common close** — Every arm on a seed closes at the same fundamental, which makes pairing valid.
 
+**Confirmatory (run)** — A run on the `holdout` block, made once when a strategy is final and reported whatever it says. A run on `standard`, where the tuning happens, is *exploratory*. The two are never pooled. *Where:* `docs/RUNNER.md`.
+
 **Controls** — The evaluator's checks with known answers, each paired with a planted defect that must make it fail. *Where:* `docs/CONTROLS.md`.
 
 **Fingerprint** — A hash of a run's conditions; results are comparable only if fingerprints match, and moving a pinned one needs a suite version bump.
 
 **Health gate** — The suite's per-session test: book close to V and two-sided, no BookFull, ended on time, replay matched.
+
+**Holdout block** — Seeds 1,000,000..1,000,063, kept for confirming a finished strategy. Nothing in the project runs a candidate on it, and its fingerprints are pinned from the placebo arm alone. A holdout that has been looked at is spent. *Where:* `docs/RUNNER.md`.
 
 **Inert** — A seat that sent no orders; its arm must equal the placebo arm.
 
@@ -211,7 +215,7 @@ Terms are grouped and sorted alphabetically within each group.
 
 **Seat** — The slot a candidate occupies, appended after the line-up and never informed. Its real delay is `now_ns − as_of_ns`, whatever the strategy declares.
 
-**Seed block** — A named set of seeds: `standard` is 42..105; `smoke`, 42..45, shows a strategy runs.
+**Seed block** — A named set of seeds: `standard` is 42..105; `smoke`, 42..45, shows a strategy runs; `holdout`, 1,000,000..1,000,063, confirms one.
 
 **Smallest resolvable effect (`resolvable`)** — About 2.8 × the paired standard error.
 

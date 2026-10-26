@@ -40,6 +40,11 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "unknown block '%s': standard or smoke\n", block_name.c_str());
         return 2;
     }
+    if (block->confirmatory) {
+        std::fprintf(stderr, "the %s block is for confirming a finished strategy once; the controls run on standard or smoke\n",
+                     block->name);
+        return 2;
+    }
 
     const SuiteDef def = standard_suite();
     SuiteDef slow = def;

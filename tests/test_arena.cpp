@@ -69,6 +69,11 @@ constexpr std::uint64_t kPinnedSmokeFingerprint = 0xd461c30ab2446acfULL;
 // The scenario families, likewise pinned: a change needs a version bump.
 constexpr std::uint64_t kPinnedWideFingerprint = 0x9bb1a7c184ccb2d7ULL;
 constexpr std::uint64_t kPinnedBusyFingerprint = 0x5d735a9faa384bf5ULL;
+// Each family over the holdout block, from the placebo arm alone: no test runs a
+// candidate there, which is what keeps it a holdout.
+constexpr std::uint64_t kPinnedHoldoutFingerprint = 0x6e1fe05931a6f560ULL;
+constexpr std::uint64_t kPinnedHoldoutWideFingerprint = 0x8d95ab9f5a9e2d80ULL;
+constexpr std::uint64_t kPinnedHoldoutBusyFingerprint = 0xb66de703b5562711ULL;
 
 // ---- 1. the mirror against the engine ------------------------------------
 
@@ -1604,6 +1609,58 @@ void test_report_families() {
     PX_CHECK(t.find("maker.half_spread_ticks=4") != std::string::npos);
 }
 
+// The holdout is checked from the placebo arm only: the market with an empty
+// seat says nothing about any strategy, so pinning it spends none of the block.
+void test_holdout_block() {
+    const suite::SeedBlock* hold = suite::find_block("holdout");
+    const suite::SeedBlock* std_blk = suite::find_block("standard");
+    PX_CHECK(hold != nullptr && std_blk != nullptr);
+    if (hold == nullptr || std_blk == nullptr) return;
+    PX_CHECK(hold->confirmatory && !std_blk->confirmatory && !smoke_block().confirmatory);
+    PX_CHECK(hold->count == std_blk->count);
+    for (const suite::SeedBlock& b : suite::kSeedBlocks) {
+        if (b.confirmatory) continue;
+        PX_CHECK(hold->first >= b.first + b.count || hold->first + hold->count <= b.first);
+    }
+
+    // Confirmatory is not a condition: clearing it changes no condition line.
+    const suite::SuiteDef def = suite::standard_suite();
+    suite::SeedBlock plain = *hold;
+    plain.confirmatory = false;
+    PX_CHECK(suite::conditions_text(def, plain) == suite::conditions_text(def, *hold));
+
+    PX_CHECK(suite::block_note(*hold).find("confirmatory") != std::string::npos);
+    PX_CHECK(suite::block_note(*hold).find("Never pool it with standard") != std::string::npos);
+    PX_CHECK(suite::block_note(*std_blk).empty());
+    PX_CHECK(suite::block_note(smoke_block()).find("cannot separate anything") != std::string::npos);
+
+    const std::uint64_t pins[] = {kPinnedHoldoutFingerprint, kPinnedHoldoutWideFingerprint,
+                                  kPinnedHoldoutBusyFingerprint};
+    const std::vector<std::string> names = suite::split_names(suite::kSuiteNames);
+    PX_CHECK(names.size() == 3);
+    for (std::size_t k = 0; k < names.size() && k < 3; ++k) {
+        suite::SuiteDef f = suite::standard_suite();
+        PX_CHECK(suite::find_suite(names[k], f));
+        std::vector<std::pair<std::uint64_t, std::uint64_t>> hashes;
+        std::uint32_t healthy = 0;
+        for (std::uint64_t seed = hold->first; seed < hold->first + hold->count; ++seed) {
+            Roster r;
+            suite::Origin origin = suite::Origin::Reference;
+            std::string why;
+            suite::ArmRecord rec;
+            PX_CHECK(suite::build_arm_roster(f, "placebo", r, origin, why));
+            PX_CHECK(suite::run_arm(f, *hold, seed, "placebo", origin, std::move(r), rec, why));
+            if (rec.session.healthy()) ++healthy;
+            hashes.emplace_back(seed, rec.session.session_hash);
+        }
+        PX_CHECK(healthy == hold->count);
+        const std::uint64_t fp = suite::suite_fingerprint(f, *hold, hashes);
+        std::printf("  holdout: %s fingerprint %016llx, the reference admissible on %u/%u seeds\n", f.name,
+                    static_cast<unsigned long long>(fp), healthy, hold->count);
+        PX_CHECK(fp == pins[k]);
+    }
+}
+
 // ---- the evaluator's controls, and the defects they catch (docs/CONTROLS.md) ----
 
 // Keeps a count in static storage, so a second session in the same process
@@ -1879,6 +1936,7 @@ int main() {
     test_report_attribution();
     test_report_t_table();
     test_report_families();
+    test_holdout_block();
     test_controls_hold();
     test_controls_catch_defects();
     test_suite_outcomes();

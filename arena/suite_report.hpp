@@ -540,6 +540,26 @@ struct ArmHealth {
     return v < 0 ? "-" + out : out;
 }
 
+// The line a block adds at the end of a report, or nothing: a block too small to
+// separate anything says so, and a confirmatory one says how it may be used.
+[[nodiscard]] inline std::string block_note(const SeedBlock& blk) {
+    char b[256];
+    if (blk.count < 16) {
+        std::snprintf(b, sizeof b,
+                      "  %s block: %u seeds show that a strategy runs; they cannot separate anything. Report the standard block.\n",
+                      blk.name, blk.count);
+        return b;
+    }
+    if (blk.confirmatory) {
+        std::snprintf(b, sizeof b,
+                      "  %s block: confirmatory. Tune on standard; run this once, when the strategy is final, and report it "
+                      "whatever it says. Never pool it with standard.\n",
+                      blk.name);
+        return b;
+    }
+    return {};
+}
+
 [[nodiscard]] inline std::string report_text(const RunRecord& run, const std::vector<ComparisonRow>& rows,
                                              std::uint64_t fingerprint) {
     std::string s;
@@ -845,12 +865,7 @@ struct ArmHealth {
                       c.name.c_str());
         s += b;
     }
-    if (blk.count < 16) {
-        std::snprintf(b, sizeof b,
-                      "  %s block: %u seeds show that a strategy runs; they cannot separate anything. Report the standard block.\n",
-                      blk.name, blk.count);
-        s += b;
-    }
+    s += block_note(blk);
     return s;
 }
 

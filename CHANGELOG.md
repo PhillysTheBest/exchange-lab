@@ -13,6 +13,26 @@ answer is "nothing":
 
 Cite a tagged release, not `main` (`CITATION.cff`).
 
+## Unreleased
+
+**Engine.** Unchanged.
+
+**Strategies.** Unchanged.
+
+**Scenario definitions.** A new seed block, `holdout`: seeds 1,000,000 to 1,000,063, kept for
+confirming a finished strategy once (`docs/RUNNER.md`). It is the first block marked
+confirmatory. Suite version 1 is unchanged, because no existing set of conditions changed.
+
+**Report calculations.** Unchanged. A holdout run's `report.txt` ends with a line saying it
+is confirmatory and is never pooled with `standard`.
+
+**Output formats.** Unchanged. `--block` and `/compare` accept `holdout`, and `controls`
+refuses it.
+
+**Pinned hashes and fingerprints.** None moved. Three are new, each a family over the
+holdout block, pinned from the placebo arm alone: `standard` `6e1fe05931a6f560`, `wide`
+`8d95ab9f5a9e2d80` and `busy` `b66de703b5562711`.
+
 ## v1.0.0, 2026-10-26
 
 The first release. It is `main` after #2 and #1 merged the arena, the strategy research
