@@ -456,9 +456,9 @@ loose from the fundamental is not a market and nothing read off one counts.
   it, and the failed calibration is published in `results/arena-*/stale.*`.
 - **Never commit a tape, a source data file or a market file.** `data/` and `markets/` are
   git-ignored; paid data usually may not be redistributed. A new importer comes with a
-  sample in `examples/data/` that is made up by hand (so it carries no licence) and a test in
-  `test_data`, and its version string moves when what it writes changes (a tape records
-  `importer=databento 2`). Importers are integer, like a session: no `double` anywhere.
+  sample in `examples/data/` that is made up by hand (so it carries no vendor's licence, only
+  the project's Apache 2.0) and a test in `test_data`, and its version string moves when what
+  it writes changes (a tape records `importer=databento 2`). Importers are integer, like a session: no `double` anywhere.
 - **No calibrated result without the known-answer control.** `calibrate` runs it on the build
   first and refuses if it does not hold; a trades-only tape is refused because it does not.
   `calibrate --robustness` recovers 13 of 15 known-answer runs within one grid step; do not

@@ -184,7 +184,12 @@ stop orders and auctions.
 | `tests/`, `bench/`, `results/` | tests, benchmarks, and the committed evidence behind every number |
 | `docs/` | [`LEARN`](docs/LEARN.md), [`APP`](docs/APP.md), [`ARENA`](docs/ARENA.md), [`RESULTS`](docs/RESULTS.md), [`RUNNER`](docs/RUNNER.md), [`REPORT`](docs/REPORT.md), [`CONTROLS`](docs/CONTROLS.md), [`REPRODUCE`](docs/REPRODUCE.md), [`DATA`](docs/DATA.md), [`ENGINE`](docs/ENGINE.md), [`PLATFORMS`](docs/PLATFORMS.md) |
 
-## Licence and issues
+## Licence, citation and issues
 
-There is no licence yet, so all rights are reserved until one is added. Questions and bugs go
-in [GitHub Issues](https://github.com/PhillysTheBest/exchange-lab/issues).
+Apache License 2.0 ([`LICENSE`](LICENSE), [`NOTICE`](NOTICE)). The licence covers the whole
+repository: the code, the documentation, the committed evidence and the sample data files in
+`examples/data/`, which were made up by hand. To cite exchange-lab, use
+[`CITATION.cff`](CITATION.cff) (GitHub shows it as "Cite this repository"); cite a tagged
+release, not `main`. Questions and bugs go in
+[GitHub Issues](https://github.com/PhillysTheBest/exchange-lab/issues), and
+[`CONTRIBUTING.md`](CONTRIBUTING.md) sets out the rules a change has to keep.
