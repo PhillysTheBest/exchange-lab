@@ -258,6 +258,7 @@ from them alone.
 | `comparison.csv` | derived | paired mean, s.e., 95% interval, resolvable (2.8 × s.e.), range, pairing, verdict |
 | `evaluation.csv` | derived | the seat's value broken down ([`REPORT.md`](REPORT.md)) |
 | `attribution.csv` | derived | the seat's value per reference participant ([`REPORT.md`](REPORT.md)) |
+| `holm.csv` | derived | each seat-value test's t, degrees of freedom, two-sided p and Holm-adjusted p within the run ([`REPORT.md`](REPORT.md#many-comparisons)) |
 | `report.txt` | derived | what was printed, except the `wrote` line; no wall time, no path |
 | `outcome.cfg` | written last, only if every other file was | `status=complete`, fingerprint, checks, admissibility, failing and inert seeds, exit code |
 
@@ -274,7 +275,9 @@ A directory without `status=complete` is incomplete. The verdicts are `not_admis
 - **The path is chaotic.** A 1 ns change in the seat's delay moved `imbalance` by −0.72 ± 1.57
   or +1.76 ± 1.76 (probe). A `separated` effect of a few currency units is weak evidence:
   `momentum` against the placebo is −2.36 ± 1.17, `separated`, with a per-seed range of
-  −24.40 to +26.60. [`CONTROLS.md`](CONTROLS.md) publishes the noise floor.
+  −24.40 to +26.60, and it does not survive Holm across the three families
+  ([`REPORT.md`](REPORT.md#many-comparisons)). [`CONTROLS.md`](CONTROLS.md) publishes the noise
+  floor.
 - **Tie order** is fair between candidates but works against the reference maker.
 - **The fixed delay can surprise an author** who reads their strategy's own `reaction_ns`.
 - **Installed strategies are not policed.** Replay catches `static` state but cannot prove its

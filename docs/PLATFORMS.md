@@ -39,14 +39,17 @@ installing besides the compiler Xcode's command-line tools provide.
 engine determinism hash, the session and frame hashes, the sweep's seed-42 hashes, the
 three suite fingerprints, the `cksum` of a smoke run's `sessions.csv` and
 `participants.csv`, and of every tape the samples and the known-answer control produce.
-The four run files that hold derived statistics come last, labelled `derived.*`, so a
-difference in arithmetic is told apart from a difference in the market. It then diffs
+The four run files that hold derived statistics come last, then a two-candidate run's
+`holm.csv` and `families.txt`, all labelled `derived.*`, so a difference in arithmetic is
+told apart from a difference in the market. It then diffs
 the result with `tests/canonical.txt`, recorded on Linux x86-64 with GCC 13. The first line
 that differs names what diverged first.
 
-**Result.** All 25 lines are identical on all five CI targets, the derived lines
-included, and under every compiler configuration tried locally: GCC and clang, libstdc++
-and libc++, and each floating-point contraction setting below.
+**Result.** All 27 lines are identical on all five CI targets, the derived lines
+included. The first 25, recorded at v1.0.0, were also identical under every compiler
+configuration tried locally: GCC and clang, libstdc++ and libc++, and each floating-point
+contraction setting below. The two Holm lines came later. They have been checked on the
+five CI targets and locally with GCC on Linux, not under the other local configurations.
 
 ## What each platform-specific piece is for
 
@@ -93,7 +96,9 @@ either way, so the flag costs nothing there.
 
 The claim is narrow: **with contraction off, the report's numbers agreed on every target
 CI ran.** Contraction is one known source of difference. The library's `sqrt`, number
-printing and evaluation order are not ruled out. If the report ever disagrees between
+printing and evaluation order are not ruled out. The Holm p-values avoid the library's maths
+functions altogether ([`REPORT.md`](REPORT.md#many-comparisons)): Student's t is computed from
+arithmetic and `sqrt` alone, with an arctangent written by hand. If the report ever disagrees between
 platforms, the fix is to compute its statistics in integers or fixed point, which is a
 larger change with its own plan.
 

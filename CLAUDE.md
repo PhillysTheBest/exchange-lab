@@ -297,7 +297,7 @@ make test-lab                                              # the whole path, che
   exploration stays with `sweep_lab`. Exit 0 complete, 1 a replay differed, 2 usage,
   3 the reference market is not admissible on this build.
 - **Run directories go to `runs/`, which is git-ignored and is never `results/`.** Each
-  holds `suite.cfg`, `sessions.csv`, `participants.csv`, `comparison.csv`,
+  holds `suite.cfg`, `sessions.csv`, `participants.csv`, `comparison.csv`, `holm.csv`,
   `evaluation.csv`, `attribution.csv`, `report.txt` and `outcome.cfg`, written last and
   only if every other file was; a directory without `status=complete` in it is
   incomplete. `SUITE=all` writes one such directory per family and `families.txt`.

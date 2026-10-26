@@ -23,11 +23,30 @@ Cite a tagged release, not `main` (`CITATION.cff`).
 confirming a finished strategy once (`docs/RUNNER.md`). It is the first block marked
 confirmatory. Suite version 1 is unchanged, because no existing set of conditions changed.
 
-**Report calculations.** Unchanged. A holdout run's `report.txt` ends with a line saying it
-is confirmatory and is never pooled with `standard`.
+**Report calculations.**
 
-**Output formats.** Unchanged. `--block` and `/compare` accept `holdout`, and `controls`
-refuses it.
+- **Holm.** The seat-value tests are Holm-corrected, holding the family-wise error rate at
+  5% (`docs/REPORT.md`, "Many comparisons"). The seat's value is the primary outcome; the
+  other eleven metrics are descriptive and uncorrected.
+- **p-values.** Each is two-sided, from Student's t computed with arithmetic and `sqrt`
+  only. Raw intervals and verdicts are unchanged.
+- **Across families.** On the report's own example run, `momentum` against the placebo on
+  `standard` separates within its family but not across all three families' 15 tests (Holm
+  p 0.095).
+- **The holdout's report.** A holdout run's `report.txt` ends with a line saying it is
+  confirmatory and is never pooled with `standard`.
+
+**Output formats.**
+
+- **`holm.csv`.** Every run directory gains `holm.csv`. As a result, a run written by
+  v1.0.0 does not reproduce on this build: `make reproduce` marks `holm.csv` MISSING.
+- **`report.txt`.** It adds a Holm table when a run has two or more seat-value tests, and
+  its "Many comparisons" line says the seat-value tests are corrected. A run with one test
+  prints what it did before.
+- **`families.txt`.** It adds a Holm table across every family.
+- **`holdout`.** `--block` and `/compare` accept it, and `controls` refuses it.
+- **The canonical record.** It gains two derived lines, a two-candidate run's `holm.csv` and
+  `families.txt`, so it has 27 lines. The first 25 are unchanged.
 
 **Pinned hashes and fingerprints.** None moved. Three are new, each a family over the
 holdout block, pinned from the placebo arm alone: `standard` `6e1fe05931a6f560`, `wide`

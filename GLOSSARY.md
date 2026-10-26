@@ -173,17 +173,23 @@ Terms are grouped and sorted alphabetically within each group.
 
 **Controls** — The evaluator's checks with known answers, each paired with a planted defect that must make it fail. *Where:* `docs/CONTROLS.md`.
 
+**Descriptive metric** — Any of the report's metrics other than the seat's value: printed with its interval, never corrected, and not a hypothesis. *Where:* `docs/REPORT.md`.
+
+**Family-wise error rate** — The chance of at least one false separation among a family of tests. Holm holds it at 5% for the seat-value tests.
+
 **Fingerprint** — A hash of a run's conditions; results are comparable only if fingerprints match, and moving a pinned one needs a suite version bump.
 
 **Health gate** — The suite's per-session test: book close to V and two-sided, no BookFull, ended on time, replay matched.
 
 **Holdout block** — Seeds 1,000,000..1,000,063, kept for confirming a finished strategy. Nothing in the project runs a candidate on it, and its fingerprints are pinned from the placebo arm alone. A holdout that has been looked at is spent. *Where:* `docs/RUNNER.md`.
 
+**Holm correction** — Holm's step-down adjustment of the seat-value tests' p-values: the k-th smallest of m multiplied by m − k + 1, then made non-decreasing. Every run writes it to `holm.csv`, and `families.txt` applies it across families. The p-values come from arithmetic alone, so they are identical on every platform. *Where:* `docs/REPORT.md`.
+
 **Inert** — A seat that sent no orders; its arm must equal the placebo arm.
 
 **Interval (95%)** — The paired mean ± t × standard error.
 
-**Many comparisons** — The report prints how many separations chance alone would produce.
+**Many comparisons** — The report prints how many separations chance alone would produce, and Holm-corrects the seat-value tests; the other metrics stay uncorrected.
 
 **No-seat check** — Each placebo session must hash the same as the line-up without a seat.
 
@@ -200,6 +206,8 @@ Terms are grouped and sorted alphabetically within each group.
 **Planted defect** — A deliberate bug that must make a named control fail; a control that cannot fail proves nothing.
 
 **Positive control** — A run built so the measure must find an effect. The arena's stale-maker control failed; `roundtrip` holds and does not redeem it.
+
+**Primary outcome** — The seat's value: the one result treated as a hypothesis, so the only one Holm corrects (decided 2026-10-26).
 
 **Range straddles zero** — The sweep's test: a difference counts only if its min-to-max range over seeds excludes zero. It is far stricter than an interval.
 

@@ -17,8 +17,8 @@ block (64 seeds), on Linux with g++ 13. Suite numbers never go in `results/`.
 
 None of it changes a session. Every number is read off the integer records the runner
 wrote, or off a path sampled from outside the session, so no session hash or fingerprint
-moves. A run directory holds `evaluation.csv` and `attribution.csv` beside the runner's
-files; `all` writes one directory per family and a `families.txt` above them.
+moves. A run directory holds `evaluation.csv`, `attribution.csv` and `holm.csv` beside the
+runner's files; `all` writes one directory per family and a `families.txt` above them.
 
 ## Read it in this order
 
@@ -143,25 +143,74 @@ requests, remains the place for that control, and `suite --suite=null` is refuse
 
 The standard report above makes 28 interval tests: 3 against the placebo and 25 between
 candidates. 22 separate. The report prints how many tests it ran and how many a 5% test would
-separate by chance if nothing were there (1.4 here). It applies no correction silently;
-several separations are trivially true (`maker` has a higher maker share than `imbalance`),
-so the line is a warning about lone separations, not a correction.
+separate by chance if nothing were there (1.4 here).
+
+**The seat's value is the primary outcome, and only its tests are corrected.** This was decided
+on 2026-10-26.
+
+- **The corrected tests.** Holm's adjustment runs over the seat-value tests: each candidate
+  against the placebo, and each later candidate against the first. These are the rows of
+  `comparison.csv` the count above treats as tests. A row that is `identical` or
+  `not_admissible` is not a test, before or after.
+- **The rest.** The other eleven metrics are *descriptive*. They are printed with their
+  intervals, never corrected, and the report says so. Several of their separations are true
+  by construction (`maker` has a higher maker share than `imbalance`), and correcting those
+  would mix mechanics with hypotheses.
+
+Holm holds the chance of any false separation among the corrected tests, the *family-wise
+error rate*, at 5%. It sorts the p-values in ascending order, multiplies the k-th smallest of
+m by m − k + 1, caps the result at 1 and makes it non-decreasing. In the standard family
+above, all five tests stay separated:
+
+```
+Holm, over the 5 seat-value tests above: the chance of any false separation among them held at 5%
+  arm vs baseline          | p         | Holm p    | verdict
+  ------------------------------------------------------------
+  imbalance vs placebo     | <0.000001 | <0.000001 | separated
+  maker vs placebo         | <0.000001 | <0.000001 | separated
+  momentum vs placebo      | 0.047565  | 0.047565  | separated
+  maker vs imbalance       | <0.000001 | <0.000001 | separated
+  momentum vs imbalance    | <0.000001 | <0.000001 | separated
+```
+
+**Across families, one result changes.** `families.txt` corrects all three families' 15 tests
+together, because a reader who reports several families has made all of those tests.
+Correcting tests is not pooling estimates: each family's value is still its own. In that
+table, `momentum` against the placebo on `standard` (−2.36 ± 1.17, p = 0.048) separates on
+its own and within its family, but its Holm p across the 15 tests is 0.095, so it does not
+separate there. Quote the `families.txt` adjustment when you report families together. Each
+family's own `report.txt` and `holm.csv` correct within that family only.
+
+- **Where it is printed.** Every run writes `holm.csv`, one row per row of `comparison.csv`:
+  the t statistic, its degrees of freedom, the two-sided p-value, the number of tests, the
+  Holm p and the Holm verdict. Rows that are not tests have an empty p. `report.txt` prints
+  the table only when there are two or more tests, since for one test Holm changes nothing.
+  A Holm verdict is `separated` when the adjusted p is below 0.05.
+- **No library maths.** p comes from the closed form of Student's t for whole degrees of
+  freedom (Abramowitz and Stegun 26.7.3 and 26.7.4), with an arctangent written by hand. It
+  uses only `+ − × ÷` and `sqrt`, so no library function can move a printed digit between
+  platforms. The canonical record holds a two-candidate run's `holm.csv` and `families.txt`
+  as derived lines, and every CI target must agree on them. `test_holm` checks the
+  distribution against closed forms and against every row of the t table.
+- **A stated limit.** The raw verdict uses the t table's three decimals, while Holm uses the
+  exact p. Within 0.0005 of the critical value, the table's rounding, the two can disagree. At
+  the table's own rows p is within 5 × 10⁻⁵ of 0.05. Printing `<0.000001` hides the tail's
+  rounding error, which only arises far below any threshold.
 
 ## Where it lives
 
 - `arena/suite.hpp`: the path sampler, the families (`wide_suite`, `busy_suite`,
   `find_suite`).
-- `arena/suite_report.hpp`: the metrics, attribution, the family table and the report text.
+- `arena/suite_report.hpp`: the metrics, attribution, the family table, the t distribution and
+  Holm (`portable_atan`, `t_two_sided_p`, `holm_adjust`), and the report text.
   Past 30 degrees of freedom, `t975` uses a Cornish-Fisher expansion, within 0.0005 of the
   exact quantile.
 - `arena/suite.cpp`: `--suite=NAME|all`. `outcome.cfg` is written only if every other file
   was.
 - `tests/test_arena.cpp`: `test_report_path`, `test_report_metrics`,
-  `test_report_attribution`, `test_report_t_table`, `test_report_families`.
+  `test_report_attribution`, `test_report_t_table`, `test_report_families`, `test_holm`.
 
 ## Not built
 
-- **A multiple-comparison correction.** Counting is honest; a Holm correction across a table
-  this mixed would need a decision about which metrics are hypotheses at all.
 - **A `null` family that is a market.** It would need another participant to anchor the book,
   which changes the market a second way and so is not the control it was meant to be.

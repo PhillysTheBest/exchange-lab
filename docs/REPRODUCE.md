@@ -29,11 +29,12 @@ From a smoke run, with the paths shortened:
 
 ```
 reproduce runs/imbalance-vs-maker-smoke into runs/imbalance-vs-maker-smoke-reproduced
-  built from 4fee6b45d8af (dirty) then, 4fee6b45d8af (dirty) now
+  built from 5f8954e23bf5 (dirty) then, 5f8954e23bf5 (dirty) now
   suite.cfg         identical
   sessions.csv      identical
   participants.csv  identical
   comparison.csv    identical
+  holm.csv          identical
   evaluation.csv    identical
   attribution.csv   identical
   report.txt        identical
@@ -41,8 +42,10 @@ reproduce runs/imbalance-vs-maker-smoke into runs/imbalance-vs-maker-smoke-repro
   REPRODUCED: every file the run wrote came out the same
 ```
 
-Each file is marked identical or DIFFERENT, then the whole run is `REPRODUCED` (exit 0) or
-`NOT REPRODUCED` (exit 1).
+Each file is marked identical, DIFFERENT or MISSING, then the whole run is `REPRODUCED`
+(exit 0) or `NOT REPRODUCED` (exit 1). A run written before `holm.csv` existed (v1.0.0 and
+earlier) shows it as MISSING and does not reproduce on a later build: the later build writes a
+file the run never had.
 
 ## What it does, in order
 
