@@ -6,8 +6,9 @@
 #
 # Engine and sessions (integer, the canonical state) come first; the run's files
 # that hold derived `double` statistics (comparison.csv, evaluation.csv,
-# attribution.csv, report.txt) come last and are labelled, so a difference in
-# arithmetic is told apart from a difference in the market.
+# attribution.csv, report.txt, then a two-candidate run's holm.csv and
+# families.txt) come last and are labelled, so a difference in arithmetic is
+# told apart from a difference in the market.
 #
 # POSIX sh and cksum only, so it runs unchanged on Linux, macOS and MSYS2.
 set -e
@@ -65,4 +66,13 @@ echo "tape.known $(crc "$D/data/known.tape")"
 for f in comparison.csv evaluation.csv attribution.csv report.txt; do
     lf "$D/run/$f"
     echo "derived.run.$f $(crc "$D/run/$f")"
+done
+
+# Holm's p-values (docs/REPORT.md, "Many comparisons"), derived like the lines
+# above: a two-candidate smoke run over every family, so the hand-written t
+# distribution has to give the same bits on every platform.
+./$R/suite$EXE --suite=all --candidates=maker,momentum --block=smoke --out="$D/holm" > /dev/null 2>&1
+for f in standard/holm.csv families.txt; do
+    lf "$D/holm/$f"
+    echo "derived.holm.$(echo "$f" | tr / .) $(crc "$D/holm/$f")"
 done

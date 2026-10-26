@@ -45,6 +45,7 @@
 #endif
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -1661,6 +1662,76 @@ void test_holdout_block() {
     }
 }
 
+// The p-values and Holm's adjustment, held to answers known in advance
+// (docs/REPORT.md, "Many comparisons").
+void test_holm() {
+    auto close = [](double a, double b) { return a - b < 1e-12 && b - a < 1e-12; };
+    // The hand-written atan against the library's, which only this test calls:
+    // within 4.4e-16 when measured, two units in the last place near pi/2.
+    double worst = 0;
+    for (int i = -20000; i <= 20000; ++i) {
+        const double x = i / 100.0;
+        worst = std::max(worst, std::fabs(suite::portable_atan(x) - std::atan(x)));
+    }
+    PX_CHECK(worst < 1e-15);
+    // Closed forms: one degree of freedom is the Cauchy, two is 1 - t / sqrt(2 + t^2).
+    for (const double t : {0.0, 0.5, 1.0, 3.0, 40.0}) {
+        PX_CHECK(std::fabs(suite::t_two_sided_p(t, 1) - (1 - 2 / 3.141592653589793 * std::atan(t))) < 1e-15);
+        PX_CHECK(std::fabs(suite::t_two_sided_p(t, 2) - (1 - t / std::sqrt(2 + t * t))) < 1e-15);
+    }
+    // Each row of the t table is a published 95% critical value, so p there is 0.05
+    // to within what three decimals of t can move it (4.9e-5 at worst, measured).
+    for (std::size_t df = 1; df <= 30; ++df) {
+        PX_CHECK(std::fabs(suite::t_two_sided_p(suite::t975(df), df) - 0.05) < 1e-4);
+    }
+    PX_CHECK(std::fabs(suite::t_two_sided_p(suite::t975(63), 63) - 0.05) < 1e-4);
+    PX_CHECK(std::fabs(suite::t_two_sided_p(suite::t975(127), 127) - 0.05) < 1e-4);
+    PX_CHECK(suite::t_two_sided_p(-2.5, 63) == suite::t_two_sided_p(2.5, 63));
+    PX_CHECK(suite::t_two_sided_p(0, 63) == 1.0);
+
+    // Holm on a textbook family: 0.005 and 0.01 are separated, 0.03 and 0.04 are not.
+    const std::vector<double> h = suite::holm_adjust({0.01, 0.04, 0.03, 0.005});
+    PX_CHECK(close(h[0], 0.03) && close(h[1], 0.06) && close(h[2], 0.06) && close(h[3], 0.02));
+    PX_CHECK(suite::holm_adjust({0.2}) == std::vector<double>{0.2});
+    PX_CHECK(suite::holm_adjust({0.5, 0.6}) == (std::vector<double>{1.0, 1.0}));
+    const std::vector<double> tie = suite::holm_adjust({0.02, 0.02, 0.9});
+    PX_CHECK(close(tie[0], 0.06) && close(tie[1], 0.06) && close(tie[2], 0.9));
+    const std::vector<double> raw = {0.3, 0.001, 0.04, 0.012, 0.2, 0.049};
+    const std::vector<double> adj = suite::holm_adjust(raw);
+    for (std::size_t i = 0; i < raw.size(); ++i) {
+        PX_CHECK(adj[i] >= raw[i] && adj[i] <= 1);
+        for (std::size_t j = 0; j < raw.size(); ++j) {
+            if (raw[i] < raw[j]) PX_CHECK(adj[i] <= adj[j]);
+        }
+    }
+
+    // The family is the seat-value rows the report counts as tests, and the
+    // report shows the correction only when there are two or more of them.
+    const suite::RunRecord run = smoke_run(suite::standard_suite(), {"maker", "momentum"});
+    const std::vector<suite::ComparisonRow> rows = suite::compare(run);
+    std::size_t tests = 0;
+    for (const suite::ComparisonRow& r : rows) tests += suite::is_value_test(r) ? 1 : 0;
+    PX_CHECK(tests >= 2);
+    const std::vector<suite::HolmRow> hr = suite::holm_rows({{"standard", &rows}});
+    PX_CHECK(hr.size() == rows.size());
+    for (const suite::HolmRow& r : hr) {
+        PX_CHECK(r.family == tests);
+        if (r.tested) PX_CHECK(r.holm_p >= r.p && r.holm_p <= 1);
+    }
+    const std::string csv = suite::holm_csv(hr);
+    PX_CHECK(csv.rfind("suite,baseline,arm,seeds,t_stat,df,p_value,family_tests,holm_p,holm_verdict\n", 0) == 0);
+    PX_CHECK(static_cast<std::size_t>(std::count(csv.begin(), csv.end(), '\n')) == rows.size() + 1);
+    const std::string report = suite::report_text(run, rows, 0);
+    PX_CHECK(report.find("Holm, over the " + std::to_string(tests) + " seat-value tests above") != std::string::npos);
+    PX_CHECK(report.find("Holm-corrected above") != std::string::npos);
+    const suite::RunRecord one = smoke_run(suite::standard_suite(), {"maker"});
+    const std::string single = suite::report_text(one, suite::compare(one), 0);
+    PX_CHECK(single.find("Holm") == std::string::npos);
+    PX_CHECK(single.find("no correction is applied") != std::string::npos);
+    std::printf("  holm: %zu seat-value tests in a two-candidate smoke run; atan within %.2g of the library's\n", tests,
+                worst);
+}
+
 // ---- the evaluator's controls, and the defects they catch (docs/CONTROLS.md) ----
 
 // Keeps a count in static storage, so a second session in the same process
@@ -1937,6 +2008,7 @@ int main() {
     test_report_t_table();
     test_report_families();
     test_holdout_block();
+    test_holm();
     test_controls_hold();
     test_controls_catch_defects();
     test_suite_outcomes();

@@ -152,7 +152,7 @@ test-cli: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(REL)/controls$(EXE)
 	echo "== suite command line"; \
 	S=./$(REL)/suite$(EXE); W=./$(REL)/sweep$(EXE); D=$(BUILD)/cli; \
 	exits() { want=$$1; shift; rc=0; "$$@" > /dev/null 2>&1 || rc=$$?; [ $$rc -eq $$want ]; }; \
-	files="suite.cfg sessions.csv participants.csv comparison.csv evaluation.csv attribution.csv report.txt outcome.cfg"; \
+	files="suite.cfg sessions.csv participants.csv comparison.csv holm.csv evaluation.csv attribution.csv report.txt outcome.cfg"; \
 	identical() { rc=0; cmp -s $$1 $$2 || rc=$$?; [ $$rc -le 1 ] || fail "cmp could not compare $$1 (exit $$rc): is diffutils installed?"; [ $$rc -eq 0 ]; }; \
 	same() { for f in $$files; do identical $$1/$$f $$2/$$f || { echo "differs: $$f"; diff $$1/$$f $$2/$$f | head -n 8; return 1; }; done; }; \
 	placebo42() { awk -F, 'NR==1{for(i=1;i<=NF;i++) c[$$i]=i; next} \

@@ -44,8 +44,8 @@ namespace {
 
 namespace fs = std::filesystem;
 
-constexpr const char* kFiles[] = {"suite.cfg",      "sessions.csv",   "participants.csv", "comparison.csv",
-                                  "evaluation.csv", "attribution.csv", "report.txt",      "outcome.cfg"};
+constexpr const char* kFiles[] = {"suite.cfg",       "sessions.csv", "participants.csv", "comparison.csv", "holm.csv",
+                                  "evaluation.csv",  "attribution.csv", "report.txt",     "outcome.cfg"};
 constexpr const char* kFamiliesFile = "families.txt";
 
 #if defined(PX_ARENA_USER_STRATEGIES)
@@ -267,6 +267,7 @@ int run_suite(const SuiteDef& def, const SeedBlock& block, const std::vector<std
     bool ok = write_file(dir / "sessions.csv", sessions_csv);
     ok = write_file(dir / "participants.csv", participants_csv) && ok;
     ok = write_file(dir / "comparison.csv", comparison_csv(rows)) && ok;
+    ok = write_file(dir / "holm.csv", holm_csv(holm_rows({{def.name, &rows}}))) && ok;
     ok = write_file(dir / "evaluation.csv", evaluation_csv(evaluate(run))) && ok;
     ok = write_file(dir / "attribution.csv", attribution_csv(attribution)) && ok;
     ok = write_file(dir / "report.txt", report) && ok;
@@ -278,7 +279,7 @@ int run_suite(const SuiteDef& def, const SeedBlock& block, const std::vector<std
         std::fprintf(stderr, "cannot write the run into %s\n", dir.string().c_str());
         return 2;
     }
-    std::printf("wrote %s/  suite.cfg sessions.csv participants.csv comparison.csv evaluation.csv attribution.csv "
+    std::printf("wrote %s/  suite.cfg sessions.csv participants.csv comparison.csv holm.csv evaluation.csv attribution.csv "
                 "report.txt outcome.cfg\n",
                 dir.generic_string().c_str());
     family.suite = def.name;
