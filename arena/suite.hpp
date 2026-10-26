@@ -54,13 +54,18 @@ struct SeedBlock {
     const char* name;
     std::uint64_t first;
     std::uint32_t count;
+    bool confirmatory = false; // reported once, after tuning on standard; never pooled
 };
 
 // `smoke` is a prefix of `standard`, so smoke numbers are a subset of standard
 // ones. It shows that a strategy runs and trades; it cannot separate anything.
+// `holdout` shares no seed with either and is used by no example: tune on
+// standard, then report once on holdout. Its seeds are far from standard's so
+// that no one reaches them by extending a range (docs/RUNNER.md, "The seeds").
 inline constexpr SeedBlock kSeedBlocks[] = {
     {"standard", 42, 64},
     {"smoke", 42, 4},
+    {"holdout", 1'000'000, 64, true},
 };
 
 [[nodiscard]] inline const SeedBlock* find_block(std::string_view name) noexcept {

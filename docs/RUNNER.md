@@ -31,7 +31,7 @@ make compare CANDIDATES=imbalance,maker
 build/release/suite --candidates=maker,momentum            # built-ins only; cannot see installed code
 ```
 
-`make compare` takes `CANDIDATES` (required; empty exits 2), `BLOCK` (`standard` or `smoke`),
+`make compare` takes `CANDIDATES` (required; empty exits 2), `BLOCK` (`standard`, `smoke` or `holdout`),
 `SUITE` (`standard`, `wide`, `busy` or `all`) and `OUT`. It is `BLOCK`, not `SEEDS`, because
 `bench/run_arena_evidence.sh` reads a numeric `SEEDS` from the environment.
 
@@ -40,7 +40,7 @@ The flags of `suite` and `suite_lab`:
 | Flag | Meaning |
 |---|---|
 | `--candidates=A[,B,...]` | 1 to 8 strategies; the first is the baseline of the paired rows |
-| `--block=NAME` | `standard` (64 seeds, the default) or `smoke` (4 seeds) |
+| `--block=NAME` | `standard` (64 seeds, the default), `smoke` (4 seeds) or `holdout` (64 confirmatory seeds) |
 | `--suite=NAME` | `standard` (the default), `wide`, `busy`, or `all`: one directory each |
 | `--out=DIR` | default `runs/<a>[-vs-<b>...]-<block>/`; a previous run there is replaced |
 | `--reproduce=DIR` | re-run DIR from its `suite.cfg` and compare every file ([`REPRODUCE.md`](REPRODUCE.md)) |
@@ -119,7 +119,19 @@ wakes without ordering. Placebo sessions take 18,155 to 20,051 steps.
 ### The seeds
 
 Named blocks only. `standard` is 42..105 (64 seeds). `smoke` is its first four, 42..45, which
-shows a strategy runs and cannot separate anything. Paired standard errors at 64 seeds were 1.0
+shows a strategy runs and cannot separate anything. `holdout` is 1,000,000..1,000,063 (64
+seeds), shares no seed with either and is used by no example.
+
+**Tune on `standard`, report once on `holdout`.** Every change you make after reading a
+standard report, whether a threshold, a size or a whole idea, is fitted to those 64 seeds a
+little, and the standard interval no longer means what it says. The holdout block is the
+answer to that: when the strategy is final, run `/compare NAME holdout` once and report it
+beside the standard run. Its report says `confirmatory` and is never pooled with standard,
+because pooling would mix a fitted number with an unfitted one. Running it again after
+another change spends it: the honest report then says how many times it was looked at. The
+seeds sit far from standard's so that nobody reaches them by extending a range. The block's
+fingerprint is `6e1fe05931a6f560`, pinned in `test_arena` (`kPinnedHoldoutFingerprint`), which
+also checks that every placebo session on it passes the health gate. Paired standard errors at 64 seeds were 1.0
 to 1.8 currency units for small changes to one strategy (probe) and 3.26 to 17.02 between
 unrelated strategies (runner). 24 seeds would make every interval about 1.6 times wider.
 
@@ -206,7 +218,7 @@ field does not move it.
 It moves with the engine, the session, a reference strategy, a default, the suite or the
 block, and **two results are comparable only if their fingerprints are equal.** The smoke
 fingerprint `d461c30ab2446acf` is pinned in `test_arena` (`kPinnedSmokeFingerprint`, with one
-pin per family). Moving a pin needs a version bump in `standard_suite()`, never a silent
+pin per family and one for the holdout block). Moving a pin needs a version bump in `standard_suite()`, never a silent
 re-pin. `test-lab` checks that `suite` and `suite_lab` agree.
 
 ## The run directory
@@ -279,8 +291,8 @@ A directory without `status=complete` is incomplete. The verdicts are `not_admis
 - **A wrong premise, corrected:** the first plan assumed that adding a participant
   re-interleaves the session. For an appended inert seat it does not.
 
-Not built: a holdout block (seeds 1,000,000..1,000,063 were admissible in a probe) and showing
-a scored arm in the viewer.
+Not built: showing a scored arm in the viewer. A holdout block was on this list; it is built
+("The seeds").
 
 ## Where it lives
 

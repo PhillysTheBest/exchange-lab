@@ -141,5 +141,5 @@ which no test produced before.
 
 - **A zero-intelligence baseline.** `roundtrip` is the dumbest possible strategy, but a
   random limit-order strategy would be a better floor to publish beside real candidates.
-- **A holdout block** of seeds used by no test or example, for reporting after tuning on
-  `standard`. It is one row in `kSeedBlocks`, left until people tune against the report.
+- ~~A holdout block~~ is built: `holdout`, 1,000,000..1,000,063, confirmatory and never
+  pooled with `standard` ([`RUNNER.md`](RUNNER.md), "The seeds").

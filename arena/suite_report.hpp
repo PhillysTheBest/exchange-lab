@@ -851,6 +851,13 @@ struct ArmHealth {
                       blk.name, blk.count);
         s += b;
     }
+    if (blk.confirmatory) {
+        std::snprintf(b, sizeof b,
+                      "  %s block: confirmatory. These seeds are not standard's; report this run once, after tuning on\n"
+                      "            standard, beside the standard run and never pooled with it.\n",
+                      blk.name);
+        s += b;
+    }
     return s;
 }
 
