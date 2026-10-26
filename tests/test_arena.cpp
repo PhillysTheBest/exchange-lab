@@ -72,6 +72,16 @@ constexpr std::uint64_t kPinnedBusyFingerprint = 0x5d735a9faa384bf5ULL;
 // The standard suite over the holdout block, the confirmatory seeds: pinned so
 // that the block cannot drift under the people who report on it.
 constexpr std::uint64_t kPinnedHoldoutFingerprint = 0x6e1fe05931a6f560ULL;
+// The sensitivity protocol's conditions over the smoke block, in
+// kSensitivityNames order after standard; busy is the family's own pin.
+constexpr std::uint64_t kPinnedSensitivityFingerprints[] = {
+    0xc84d3a36febd5f83ULL, // delay-5us
+    0x3899f12e9a01ff39ULL, // delay-20us
+    0xcc9bfe4fe4bc3243ULL, // thin
+    0x5d735a9faa384bf5ULL, // busy
+    0x20488d4a03f1b808ULL, // no-momentum
+    0x0fb101e0d939d17bULL, // no-rival
+};
 
 // ---- 1. the mirror against the engine ------------------------------------
 
@@ -1667,6 +1677,51 @@ void test_report_holm() {
                 suite::t_two_sided_p(1.998, 63), adj[0], adj[1], adj[2], adj[3]);
 }
 
+// The sensitivity protocol: a fixed grid, each condition a pinned suite of its
+// own whose market is healthy, and a table that says when a result does not hold.
+void test_sensitivity() {
+    const std::vector<std::string> names = suite::split_names(suite::kSensitivityNames);
+    PX_CHECK(names.size() == 1 + std::size(kPinnedSensitivityFingerprints) && names[0] == "standard");
+    for (std::size_t i = 1; i < names.size(); ++i) {
+        suite::SuiteDef f = suite::standard_suite();
+        PX_CHECK(suite::find_suite(names[i], f) && names[i] == f.name && f.change[0] != '\0');
+        const auto hashes = smoke_placebo_hashes(f);
+        for (std::uint64_t seed = smoke_block().first; seed < smoke_block().first + smoke_block().count; ++seed) {
+            PX_CHECK(run_named(f, seed, "placebo").session.healthy());
+        }
+        const std::uint64_t fp = suite::suite_fingerprint(f, smoke_block(), hashes);
+        if (fp != kPinnedSensitivityFingerprints[i - 1])
+            std::printf("  sensitivity: %s smoke fingerprint %016llx\n", names[i].c_str(), static_cast<unsigned long long>(fp));
+        PX_CHECK(fp == kPinnedSensitivityFingerprints[i - 1]);
+    }
+    // The verdicts, on made-up rows: one condition flips the sign, one loses the separation.
+    auto row = [](std::vector<std::int64_t> d, const char* verdict) {
+        suite::ComparisonRow r;
+        r.baseline = "placebo";
+        r.arm = "x";
+        r.stats = suite::paired(std::vector<std::int64_t>(d.size(), 0), d);
+        r.verdict = verdict;
+        return r;
+    };
+    std::vector<suite::FamilyResult> conds(4);
+    conds[0].suite = "standard";
+    conds[0].rows = {row({100000, 110000, 120000, 130000}, "separated")};
+    conds[1].suite = "a";
+    conds[1].rows = {row({50000, 60000, 70000, 80000}, "separated")};
+    conds[2].suite = "b";
+    conds[2].rows = {row({-100000, -110000, -120000, -130000}, "separated")};
+    conds[3].suite = "c";
+    conds[3].rows = {row({-50000, 60000, -70000, 80000}, "not_separated")};
+    std::string t = suite::sensitivity_text(conds);
+    PX_CHECK(t.find("sign: holds in 1 of 3 conditions; not in b (flips), c (vanishes)") != std::string::npos);
+    PX_CHECK(t.find("size: -100% to 57% of standard's") != std::string::npos);
+    conds.resize(2);
+    t = suite::sensitivity_text(conds);
+    PX_CHECK(t.find("sign: HOLDS in 1 of 1 conditions") != std::string::npos);
+    conds[0].rows = {row({-50000, 60000, -70000, 80000}, "not_separated")};
+    PX_CHECK(suite::sensitivity_text(conds).find("standard does not separate") != std::string::npos);
+}
+
 void test_report_families() {
     const std::vector<std::string> names = suite::split_names(suite::kSuiteNames);
     PX_CHECK(names.size() == 3 && names[0] == "standard");
@@ -1976,6 +2031,7 @@ int main() {
     test_report_attribution();
     test_report_t_table();
     test_report_holm();
+    test_sensitivity();
     test_report_families();
     test_controls_hold();
     test_controls_catch_defects();

@@ -662,6 +662,89 @@ struct FamilyResult {
     return s;
 }
 
+// ---- sensitivity: does the standard result survive a change? -----------------
+//
+// Every comparison of the run, in every condition of the protocol, beside the
+// standard one. A result holds if, in every admissible condition, it separates
+// with the standard result's sign. Each condition is its own test at 5%: for
+// the claim "it is there in every condition" (an intersection-union test) no
+// correction is needed, because the claim fails if any one test fails. The
+// opposite claim, "it is there in some condition", would need one, and is not
+// made here. Size is reported as each condition's mean as a share of the
+// standard mean, as a range, never averaged.
+[[nodiscard]] inline std::string sensitivity_text(const std::vector<FamilyResult>& conds) {
+    std::string s;
+    char b[256];
+    s += "\nsensitivity: does the standard result survive a change of conditions? currency per session, mean +- s.e.\n";
+    s += "  Each condition is its own market, placebo and health gate, and they are never pooled.\n";
+    if (conds.empty() || conds.front().suite != "standard") return s;
+    const FamilyResult& base = conds.front();
+    for (const ComparisonRow& r0 : base.rows) {
+        const std::string label = r0.arm + " vs " + r0.baseline;
+        std::snprintf(b, sizeof b, "\n  %s\n", label.c_str());
+        s += b;
+        std::snprintf(b, sizeof b, "    %-12s | %-46s | %-19s | %-14s | %s\n", "condition", "change", "mean +- s.e.",
+                      "verdict", "size");
+        s += b;
+        s += "    " + std::string(118, '-') + "\n";
+        const bool base_sep = r0.verdict == "separated";
+        std::size_t held = 0, tested = 0;
+        std::string broke;
+        double lo = 0, hi = 0;
+        bool have_size = false;
+        for (const FamilyResult& f : conds) {
+            const ComparisonRow* r = nullptr;
+            for (const ComparisonRow& x : f.rows)
+                if (x.baseline == r0.baseline && x.arm == r0.arm) r = &x;
+            std::string cell = "-", verdict = "-", size = "-";
+            if (r != nullptr) {
+                cell = fmt("%+8.2f", to_currency(r->stats.mean)) + " +- " + fmt("%6.2f", to_currency(r->stats.se));
+                verdict = !f.reference_admissible || r->verdict == "not_admissible" ? "NOT ADMISSIBLE"
+                          : r->verdict == "not_separated"                        ? "not separated"
+                                                                                  : r->verdict;
+                if (r0.stats.mean != 0) {
+                    const double share = 100.0 * r->stats.mean / r0.stats.mean;
+                    size = fmt("%.0f%%", share);
+                    if (&f != &base && f.reference_admissible && r->verdict != "not_admissible") {
+                        lo = have_size ? std::min(lo, share) : share;
+                        hi = have_size ? std::max(hi, share) : share;
+                        have_size = true;
+                    }
+                }
+                if (&f != &base && f.reference_admissible && r->verdict != "not_admissible") {
+                    ++tested;
+                    const bool same_sign = (r->stats.mean > 0) == (r0.stats.mean > 0);
+                    if (base_sep && r->verdict == "separated" && same_sign) ++held;
+                    else if (base_sep) broke += (broke.empty() ? "" : ", ") + f.suite + (r->verdict == "separated" ? " (flips)" : " (vanishes)");
+                }
+            }
+            std::snprintf(b, sizeof b, "    %-12s | %-46s | %-19s | %-14s | %s\n", f.suite.c_str(),
+                          f.change.empty() ? "none" : f.change.c_str(), cell.c_str(), verdict.c_str(), size.c_str());
+            s += b;
+        }
+        if (!base_sep) {
+            s += "    standard does not separate, so there is no result to hold.\n";
+        } else {
+            std::snprintf(b, sizeof b, "    sign: %s in %zu of %zu conditions%s%s\n", held == tested ? "HOLDS" : "holds",
+                          held, tested, broke.empty() ? "" : "; not in ", broke.c_str());
+            s += b;
+            if (have_size) {
+                std::snprintf(b, sizeof b, "    size: %.0f%% to %.0f%% of standard's\n", lo, hi);
+                s += b;
+            }
+        }
+    }
+    s += "\n  A result holds if it separates with standard's sign in every admissible condition. Each condition\n"
+         "  is tested at 5% on its own, which is right for a claim that an effect is there in every one; a\n"
+         "  claim that it is there in some condition would need a correction, and is not made.\n";
+    for (const FamilyResult& f : conds) {
+        if (f.reference_admissible) continue;
+        std::snprintf(b, sizeof b, "  %s: REFERENCE NOT ADMISSIBLE, nothing in that row counts\n", f.suite.c_str());
+        s += b;
+    }
+    return s;
+}
+
 // ---- the printed report --------------------------------------------------------
 
 struct ArmHealth {

@@ -47,6 +47,7 @@ namespace fs = std::filesystem;
 constexpr const char* kFiles[] = {"suite.cfg",      "sessions.csv",   "participants.csv", "comparison.csv",
                                   "evaluation.csv", "attribution.csv", "report.txt",      "outcome.cfg"};
 constexpr const char* kFamiliesFile = "families.txt";
+constexpr const char* kSensitivityFile = "sensitivity.txt";
 
 #if defined(PX_ARENA_USER_STRATEGIES)
 constexpr const char* kBinary = "suite_lab";
@@ -83,7 +84,8 @@ void usage() {
         "  --candidates=A[,B,...]  1 to 8 strategies; the first is the baseline of the paired rows\n"
         "  --block=NAME            standard (64 seeds, the default), smoke (4 seeds), or holdout\n"
         "                          (64 other seeds: confirmatory, reported once after tuning on standard)\n"
-        "  --suite=NAME            standard (the default), wide, busy, or all: every one, one directory each\n"
+        "  --suite=NAME            standard (the default), wide, busy, or all: every one, one directory each;\n"
+        "                          or sensitivity: the fixed grid of conditions, and whether each result holds\n"
         "  --market=NAME           a market calibrated from a tape (markets/NAME.cfg, or a path to one;\n"
         "                          docs/DATA.md): a suite of its own. suite_lab only\n"
         "  --out=DIR               default runs/<a>[-vs-<b>...][-<suite or market>]-<block>/; a previous run there is replaced\n"
@@ -133,8 +135,8 @@ void usage() {
             return false;
         }
         if (fs::exists(dir / marker, ec)) {
-            if (std::string_view(marker) == kFamiliesFile) {
-                fs::remove(dir / kFamiliesFile, ec);
+            if (std::string_view(marker) == kFamiliesFile || std::string_view(marker) == kSensitivityFile) {
+                fs::remove(dir / marker, ec);
             } else {
                 for (const char* f : kFiles) fs::remove(dir / f, ec);
             }
@@ -483,13 +485,15 @@ int main(int argc, char** argv) {
         const fs::path out = out_arg.empty() ? fs::path(from.string() + "-reproduced") : fs::path(out_arg);
         std::error_code ec;
         if (fs::exists(from / "suite.cfg", ec)) return reproduce_one(from, out);
-        if (!fs::exists(from / kFamiliesFile, ec)) {
-            std::fprintf(stderr, "%s holds no run (no suite.cfg or %s)\n", from.string().c_str(), kFamiliesFile);
+        const bool grid = fs::exists(from / kSensitivityFile, ec);
+        if (!grid && !fs::exists(from / kFamiliesFile, ec)) {
+            std::fprintf(stderr, "%s holds no run (no suite.cfg, %s or %s)\n", from.string().c_str(), kFamiliesFile,
+                         kSensitivityFile);
             return 2;
         }
-        // A --suite=all directory: every family in it, one at a time.
+        // A --suite=all or --suite=sensitivity directory: every suite in it, one at a time.
         int worst = 0;
-        for (const std::string& n : split_names(kSuiteNames)) {
+        for (const std::string& n : split_names(grid ? kSensitivityNames : kSuiteNames)) {
             if (!fs::exists(from / n / "suite.cfg", ec)) continue;
             const int code = reproduce_one(from / n, out / n);
             if (code == 2) return 2;
@@ -524,15 +528,16 @@ int main(int argc, char** argv) {
         suites.push_back(d);
         suite_name = m.name;
         market_file = m.path;
-    } else if (suite_name == "all") {
-        for (const std::string& n : split_names(kSuiteNames)) {
+    } else if (suite_name == "all" || suite_name == "sensitivity") {
+        for (const std::string& n : split_names(suite_name == "all" ? kSuiteNames : kSensitivityNames)) {
             SuiteDef d = standard_suite();
             if (find_suite(n, d)) suites.push_back(d);
         }
     } else {
         SuiteDef d = standard_suite();
         if (!find_suite(suite_name, d)) {
-            std::fprintf(stderr, "unknown suite '%s': %s, or all\n", suite_name.c_str(), kSuiteNames);
+            std::fprintf(stderr, "unknown suite '%s': %s, all, sensitivity, or one of its conditions (%s)\n",
+                         suite_name.c_str(), kSuiteNames, kSensitivityNames);
             return 2;
         }
         suites.push_back(d);
@@ -571,8 +576,10 @@ int main(int argc, char** argv) {
         return run_suite(suites.front(), *block, names, dir, f, market_file);
     }
 
-    // --suite=all: one directory per suite under `dir`, then one table across them.
-    if (!prepare_out(dir, kFamiliesFile, why)) {
+    // --suite=all or sensitivity: one directory per suite under `dir`, then one table across them.
+    const bool grid = suite_name == "sensitivity";
+    const char* marker = grid ? kSensitivityFile : kFamiliesFile;
+    if (!prepare_out(dir, marker, why)) {
         std::fprintf(stderr, "%s\n", why.c_str());
         return 2;
     }
@@ -587,12 +594,12 @@ int main(int argc, char** argv) {
         fams.push_back(std::move(f));
         std::printf("\n");
     }
-    const std::string table = families_text(names, fams);
+    const std::string table = grid ? sensitivity_text(fams) : families_text(names, fams);
     std::fwrite(table.data(), 1, table.size(), stdout);
-    if (!write_file(dir / kFamiliesFile, table)) {
-        std::fprintf(stderr, "cannot write %s\n", (dir / kFamiliesFile).string().c_str());
+    if (!write_file(dir / marker, table)) {
+        std::fprintf(stderr, "cannot write %s\n", (dir / marker).string().c_str());
         return 2;
     }
-    std::printf("wrote %s/%s\n", dir.generic_string().c_str(), kFamiliesFile);
+    std::printf("wrote %s/%s\n", dir.generic_string().c_str(), marker);
     return worst;
 }

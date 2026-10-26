@@ -37,7 +37,8 @@ inline constexpr const char* kMarketParamNames =
     "maker.half_spread_ticks rival.half_spread_ticks noise.qty noise.timer_ns";
 
 // Names a market cannot take: a run directory or --suite= would read them as a suite.
-inline constexpr const char* kReservedMarketNames = "standard wide busy all";
+inline constexpr const char* kReservedMarketNames =
+    "standard wide busy all sensitivity delay-5us delay-20us thin no-momentum no-rival";
 
 inline constexpr int kMarketVersion = 1;
 

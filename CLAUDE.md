@@ -260,6 +260,7 @@ make compare CANDIDATES=imbalance BLOCK=smoke              # 4 seeds: does it ru
 make compare CANDIDATES=imbalance                          # the standard block, 64 seeds -> runs/imbalance-standard/
 make compare CANDIDATES=imbalance,maker                    # two strategies, identical conditions, one command
 make compare CANDIDATES=imbalance,maker SUITE=all          # every scenario family, side by side, never pooled
+make compare CANDIDATES=imbalance SUITE=sensitivity        # the fixed grid: does the result hold when one thing changes?
 make reproduce RUN=runs/imbalance-vs-maker-standard        # re-run it from its own record, compare every file
 make controls                                              # the evaluator's own controls
 build/release/suite --candidates=maker,momentum            # built-ins only, from the binary that cannot see installed code
@@ -330,7 +331,8 @@ make test-lab                                              # the whole path, che
   strategy that reads its own `reaction_ns` member sees what it declared; the delay it
   actually has is `now_ns - as_of_ns` in its `MarketView`.
 - **The suite fingerprints are pinned** (`kPinnedSmokeFingerprint` in `test_arena`,
-  `d461c30ab2446acf`, one per family, and `kPinnedHoldoutFingerprint`, `6e1fe05931a6f560`). A change to a reference strategy, a default, the session or the
+  `d461c30ab2446acf`, one per family, `kPinnedHoldoutFingerprint`, `6e1fe05931a6f560`, and
+  one per sensitivity condition in `kPinnedSensitivityFingerprints`). A change to a reference strategy, a default, the session or the
   engine moves it and needs a suite version bump in `standard_suite()`, not a silent
   re-pin: "standard v1" names one set of conditions, and two runs are comparable only if
   their fingerprints are equal.

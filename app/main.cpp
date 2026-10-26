@@ -433,7 +433,7 @@ std::vector<std::string> complete(const std::string& line, std::size_t& start) {
             return keep_prefixed(strategy_names(), word.substr(comma + 1));
         }
         std::vector<std::string> options = strategy_names();
-        if (cmd == "/compare") options.insert(options.end(), {"smoke", "holdout", "wide", "busy", "all", "market="});
+        if (cmd == "/compare") options.insert(options.end(), {"smoke", "holdout", "wide", "busy", "all", "sensitivity", "market="});
         else options.insert(options.end(), {"seed=", "still=", "script=", "lineup=", "market="});
         return keep_prefixed(options, word);
     }

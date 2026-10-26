@@ -279,6 +279,59 @@ passes the health gate. Two things it says about the evaluator:
 fingerprint. `test_arena` (`test_zi_floor`) checks that it trades, keeps to its budget on the
 path and not only at the close, replays, and leaves its markets healthy.
 
+## Sensitivity
+
+A result on the standard suite is a result about one market. `/compare NAME sensitivity`
+(`make compare CANDIDATES=a SUITE=sensitivity`, `suite_lab --suite=sensitivity`) asks whether it
+survives a change, along a **fixed grid**, so the question has one answer per strategy rather
+than whatever somebody happened to try:
+
+| condition | axis | what changes |
+|---|---|---|
+| `standard` | | nothing: the result being tested |
+| `delay-5us`, `delay-20us` | reaction delay | the seat's delay, 5,000 or 20,000 ns instead of 10,000 |
+| `thin`, `busy` | liquidity | the noise traders' timer, 20,000 or 5,000 ns instead of 10,000 (`busy` is the family) |
+| `no-momentum`, `no-rival` | line-up | the momentum trader, or the rival maker, taken out |
+
+Each condition is a suite of its own, with its own fingerprint, placebo arm and health gate,
+written to its own directory beside a `sensitivity.txt` table, and **never pooled**. For every
+comparison the run makes, the table gives each condition's paired mean, its verdict and its
+size as a share of standard's, then a line:
+
+- **sign HOLDS** if the comparison separates with standard's sign in every admissible
+  condition; otherwise it names each condition where it **flips** or **vanishes**;
+- **size**: the range of the conditions' means as a share of standard's, never averaged.
+
+Each condition is tested at 5% on its own. For the claim "the effect is there in every
+condition" that is correct without a correction: the claim fails if any one test fails (an
+intersection-union test). The opposite claim, "it is there in some condition", would need one,
+and the table does not make it. On the standard block (`suite --candidates=zi,maker
+--suite=sensitivity`, 52 s):
+
+| condition | zi vs placebo | maker vs placebo | maker vs zi |
+|---|---|---|---|
+| standard | −91.82 ± 2.47 | +71.13 ± 7.05 | +162.95 ± 8.00 |
+| delay-5us | −92.01 ± 2.39 | +72.32 ± 7.20 | +164.34 ± 8.18 |
+| delay-20us | −91.54 ± 2.44 | +70.97 ± 7.26 | +162.51 ± 8.20 |
+| thin | −94.61 ± 2.48 | +26.34 ± 7.02 | +120.95 ± 7.54 |
+| busy | −89.22 ± 2.50 | +141.17 ± 7.78 | +230.38 ± 8.74 |
+| no-momentum | −91.22 ± 2.38 | +70.51 ± 7.30 | +161.73 ± 8.12 |
+| no-rival | −96.91 ± 2.46 | +111.81 ± 7.78 | +208.73 ± 8.42 |
+| **sign** | holds in 6 of 6 | holds in 6 of 6 | holds in 6 of 6 |
+| **size** | 97% to 106% | 37% to 198% | 74% to 141% |
+
+All three hold in sign. Size is another matter: a third maker's +71 is a number about how much
+uninformed flow there is (37% of it in `thin`, 198% in `busy`) and about competition (157%
+with the rival gone), and hardly about its own delay between 5 and 20 µs. That is the
+project's negative result again, from a different direction. Every condition's reference
+market passes the health gate on all 64 standard seeds. The conditions' smoke fingerprints
+are pinned in `test_arena` (`kPinnedSensitivityFingerprints`), so changing one needs a version
+bump like any suite.
+
+**A condition that was not a market.** The line-up axis first added a third noise trader. Its
+placebo failed the health gate on 3 of 64 standard seeds (79, 94 and 105; the book came loose
+from the fundamental), so it is not in the grid. Removing the rival replaced it.
+
 ## Known weaknesses
 
 - **25 ms favours short-horizon logic.** `fader` is inert on all 64 seeds; inert seeds are

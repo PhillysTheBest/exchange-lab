@@ -219,6 +219,8 @@ Terms are grouped and sorted alphabetically within each group.
 
 **Seed block** — A named set of seeds: `standard` is 42..105; `smoke`, 42..45, shows a strategy runs; `holdout` is the confirmatory block.
 
+**Sensitivity protocol** — `/compare NAME sensitivity`: the run repeated under a fixed grid of conditions (the seat's delay, the amount of noise flow, the line-up), each a suite of its own, never pooled. A result holds if it separates with standard's sign in every admissible condition. *Where:* `docs/RUNNER.md`.
+
 **Smallest resolvable effect (`resolvable`)** — About 2.8 × the paired standard error.
 
 **Standard error (paired)** — The standard deviation of per-seed differences over √n; every arena result carries it.
