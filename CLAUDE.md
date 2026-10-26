@@ -217,7 +217,8 @@ the line editor. A new command is a row in `kCommands` and a branch in `plan_for
 **Strategies** are plain structs in `arena/strategies/`, compiled in and never loaded at runtime.
 Adding one is a header plus one line in `add_named_strategy()` and its name in `kStrategyNames`,
 which `test_arena` holds together so the two cannot drift. `arena/strategies/fader.hpp` is the
-worked example, written against `arena/strategy.hpp` alone. `--strategies=maker,rival,noise:3`
+worked example, written against `arena/strategy.hpp` alone. `zi` (`arena/strategies/zi.hpp`) is the
+zero-intelligence floor, never in a default line-up. `--strategies=maker,rival,noise:3`
 composes a line-up by name; without it the registry's default line-up is used, which is
 what every published number came from. The strategy lab below turns those two steps
 into one make target for a strategy of your own; it does not change what a strategy is.

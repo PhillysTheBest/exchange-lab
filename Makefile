@@ -213,9 +213,10 @@ test-cli: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(REL)/controls$(EXE)
 	grep -qx 'fingerprint=6e1fe05931a6f560' $$D/suite-hold/outcome.cfg || fail "the holdout fingerprint is pinned"; \
 	grep -q '^  holdout block: confirmatory' $$D/suite-hold/report.txt || fail "a holdout report should say it is confirmatory"; \
 	! grep -nwE 'double|float' arena/suite.hpp || fail "arena/suite.hpp must stay integer-only"; \
+	! cat arena/strategies/*.hpp | grep -v '^ *//' | grep -nwE 'double|float' || fail "a built-in strategy must stay integer-only"; \
 	rm -rf $$D; \
 	echo "  placebo arm at seed 42: $$ref, the sweep's market"; \
-	echo "38/38 suite command-line checks passed"
+	echo "39/39 suite command-line checks passed"
 	@set -e; \
 	fail() { echo "FAIL: $$1"; exit 1; }; \
 	exits() { want=$$1; shift; rc=0; "$$@" > /dev/null 2>&1 || rc=$$?; [ $$rc -eq $$want ]; }; \

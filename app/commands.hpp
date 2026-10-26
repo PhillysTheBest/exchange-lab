@@ -121,6 +121,7 @@ inline constexpr StrategyNote kStrategyNotes[] = {
     {"fader", "leans against the recent move; the worked example in arena/strategies/fader.hpp"},
     {"placebo", "never acts: the empty seat every candidate is compared against"},
     {"roundtrip", "buys then sells at market on a timer: the positive control"},
+    {"zi", "random limit orders around the market, no view at all: the zero-intelligence floor"},
 };
 
 // Splits a typed line into words. Double or single quotes keep spaces inside a

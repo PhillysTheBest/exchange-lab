@@ -698,7 +698,7 @@ void test_roster_from_spec() {
         }
     }
     std::printf("  spec: %zu named participants, all addable\n", listed);
-    PX_CHECK(listed == 8);
+    PX_CHECK(listed == 9);
 
     // Counts repeat a name, and the roster comes out in the order written.
     Roster r;
@@ -1208,6 +1208,23 @@ void test_suite_inert_arm() {
         PX_CHECK(i.session.inert);
         PX_CHECK(i.session.session_hash == p.session.session_hash);
         PX_CHECK(i.parts[6].wakes > p.parts[6].wakes);
+    }
+}
+
+// The zero-intelligence floor: it trades, it keeps to its budget on the path
+// and not only at the close, it replays, and the market it sits in stays one.
+void test_zi_floor() {
+    const suite::SuiteDef def = suite::standard_suite();
+    const suite::SeedBlock& blk = smoke_block();
+    const strategies::Zi zi;
+    for (std::uint64_t seed = blk.first; seed < blk.first + blk.count; ++seed) {
+        const suite::ArmRecord a = run_named(def, seed, "zi");
+        const suite::ArmRecord b = run_named(def, seed, "zi");
+        PX_CHECK(a.session.session_hash == b.session.session_hash);
+        PX_CHECK(a.session.healthy());
+        PX_CHECK(a.session.seat_orders > 100 && a.session.seat_fills > 10);
+        PX_CHECK(a.session.seat_max_abs_position <= static_cast<std::uint64_t>(zi.max_position));
+        PX_CHECK(!a.session.inert);
     }
 }
 
@@ -1946,6 +1963,7 @@ int main() {
     test_suite_arm_determinism();
     test_suite_inert_arm();
     test_suite_ceiling();
+    test_zi_floor();
     test_suite_closed_identity();
     test_suite_param_dump();
     test_suite_fingerprint();

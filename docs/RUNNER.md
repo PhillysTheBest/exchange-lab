@@ -243,6 +243,42 @@ A directory without `status=complete` is incomplete. The verdicts are `not_admis
 `identical` (every difference 0), `separated` (the 95% interval excludes 0) and
 `not_separated`.
 
+## The floor: `zi`
+
+A positive result needs something to be positive against. The placebo is zero by
+construction, so it says whether a strategy made money, not whether it did anything a
+strategy with no intelligence would not. `zi` (`arena/strategies/zi.hpp`) is that strategy,
+after Gode and Sunder's zero-intelligence traders: on its timer it withdraws its resting
+order, flips a coin for the side and posts one limit order at a price drawn uniformly from 8
+ticks either side of the mid it sees, never trading past ±200. It has no view, no memory and
+no signal.
+
+**What it was expected to do,** written in its header before it ran: lose money, mostly in
+the `spread` column, because its orders that cross pay the spread and its resting orders fill
+mostly once the market has moved through them. How much was not predicted. On the standard
+block (`suite --candidates=zi,roundtrip,maker`):
+
+| arm vs baseline | mean ± s.e. | verdict |
+|---|---|---|
+| zi vs placebo | −91.82 ± 2.47 | separated |
+| maker vs zi | +162.95 ± 8.00 | separated |
+| roundtrip vs zi | +12.27 ± 2.51 | separated |
+
+The qualitative expectation held: −91.46 ± 0.71 of the −91.82 is `spread`, with adverse
+markout and carry each within two standard errors of zero, and every one of its 64 markets
+passes the health gate. Two things it says about the evaluator:
+
+- **Random is worse than dumb.** `roundtrip`, which only ever crosses the spread, loses about
+  12 a session less than `zi`, whose resting orders are filled when they are stale. Beating
+  `zi` is a low bar; beating the placebo is not the same bar.
+- **Put `zi` beside a candidate** (`/compare mine,zi`) and the paired row `mine vs zi` is the
+  question "did it beat chance on these seeds?". A candidate that does not separate from `zi`
+  has shown nothing, whatever its value against the placebo.
+
+`zi` is a built-in and never in a default line-up, so adding it moved no hash and no
+fingerprint. `test_arena` (`test_zi_floor`) checks that it trades, keeps to its budget on the
+path and not only at the close, replays, and leaves its markets healthy.
+
 ## Known weaknesses
 
 - **25 ms favours short-horizon logic.** `fader` is inert on all 64 seeds; inert seeds are
@@ -252,7 +288,9 @@ A directory without `status=complete` is incomplete. The verdicts are `not_admis
 - **The path is chaotic.** A 1 ns change in the seat's delay moved `imbalance` by −0.72 ± 1.57
   or +1.76 ± 1.76 (probe). A `separated` effect of a few currency units is weak evidence:
   `momentum` against the placebo is −2.36 ± 1.17, `separated`, with a per-seed range of
-  −24.40 to +26.60. [`CONTROLS.md`](CONTROLS.md) publishes the noise floor.
+  −24.40 to +26.60, and it does not survive the Holm correction across the three scenario
+  families ([`REPORT.md`](REPORT.md#many-comparisons)). [`CONTROLS.md`](CONTROLS.md)
+  publishes the noise floor.
 - **Tie order** is fair between candidates but works against the reference maker.
 - **The fixed delay can surprise an author** who reads their strategy's own `reaction_ns`.
 - **Installed strategies are not policed.** Replay catches `static` state but cannot prove its
