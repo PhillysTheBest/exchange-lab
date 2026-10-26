@@ -768,6 +768,19 @@ test-lab: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(INGEST_BIN)
 	echo "  fingerprint $$(fp $$D/suite), identical in suite and suite_lab"; \
 	rm -rf $$D; \
 	echo "9/9 suite checks passed"
+	@set -e; \
+	fail() { echo "FAIL: $$1"; exit 1; }; \
+	echo "== a frozen model (examples/strategies/frozen.hpp)"; \
+	F=examples/strategies/frozen.hpp; D=$(BUILD)/lab-frozen; rm -rf $$D; \
+	! grep -v '^ *//' $$F | grep -nwE 'double|float' || fail "the frozen model must be integer-only"; \
+	! grep -n '#include' $$F | grep -v 'arena/strategy.hpp' || fail "it may include arena/strategy.hpp and nothing else"; \
+	$(MAKE) --no-print-directory strategy STRATEGY=$$F > /dev/null || fail "it should install and build"; \
+	./$(REL)/suite_lab$(EXE) --block=smoke --candidates=frozen --out=$$D > /dev/null 2>&1 || fail "suite_lab should run it"; \
+	grep -q '^arm.frozen.inert_seeds=0$$' $$D/outcome.cfg || fail "it should trade on every seed"; \
+	[ "$$(sed -n 's/^run.candidate.frozen.digest=//p' $$D/suite.cfg)" = "$$(cksum < $$F | cut -d' ' -f1)" ] \
+	    || fail "the run should record the header's cksum"; \
+	rm -rf $$D; \
+	echo "5/5 frozen-model checks passed"
 
 # The outputs that must be identical on every platform, compared line by line with
 # the record committed from Linux (docs/PLATFORMS.md). The first

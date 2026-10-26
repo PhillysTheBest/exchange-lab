@@ -69,7 +69,11 @@ Terms are grouped and sorted alphabetically within each group.
 
 **Candidate** — A strategy being scored by `/compare`, in the seat on every seed of a block.
 
+**Coding agent** — An AI tool that writes code and runs commands, used beside exchange-lab to write a strategy or read a report. It may write a strategy; no model may run inside a session. *Where:* `docs/CODING-AGENT.md`.
+
 **Fader** — The worked example of a strategy: it fades prints that stray far from a slow average. *Where:* `arena/strategies/fader.hpp`.
+
+**Frozen model** — A model trained outside the project whose weights are rounded to integers and written into a strategy header, so it runs as a pure integer function of the market view and replays like any strategy. *Where:* `examples/strategies/frozen.hpp`, `examples/frozen/README.md`.
 
 **Glosten–Milgrom setting** — The model the arena borrows: a dealer earns the spread from uninformed flow, pays it to an informed trader, and infers value from order flow.
 
