@@ -1147,6 +1147,107 @@ void test_market_file() {
 
 } // namespace
 
+// A window of tape time: the whole tape is what no window was, and two windows
+// that split it at a moment split its counts exactly.
+bool same_stats(const TapeStats& a, const TapeStats& b) {
+    return a.events == b.events && a.adds == b.adds && a.cancels == b.cancels && a.trades == b.trades &&
+           a.levels == b.levels && a.resets == b.resets && a.prints == b.prints && a.buy_prints == b.buy_prints &&
+           a.sell_prints == b.sell_prints && a.span_ns == b.span_ns && a.two_sided_ns == b.two_sided_ns &&
+           a.one_sided_ns == b.one_sided_ns && a.empty_ns == b.empty_ns && a.crossed_ns == b.crossed_ns &&
+           a.spread_ticks == b.spread_ticks && a.spread_mean_x100 == b.spread_mean_x100 &&
+           a.touch_depth == b.touch_depth && a.touch_depth_mean_x100 == b.touch_depth_mean_x100 &&
+           a.print_qty == b.print_qty && a.print_mean_x100 == b.print_mean_x100 &&
+           a.size_depth_pml == b.size_depth_pml && a.move_windows == b.move_windows && a.move_sumsq == b.move_sumsq &&
+           a.prints_per_move_x100 == b.prints_per_move_x100;
+}
+
+void test_stats_window() {
+    std::string why;
+    Tape s;
+    PX_CHECK(simulate(px::arena::suite::standard_suite(), kCalibrationSeeds, 2, s, why));
+    for (const Depth d : {Depth::Trades, Depth::L2, Depth::L3}) {
+        PX_CHECK(same_stats(tape_stats(s, d), tape_stats(s, d, kTapeStart, kTapeEnd)));
+        const std::int64_t cut = s.ev[s.ev.size() * 7 / 10].t;
+        const TapeStats a = tape_stats(s, d, kTapeStart, cut), b = tape_stats(s, d, cut, kTapeEnd), all = tape_stats(s, d);
+        PX_CHECK(a.events + b.events == all.events && a.prints + b.prints == all.prints &&
+                 a.trades + b.trades == all.trades && a.cancels + b.cancels == all.cancels);
+        PX_CHECK(a.two_sided_ns + b.two_sided_ns == all.two_sided_ns);
+        PX_CHECK(a.prints > 0 && b.prints > 0 && (b.spread_mean_x100 > 0) == (d != Depth::Trades));
+    }
+}
+
+// Stylised facts on series and tapes whose answers are known.
+void test_stylised_facts() {
+    using px::data::detail::isqrt;
+    PX_CHECK(isqrt(0) == 0 && isqrt(15) == 3 && isqrt(16) == 4 && isqrt(17) == 4);
+    const WideUSum big = (static_cast<WideUSum>(1) << 64) - 1;
+    PX_CHECK(isqrt(big * big) == big && isqrt(big * big - 1) == big - 1);
+    const std::map<std::int64_t, std::int64_t> w = {{1, 10}, {2, 10}, {3, 80}};
+    PX_CHECK(detail::weighted_quantile(w, 1, 10) == 1 && detail::weighted_quantile(w, 1, 5) == 2 &&
+             detail::weighted_quantile(w, 1, 2) == 3);
+    // Alternating signs: 19 pairs of -1 over 20 squares, -950 thousandths. Two
+    // segments of four: 6 pairs inside them, -750; a lag across the gap would give -875.
+    std::vector<std::int64_t> alt;
+    for (int i = 0; i < 20; ++i) alt.push_back(i % 2 == 0 ? 1 : -1);
+    PX_CHECK(detail::autocorr_pml({alt}, 1) == -950);
+    PX_CHECK(detail::autocorr_pml({{1, -1, 1, -1}, {1, -1, 1, -1}}, 1) == -750);
+    PX_CHECK(detail::autocorr_pml({{3, 3, 3}}, 1) == kNotMeasured);
+    PX_CHECK(detail::corr_pml({1, 2, 3, 4}, {2, 4, 6, 8}) == 1000 && detail::corr_pml({1, 2, 3, 4}, {8, 6, 4, 2}) == -1000);
+    PX_CHECK(detail::corr_pml({1, 2, 3}, {5, 5, 5}) == kNotMeasured);
+
+    std::uint64_t x = 88172645463325252ULL;
+    auto coin = [&x] {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        return (x & 1) != 0;
+    };
+    // Roll's bounce: a fixed value, each print at the bid or the ask by a coin
+    // flip, one every microsecond. A return is the difference of two independent
+    // draws, so lag 1 is -0.5 in theory. The interval is ten prints.
+    Tape bounce;
+    bounce.h.depth = Depth::Trades;
+    for (int i = 0; i <= 20'000; ++i) {
+        const bool ask = coin();
+        bounce.ev.push_back({static_cast<std::int64_t>(i) * 1000, 'T', ask ? 'B' : 'S', 0, ask ? 101 : 100, 1});
+    }
+    StylisedFacts f = stylised_facts(bounce, Depth::Trades);
+    PX_CHECK(f.prints == 20'001 && f.interval_ns == 10 * 20'000'000LL / 20'001);
+    PX_CHECK(f.returns > 1900 && f.ret_ac1_pml < -400 && f.ret_ac1_pml > -600);
+    PX_CHECK(f.spread_p50 == kNotMeasured && f.adds_per_print_x100 == kNotMeasured);
+    // A random walk of one tick a print: no linear memory, so lag 1 lies inside the band.
+    Tape walk;
+    walk.h.depth = Depth::Trades;
+    std::int64_t price = 10'000;
+    for (int i = 0; i < 20'000; ++i) {
+        price += coin() ? 1 : -1;
+        walk.ev.push_back({static_cast<std::int64_t>(i) * 1000, 'T', 'B', 0, price, 1});
+    }
+    f = stylised_facts(walk, Depth::Trades);
+    PX_CHECK(f.returns > 1900 && f.ret_ac1_pml > -f.null_band_pml && f.ret_ac1_pml < f.null_band_pml);
+    // A long gap between two segments adds no intervals: the gap is not a market with no moves.
+    Tape two = walk;
+    const std::size_t half = two.ev.size() / 2;
+    for (std::size_t i = half; i < two.ev.size(); ++i) two.ev[i].t += 1'000'000'000'000;
+    two.ev.insert(two.ev.begin() + static_cast<std::ptrdiff_t>(half), TapeEvent{two.ev[half].t, 'R', '-', 0, 0, 0});
+    const StylisedFacts g = stylised_facts(two, Depth::Trades);
+    PX_CHECK(g.returns <= f.returns && g.returns + 4 >= f.returns && g.interval_ns == f.interval_ns);
+
+    // The simulated market, read order by order, measures every fact; the same
+    // market read as trades shows bid-ask bounce in its returns.
+    std::string why;
+    Tape s;
+    PX_CHECK(simulate(px::arena::suite::standard_suite(), kCalibrationSeeds, std::size(kCalibrationSeeds), s, why));
+    const StylisedFacts l3 = stylised_facts(s, Depth::L3), tr = stylised_facts(s, Depth::Trades);
+    PX_CHECK(l3.ret_ac1_pml != kNotMeasured && l3.abs_ac10_pml != kNotMeasured && l3.volvol_pml != kNotMeasured &&
+             l3.spread_p10 > 0 && l3.spread_p10 <= l3.spread_p50 && l3.spread_p50 <= l3.spread_p90 &&
+             l3.depth_p10 <= l3.depth_p90 && l3.cancels_per_add_pml > 0 && l3.cancels_per_add_pml < 1000);
+    PX_CHECK(tr.ret_ac1_pml < l3.ret_ac1_pml && tr.spread_p50 == kNotMeasured);
+    std::printf("  facts: standard market, lag 1 %+lld (L3) and %+lld (trades), |r| lag 10 %+lld, band %lld\n",
+                static_cast<long long>(l3.ret_ac1_pml), static_cast<long long>(tr.ret_ac1_pml),
+                static_cast<long long>(l3.abs_ac10_pml), static_cast<long long>(l3.null_band_pml));
+}
+
 int main() {
     test_numbers();
     test_times();
@@ -1162,6 +1263,8 @@ int main() {
     test_kraken();
     test_itch();
     test_stats();
+    test_stats_window();
+    test_stylised_facts();
     test_session_tape();
     test_calibration_parts();
     test_market_file();

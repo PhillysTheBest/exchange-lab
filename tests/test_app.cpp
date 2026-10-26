@@ -155,6 +155,12 @@ void test_argument_vectors() {
               std::vector<std::string>{"build/release/calibrate", "--known=known"}));
     PX_CHECK((plan("/calibrate --control").run == std::vector<std::string>{"build/release/calibrate", "--control"}));
     PX_CHECK(!plan("/calibrate").error.empty() && !plan("/calibrate a b").error.empty());
+    PX_CHECK((plan("/calibrate demo holdback=30").run ==
+              std::vector<std::string>{"build/release/calibrate", "demo", "holdback=30"}));
+    p = plan("/facts demo");
+    PX_CHECK(p.program == Program::Calibrate && p.build.back() == "build/release/calibrate" &&
+             (p.run == std::vector<std::string>{"build/release/calibrate", "--facts=demo"}));
+    PX_CHECK(!plan("/facts").error.empty() && !plan("/facts a b").error.empty() && !plan("/facts x=1").error.empty());
     PX_CHECK((plan("/compare imbalance smoke market=demo").run ==
               std::vector<std::string>{"build/release/suite_lab", "--candidates=imbalance", "--block=smoke",
                                        "--market=demo"}));

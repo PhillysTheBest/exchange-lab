@@ -239,7 +239,11 @@ Terms are grouped and sorted alphabetically within each group.
 
 **Depth (of a tape)** — How much a data file holds: order by order (L3, every order), price levels (L2, the size at each price) or trades only. Calibration needs L2 or L3; replay needs L3.
 
+**Held-back part (`holdback=`)** — The last part of a tape, by events, that `/calibrate NAME holdback=PCT` keeps from the search and then measures, beside how much the tape's own two parts differ. *Where:* `docs/DATA.md`.
+
 **History cannot react** — The label replay leads with: a recorded order arrives when it did, whatever the strategy does, so what a strategy earns in a replay is the most the recorded flow could have given it, not what would have happened.
+
+**Identification** — Whether one parameter set alone fits a tape. `/calibrate` lists every other set the search ran whose matched statistics are within two standard errors of the chosen one's; any listed means the tape cannot tell them apart.
 
 **Importer** — The code that reads one outside format (LOBSTER, Databento, Tardis, Binance, Coinbase, Kraken, ITCH, any CSV) into a tape. Written from each format's published documentation and tested on hand-made samples in `examples/data/`.
 
@@ -250,6 +254,8 @@ Terms are grouped and sorted alphabetically within each group.
 **Prints per move** — How many prints it takes the mid to move one tick: 20 over the mean squared change of the mid, in ticks, across every run of 20 prints. Calibration's measure of pace.
 
 **Replay (of a tape)** — `/replay NAME`: an order-by-order tape played back through the matching engine, with one strategy trading in it. With no strategy it is a control: the replayed book must equal the tape's own after every event. *Where:* `docs/DATA.md`, "Replay".
+
+**Stylised facts** — The statistics a market model is usually checked against (return and |return| autocorrelation, fat tails, volume against volatility, spread and depth distributions, order flow), printed by `/facts` and `/calibrate` beside the simulated market's, read in intervals of 10 of each tape's own mean times between prints. A diagnostic: never fitted, never a pass or a fail. *Where:* `docs/DATA.md`.
 
 **Tape** — The one internal format every data file is converted to, in `data/NAME.tape`: integer columns of time, event (add, cancel, trade, level, reset), order id, side, price in ticks and quantity, behind a header with the source's `cksum`. Never committed. *Where:* `docs/DATA.md`.
 

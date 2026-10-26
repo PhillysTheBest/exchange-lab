@@ -78,15 +78,24 @@ inline constexpr CommandInfo kCommands[] = {
      "  /data add examples/data/trades.csv name=demo-trades\n"
      "  /data add quotes.csv columns=time,bid,bid_qty,ask,ask_qty\n"
      "  /data show demo-2012-06-21"},
-    {"/calibrate", "NAME", "set the market to resemble a tape, and check that it is still a market",
+    {"/calibrate", "NAME [holdback=PCT]", "set the market to resemble a tape, and check that it is still a market",
      "Runs calibrate. It first runs the known-answer control, then moves the market's spread,\n"
-     "order size and pace until its statistics match the tape's, then runs the health gate on\n"
-     "64 seeds, and only then writes markets/NAME.cfg for /compare, /watch and /sweep market=NAME.\n"
+     "order size and pace until its statistics match the tape's, says which other settings the\n"
+     "tape cannot tell apart, runs the health gate on 64 seeds, prints the stylised facts it did\n"
+     "not fit, and only then writes markets/NAME.cfg for /compare, /watch and /sweep market=NAME.\n"
+     "holdback=30 fits the first 70% of the tape and checks the fit on the rest.\n"
      "A trades-only tape is refused: the control does not hold from trades alone.\n"
      "--known=NAME writes a tape whose answer is known, to try the whole path on.\n"
      "  /calibrate --known=known\n"
      "  /calibrate known\n"
+     "  /calibrate known holdback=30\n"
      "  /calibrate --control"},
+    {"/facts", "NAME", "a tape's stylised facts beside the simulated market's: a diagnostic, not a test",
+     "Runs calibrate --facts=NAME. Return and |return| autocorrelation, tails, volume against\n"
+     "volatility, the spread and depth distributions and order flow, for the tape, the standard\n"
+     "market and, if markets/NAME.cfg exists, the market calibrated to it. Each is read in\n"
+     "intervals of 10 of its own mean times between prints. Nothing here is fitted or judged.\n"
+     "  /facts known"},
     {"/replay", "NAME [STRATEGY] [reaction=T] [from=T] [for=T]",
      "play an order-by-order tape back through the engine, with one strategy trading in it",
      "Runs replay. With no strategy it runs the control: the replayed book must be the tape's\n"
@@ -380,9 +389,10 @@ struct Plan {
     }
 
     if (cmd == "/calibrate") {
-        // A tape's name, or the program's own flags as given: --known=, --control, --robustness.
+        // A tape's name, or the program's own flags as given: --known=, --control,
+        // --robustness, and settings such as holdback=30.
         std::size_t names = 0;
-        for (const std::string& a : args) names += starts_with(a, "-") ? 0 : 1;
+        for (const std::string& a : args) names += starts_with(a, "-") || a.find('=') != std::string::npos ? 0 : 1;
         if (args.empty() || names > 1) {
             p.error = "say which tape: /calibrate NAME; /data lists them";
             return p;
@@ -390,6 +400,17 @@ struct Plan {
         p.build = make_target(env, program_path(env, "calibrate"));
         p.run = {program_path(env, "calibrate")};
         p.run.insert(p.run.end(), args.begin(), args.end());
+        p.program = Program::Calibrate;
+        return p;
+    }
+
+    if (cmd == "/facts") {
+        if (args.size() != 1 || starts_with(args[0], "-") || args[0].find('=') != std::string::npos) {
+            p.error = "say which tape: /facts NAME; /data lists them";
+            return p;
+        }
+        p.build = make_target(env, program_path(env, "calibrate"));
+        p.run = {program_path(env, "calibrate"), "--facts=" + args[0]};
         p.program = Program::Calibrate;
         return p;
     }

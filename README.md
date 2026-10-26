@@ -56,7 +56,8 @@ project is built to show.
 | `/watch [NAME,...] [seed=N]` | watch the market trade live, full screen |
 | `/sweep FLAGS` | run one market many times, changing one thing |
 | `/data add FILE`, `/data show NAME` | bring a market data file you have in as a tape, and see what it holds |
-| `/calibrate NAME` | set the simulated market to resemble a tape, behind a known-answer control |
+| `/calibrate NAME [holdback=PCT]` | set the simulated market to resemble a tape, behind a known-answer control; `holdback=30` checks the fit on the part it never saw |
+| `/facts NAME` | the stylised facts calibration does not fit, the tape's beside the simulated market's |
 | `/replay NAME [STRATEGY]` | play an order-by-order tape back through the engine, with one strategy in it |
 | `/controls` | check the evaluator itself against answers known in advance |
 | `/book` | an order book you drive by hand |

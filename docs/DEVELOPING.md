@@ -97,7 +97,8 @@ mingw32-make controls   # the evaluator's own controls on the standard block (do
 mingw32-make reproduce RUN=runs/x   # re-run a run from its suite.cfg, compare every file (docs/REPRODUCE.md)
 mingw32-make test-app   # the app driven through its commands (writes runs/maker-smoke)
 mingw32-make data FILE=path [OPTS='name=x']   # bring a market data file in as data/NAME.tape (docs/DATA.md)
-mingw32-make calibrate TAPE=name   # data/NAME.tape -> markets/NAME.cfg; then compare/sweep_lab/arena_lab take a market
+mingw32-make calibrate TAPE=name [HOLDBACK=30]   # data/NAME.tape -> markets/NAME.cfg; then compare/sweep_lab/arena_lab take a market
+mingw32-make facts TAPE=name       # its stylised facts beside the simulated market's: a diagnostic, never a gate
 mingw32-make compare CANDIDATES=a MARKET=name  # the standard experiment on a calibrated market (suite_lab only)
 mingw32-make replay TAPE=name [STRATEGY=s]   # an L3 tape through the engine: the control, or one strategy in it
 mingw32-make test-data  # ingest on the samples, the known-answer control, a calibrated market end to end (~90 s)
@@ -464,8 +465,14 @@ loose from the fundamental is not a market and nothing read off one counts.
 - **No calibrated result without the known-answer control.** `calibrate` runs it on the build
   first and refuses if it does not hold; a trades-only tape is refused because it does not.
   `calibrate --robustness` recovers 13 of 15 known-answer runs within one grid step; do not
-  describe calibration as exact. `replay`'s control has two planted defects in `test_data`;
-  keep that pairing when changing it.
+  describe calibration as exact, and do not describe a calibrated market's parameters as the
+  only ones that fit: `calibrate` lists the others the tape cannot tell apart (`identified.*`).
+  `replay`'s control has two planted defects in `test_data`; keep that pairing when changing it.
+- **The stylised facts are a diagnostic, never a gate** (`stylised_facts()` in
+  `marketdata/stats.hpp`, `/facts`). Nothing is fitted to them and nothing passes or fails on
+  them; do not combine them into a realism score. They sample each tape in intervals of its
+  own mean time between prints, never on a clock. `tape_stats()` takes a window only for
+  `holdback=`; its unbounded default is the statistic it always was, which `test_data` holds.
 
 ## Conventions
 
