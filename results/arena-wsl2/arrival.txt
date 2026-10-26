@@ -1,0 +1,40 @@
+arena sweep — simulated, not measured. The engine's latency is in README.md.
+  sweeping noise.timer_ns over 4 points, 24 shared seeds each, 200000 requests per session
+
+  2500           done
+  5000           done
+  10000          done
+  40000          done
+
+market health — every point must look like a market, or nothing below counts
+  noise.timer_ns | |mid - fundamental|      | worst     | one-sided  | trades
+  ----------------------------------------------------------------------------------
+  2500           |   1.77 ticks ( 1.40..31.97) |     22 tk |      0.3% |    24654
+  5000           |   4.24 ticks ( 1.44..44.16) |     44 tk |      0.6% |    27880
+  10000          |  10.64 ticks ( 1.78..67.79) |     63 tk |      0.6% |    31283
+  40000          |  43.28 ticks ( 3.31..129.00) |    152 tk |      0.9% |    34222
+
+levels - medians across 24 seeds, range in brackets, currency units
+  noise.timer_ns | maker value                      | adverse    | spread     | rival     | informed  | fills
+  ----------------------------------------------------------------------------------------------------------------
+  2500           |   +3397.97 ( +1002.35.. +4125.35) |     +4.724 |  +3511.941 |  +3283.80 |  +1021.05 |    8716
+  5000           |   +3653.07 (  +707.25.. +4596.40) |     -0.196 |  +3235.025 |  +3612.28 |  +1442.50 |    9648
+  10000          |   +3888.43 ( +1407.90.. +5072.15) |    -28.140 |  +2904.584 |  +4073.20 |  +1169.95 |   10870
+  40000          |   +3046.97 ( -3098.15.. +5345.40) |     -3.899 |  +2477.379 |  +3108.93 |  +3344.12 |   13004
+
+paired against noise.timer_ns = 2500, seed by seed - the statistic to read
+  noise.timer_ns | maker value, paired                | adverse per fill, paired           | value separated?
+  ----------------------------------------------------------------------------------------------------------
+  2500           |       +0.00 (     +0.00..     +0.00) |      +0.000 (    +0.000..    +0.000) | baseline
+  5000           |     +167.83 (  -2340.85..  +1383.80) |     -16.859 (  -118.277..  +163.365) | no
+  10000          |     +514.97 (  -1640.20..  +3551.95) |     -18.927 (  -160.538..  +141.841) | no
+  40000          |     -376.03 (  -6801.60..  +3982.05) |      -5.645 (  -185.829..  +149.161) | no
+
+  noise.timer_ns 2500 -> 40000
+    maker value, paired   -376.03   (range -6801.60..+3982.05 over 24 seeds)
+    the paired range STRADDLES zero, so the difference is NOT established at this seed count.
+    share of flow         8716 fills -> 13004 fills, 16012 looks at the market -> 87515
+  Value moves for two reasons at once: a slower maker is picked off more per fill, and it also
+  gets fewer fills, because it cannot keep a quote standing. Separate them by reading
+  `adverse` — which is per fill, so flow-independent — beside the fill counts.
+  session hash at seed 42, per point: f405c1f07e513633 841b0401a9751a27 35859f327b69af22 c14c69c5f68cd784

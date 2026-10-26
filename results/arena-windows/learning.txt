@@ -1,0 +1,40 @@
+arena sweep — simulated, not measured. The engine's latency is in README.md.
+  sweeping maker.impact_centiticks over 4 points, 24 shared seeds each, 200000 requests per session
+
+  15             done
+  30             done
+  60             done
+  120            done
+
+market health — every point must look like a market, or nothing below counts
+  maker.impact_centiticks | |mid - fundamental|      | worst     | one-sided  | trades
+  ----------------------------------------------------------------------------------
+  15             |  10.64 ticks ( 1.78..67.79) |     63 tk |      0.6% |    31283
+  30             |  13.13 ticks ( 1.39..86.39) |     71 tk |      1.1% |    29858
+  60             |  33.11 ticks ( 2.45..127.95) |    118 tk |      1.7% |    26716
+  120            |  41.16 ticks ( 7.77..95.85) |    173 tk |      1.9% |    23470
+
+levels - medians across 24 seeds, range in brackets, currency units
+  maker.impact_centiticks | maker value                      | adverse    | spread     | rival     | informed  | fills
+  ----------------------------------------------------------------------------------------------------------------
+  15             |   +3888.43 ( +1407.90.. +5072.15) |    -28.140 |  +2904.584 |  +4073.20 |  +1169.95 |   10870
+  30             |   +3876.28 (  +969.00.. +5818.70) |    +15.856 |  +3084.014 |  +3760.43 |   +586.23 |   10656
+  60             |   +3387.15 (  +373.25.. +5808.55) |     +5.195 |  +2985.132 |  +3491.98 |   -548.60 |    9257
+  120            |   +2019.93 (  -559.90.. +5163.25) |    -11.360 |  +2161.875 |  +2455.95 |   +281.45 |    7857
+
+paired against maker.impact_centiticks = 15, seed by seed - the statistic to read
+  maker.impact_centiticks | maker value, paired                | adverse per fill, paired           | value separated?
+  ----------------------------------------------------------------------------------------------------------
+  15             |       +0.00 (     +0.00..     +0.00) |      +0.000 (    +0.000..    +0.000) | baseline
+  30             |      -45.80 (  -1032.75..  +1482.80) |     +12.392 (  -105.480..  +177.088) | no
+  60             |     -846.85 (  -2009.75..  +2166.50) |     +14.079 (   -98.297..  +109.887) | no
+  120            |    -2159.25 (  -3236.40..  +2153.30) |     +15.028 (  -221.625..  +122.802) | no
+
+  maker.impact_centiticks 15 -> 120
+    maker value, paired   -2159.25   (range -3236.40..+2153.30 over 24 seeds)
+    the paired range STRADDLES zero, so the difference is NOT established at this seed count.
+    share of flow         10870 fills -> 7857 fills, 41454 looks at the market -> 37510
+  Value moves for two reasons at once: a slower maker is picked off more per fill, and it also
+  gets fewer fills, because it cannot keep a quote standing. Separate them by reading
+  `adverse` — which is per fill, so flow-independent — beside the fill counts.
+  session hash at seed 42, per point: 35859f327b69af22 610ff630b6a09d67 2bce3acbc4389bbf 70947ecf0458cabf

@@ -1,0 +1,40 @@
+arena sweep — simulated, not measured. The engine's latency is in README.md.
+  sweeping maker.half_spread_ticks over 4 points, 24 shared seeds each, 200000 requests per session
+
+  1              done
+  2              done
+  4              done
+  8              done
+
+market health — every point must look like a market, or nothing below counts
+  maker.half_spread_ticks | |mid - fundamental|      | worst     | one-sided  | trades
+  ----------------------------------------------------------------------------------
+  1              |   9.16 ticks ( 1.30..68.49) |     64 tk |      0.2% |    30460
+  2              |  10.64 ticks ( 1.78..67.79) |     63 tk |      0.6% |    31283
+  4              |  11.37 ticks ( 1.63..57.81) |     61 tk |      0.5% |    31114
+  8              |  11.04 ticks ( 1.65..55.25) |     64 tk |      0.4% |    31653
+
+levels - medians across 24 seeds, range in brackets, currency units
+  maker.half_spread_ticks | maker value                      | adverse    | spread     | rival     | informed  | fills
+  ----------------------------------------------------------------------------------------------------------------
+  1              |   +2367.57 (  +892.15.. +2964.55) |     +5.557 |   +981.121 |  +1238.90 |  +1714.53 |   20796
+  2              |   +3888.43 ( +1407.90.. +5072.15) |    -28.140 |  +2904.584 |  +4073.20 |  +1169.95 |   10870
+  4              |   +1076.03 (  -515.10.. +1884.30) |    -13.369 |  +4261.932 |  +7056.02 |  +1535.90 |    1487
+  8              |    +744.05 (  -959.70.. +1690.80) |    +48.252 |  +5608.685 |  +7508.62 |  +1069.18 |     477
+
+paired against maker.half_spread_ticks = 1, seed by seed - the statistic to read
+  maker.half_spread_ticks | maker value, paired                | adverse per fill, paired           | value separated?
+  ----------------------------------------------------------------------------------------------------------
+  1              |       +0.00 (     +0.00..     +0.00) |      +0.000 (    +0.000..    +0.000) | baseline
+  2              |    +1697.60 (   +494.95..  +2781.90) |      -0.750 (  -113.941..   +84.369) | yes
+  4              |    -1184.25 (  -1662.30..   -360.30) |      -8.811 (  -483.411..  +866.527) | yes
+  8              |    -1513.52 (  -2513.90..   -897.45) |     +76.501 (  -983.305..  +913.628) | yes
+
+  maker.half_spread_ticks 1 -> 8
+    maker value, paired   -1513.52   (range -2513.90..-897.45 over 24 seeds)
+    the paired range does not cross zero, so the difference is established at this seed count.
+    share of flow         20796 fills -> 477 fills, 40905 looks at the market -> 37759
+  Value moves for two reasons at once: a slower maker is picked off more per fill, and it also
+  gets fewer fills, because it cannot keep a quote standing. Separate them by reading
+  `adverse` — which is per fill, so flow-independent — beside the fill counts.
+  session hash at seed 42, per point: 88d82c44d20421eb 35859f327b69af22 72b432cb976b5fe7 4103ec23a4151264

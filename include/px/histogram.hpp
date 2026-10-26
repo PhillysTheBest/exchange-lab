@@ -11,7 +11,7 @@
 // sorting happen after the run.
 #pragma once
 
-#include "tsc_clock.hpp"
+#include "cycle_clock.hpp"
 #include "types.hpp"
 
 #include <algorithm>

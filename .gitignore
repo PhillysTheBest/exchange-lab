@@ -13,3 +13,16 @@ __pycache__/
 
 # Per-machine Claude Code settings
 .claude/settings.local.json
+
+# Strategies installed with `make strategy STRATEGY=...`. Only the .gitkeep is
+# tracked: a strategy of your own stays yours.
+arena/strategies/user/*.hpp
+
+# Standard-suite run directories (make compare). They belong to whoever ran
+# them; the published evidence is results/.
+runs/
+
+# Market data brought in with /data add (docs/DATA.md) and markets calibrated from
+# it. A tape made from data you paid for must never be committed.
+/data/
+/markets/

@@ -28,7 +28,7 @@
 #include "px/histogram.hpp"
 #include "px/matching_engine.hpp"
 #include "px/platform.hpp"
-#include "px/tsc_clock.hpp"
+#include "px/cycle_clock.hpp"
 #include "sim/alloc_counter.hpp"
 #include "sim/order_stream.hpp"
 #include "sim/pipeline.hpp"
@@ -145,8 +145,9 @@ int main(int argc, char** argv) {
     const auto stream = sim::generate_order_stream(scfg, &mix);
 
     std::printf("MATCHING LATENCY: dequeue from the inbound ring -> last event written to the outbound ring\n");
-    std::printf("machine    invariant TSC: %s, %.3f ticks/ns; timer floor %.0f ns (p50 of an empty bracket), not subtracted\n",
-                clock.invariant_tsc() ? "yes" : "NO", clock.ticks_per_ns(), floor_ns);
+    std::printf("machine    counter %s, constant rate: %s, %.3f ticks/ns, resolution %.2f ns; timer floor %.0f ns "
+                "(p50 of an empty bracket), not subtracted\n",
+                kCounterName, clock.invariant_tsc() ? "yes" : "NO", clock.ticks_per_ns(), clock.resolution_ns(), floor_ns);
     const auto pct = [&](std::size_t x) { return 100.0 * static_cast<double>(x) / static_cast<double>(stream.size()); };
     std::printf("stream     profile %s, seed %llu, %u instruments, %zu requests = %zu warmup + %zu recorded, %s\n",
                 profile.c_str(), static_cast<unsigned long long>(seed), instruments, stream.size(), warmup, orders,
@@ -216,6 +217,8 @@ int main(int argc, char** argv) {
             classes = res.classes;
             std::printf("threads    gateway cpu %d, matcher cpu %d, publisher cpu %d%s\n", res.gateway_cpu,
                         res.matcher_cpu, res.publisher_cpu, pin ? "" : " (pinning disabled)");
+            std::printf("affinity   gateway %s, matcher %s, publisher %s\n", affinity_name(res.gateway_affinity),
+                        affinity_name(res.matcher_affinity), affinity_name(res.publisher_affinity));
             std::printf("book       at the end: %zu resting orders on %zu levels, deepest side %u of %u levels\n",
                         engine->resting_orders(), engine->live_levels(), deepest, engine->config().levels_per_side);
             std::printf("\nrun 1 of %u, every recorded order, by kind of work:\n", repeat);

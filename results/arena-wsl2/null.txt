@@ -1,0 +1,43 @@
+arena sweep — simulated, not measured. The engine's latency is in README.md.
+  sweeping maker.reaction_ns over 4 points, 24 shared seeds each, 200000 requests per session
+  fixed    informed.enabled = 0
+
+  1000           done
+  10000          done
+  100000         done
+  1000000        done
+
+market health — every point must look like a market, or nothing below counts
+  maker.reaction_ns | |mid - fundamental|      | worst     | one-sided  | trades
+  ----------------------------------------------------------------------------------
+  1000           |  41.48 ticks (14.72..111.64) |    112 tk |      0.1% |    25164
+  10000          |  42.93 ticks (20.84..112.21) |    109 tk |      0.1% |    25400
+  100000         |  44.88 ticks (14.98..112.95) |    111 tk |      0.0% |    26782
+  1000000        |  47.13 ticks (15.94..130.94) |    116 tk |      0.1% |    28194
+
+levels - medians across 24 seeds, range in brackets, currency units
+  maker.reaction_ns | maker value                      | adverse    | spread     | rival     | informed  | fills
+  ----------------------------------------------------------------------------------------------------------------
+  1000           |   +5263.90 ( +2578.75.. +6615.85) |    +13.152 |  +4282.102 |  +5210.18 |     +0.00 |    9662
+  10000          |   +5263.52 ( +2831.35.. +7168.10) |     -3.069 |  +4281.748 |  +5001.90 |     +0.00 |   10068
+  100000         |   +5123.90 ( +2666.40.. +7006.25) |    +16.320 |  +4235.414 |  +5262.62 |     +0.00 |    9958
+  1000000        |   +1953.78 (  -409.00.. +3822.35) |    +73.678 |  +5432.865 |  +8332.83 |     +0.00 |    2061
+
+paired against maker.reaction_ns = 1000, seed by seed - the statistic to read
+  maker.reaction_ns | maker value, paired                | adverse per fill, paired           | value separated?
+  ----------------------------------------------------------------------------------------------------------
+  1000           |       +0.00 (     +0.00..     +0.00) |      +0.000 (    +0.000..    +0.000) | baseline
+  10000          |     +207.85 (    -58.10..   +552.25) |     -14.789 (  -149.150..  +133.539) | no
+  100000         |     +137.80 (   -270.10..   +566.40) |      +5.537 (  -129.125..  +116.903) | no
+  1000000        |    -2948.30 (  -3570.25..  -2417.15) |     +53.435 (  -356.157..  +311.604) | yes
+
+  maker.reaction_ns 1000 -> 1000000
+    maker value, paired   -2948.30   (range -3570.25..-2417.15 over 24 seeds)
+    the paired range does not cross zero, so the difference is established at this seed count.
+    share of flow         9662 fills -> 2061 fills, 48795 looks at the market -> 17167
+  Value moves for two reasons at once: a slower maker is picked off more per fill, and it also
+  gets fewer fills, because it cannot keep a quote standing. Separate them by reading
+  `adverse` — which is per fill, so flow-independent — beside the fill counts.
+
+  replay: every session run twice, hashes identical
+  session hash at seed 42, per point: d1a772b8e7194d21 e7d2ba81ae4a71a3 e75aafbb0554df94 204a69b03eda9ecd

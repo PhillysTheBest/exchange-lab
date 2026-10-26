@@ -1,0 +1,25 @@
+engine.determinism hash=77a560d8ffb4fa43 events=422683
+arena.session hash=2853d2127a3486c5
+arena.frame hash=ddfa48c44bff4de8
+sweep.seed42 aebce54544c10ca5 35859f327b69af22 800430353d000562 9f777b5eb3508703
+suite.standard fingerprint=d461c30ab2446acf
+suite.wide fingerprint=9bb1a7c184ccb2d7
+suite.busy fingerprint=5d735a9faa384bf5
+run.sessions.csv 1467512342 2455
+run.participants.csv 2386869625 8327
+tape.demo-2024-01-02 1236183483 1019
+tape.btcusdt-bookticker-2024-01-02 3519807161 819
+tape.btcusdt-trades-2024-01-02 1799304888 600
+tape.demo-2012-06-21 3331186535 23452
+tape.ethusdt-trades-2025-01-02 410291049 650
+tape.xbtusd 882724756 697
+tape.coinbase_feed 3649381877 867
+tape.databento_mbo 3688712281 856
+tape.demo-demo-2024-01-02 1053739152 1058
+tape.quotes_and_trades 3658839800 45265
+tape.trades 2503151362 13448
+tape.known 1284219359 927453
+derived.run.comparison.csv 972055711 266
+derived.run.evaluation.csv 1223049704 1182
+derived.run.attribution.csv 1084560872 521
+derived.run.report.txt 2440229765 4503
