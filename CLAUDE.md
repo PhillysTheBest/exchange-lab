@@ -103,6 +103,7 @@ mingw32-make replay TAPE=name [STRATEGY=s]   # an L3 tape through the engine: th
 mingw32-make test-data  # ingest on the samples, the known-answer control, a calibrated market end to end (~90 s)
 mingw32-make canonical  # every output that must match on every platform, diffed with tests/canonical.txt
 mingw32-make memmove-check   # the engine object calls no memmove, whichever compiler built it
+mingw32-make recipe-check    # no Makefile command near the 8,191 bytes past which MSYS2's make drops the rest
 mingw32-make all        # tests, command-line, lab, app and data checks, benchmarks, REPL, arena
 mingw32-make clean
 ```
@@ -417,6 +418,10 @@ loose from the fundamental is not a market and nothing read off one counts.
   CRLF unless you write bytes or pass `newline=''`, and Windows binaries write CRLF
   through stdout redirection, so generated evidence needs normalising before it is
   committed.
+- **MSYS2's make cuts a shell command off at 8,191 bytes** and runs what is left, so a
+  check target longer than that passes on Windows without running its end. `test-data`
+  did, unnoticed, until 2026-10-26. A long check is several recipe commands, each under
+  7,500 bytes, which `make recipe-check` holds (`docs/PLATFORMS.md`).
 - Rebuilding `sweep.exe` or `arena.exe` while one is still running fails with a bare
   `Permission denied` from the linker on Windows. Check for the process first.
 - `arena/term.hpp` reaches for `<windows.h>` and `<termios.h>`, so exactly one

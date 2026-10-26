@@ -112,7 +112,7 @@ clang 18 and libc++ 18 on Linux, and with Apple's libc++ on macOS.
 |---|---|---|
 | `linux-gcc` | Ubuntu 24.04, x86-64 | `test`, `test-cli`, `test-lab`, `test-app`, `test-data`, `memmove-check`, `canonical`, the benchmarks starting, and the sanitizer build |
 | `linux-clang-libcxx` | Ubuntu 24.04, x86-64 | `test`, `memmove-check`, `canonical` |
-| `windows` | Windows, MSYS2 UCRT64 | what `linux-gcc` runs, except the sanitizers |
+| `windows` | Windows, MSYS2 UCRT64 | `recipe-check`, and what `linux-gcc` runs, except the sanitizers |
 | `macos-arm64` | macOS 14, ARM64 | `test`, `test-app`, `test-data`, `canonical`, the benchmarks starting |
 | `linux-arm64` | Ubuntu 24.04, ARM64 | `test`, `canonical`. It never fails the run. |
 | `compare` | after all of them | each job's canonical record against `tests/canonical.txt`, naming the target and the line |
@@ -123,7 +123,8 @@ run only to show they start. Shared runners cannot arbitrate service time, so th
 timings are never read. The workflow installs a compiler, plus `diffutils` on MSYS2, and
 nothing else.
 
-Two things the Windows runner found that the development laptop had not:
+Three things the Windows runner found. The development laptop had not shown the first
+two; the third happens there too.
 
 - **Glob order.** `examples/data/*` expanded case-insensitively there, which reordered
   three tape lines whose values were identical. `tools/canonical.sh` now sets `LC_ALL=C`.
@@ -137,6 +138,17 @@ Two things the Windows runner found that the development laptop had not:
   established it (issue #3). `test-cli`, `test-data` and `make canonical` now report a
   difference only when `cmp` or `diff` finds one, and fail with "could not compare" when
   either cannot run.
+- **Commands cut off at 8,191 bytes, silently.** MSYS2's `mingw32-make` cuts a recipe's
+  shell command off at 8,191 bytes and runs what is left. Where the cut lands inside a
+  quoted string or a word, the shell reports an error. Anywhere else, the rest never runs
+  and the target exits 0. `test-data` was one command of 13,760 bytes, so on every
+  Windows run until then its replay checks, the known-answer control and the calibrated
+  market never ran, and the job passed: the log ends at `== replay`. It came to light
+  when the fix for the missing `cmp` made `test-cli` 8,268 bytes, which cut it off after
+  a `grep` that then had no pattern. Both targets are now split into several commands,
+  the longest about 6,800 bytes once expanded, and `make recipe-check`, run by the Windows
+  job, fails if any command in the Makefile reaches 7,500 bytes. The cut-off was measured
+  with the laptop's MSYS2 (GNU Make 4.4.1, bash 5.2.21), at the byte.
 
 ## Not done, and why
 
