@@ -1,5 +1,5 @@
-"""bench/summarize_results.py — turn results/<label>/ into the tables the README
-quotes. Reporting rule (fixed, not chosen after the fact): for each profile, each
+"""bench/summarize_results.py — turn results/<label>/ into the tables README.md and docs/ENGINE.md
+quote. Reporting rule (fixed, not chosen after the fact): for each profile, each
 percentile is the MEDIAN across the five seeds with the min-max range beside it;
 "max" is the single worst order over every run; "over 2 us" is summed over every
 run. Standard library only.

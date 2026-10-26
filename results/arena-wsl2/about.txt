@@ -1,0 +1,12 @@
+arena evidence
+label:    wsl2
+date:     2026-10-04T19:59:38Z
+commit:   75b566d
+dirty:    2 files
+compiler: g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+binary:   build-linux/release/sweep
+uname:    Linux 6.18.33.2-microsoft-standard-WSL2 x86_64
+
+Every number in this directory is simulated. Reaction delays are inputs
+chosen by the experimenter, not measurements. The engine's measured
+latency is in results/windows/ and results/wsl2/ and is unrelated.

@@ -1,0 +1,38 @@
+arena sweep — simulated, not measured. The engine's latency is in README.md.
+  sweeping maker.skew_ticks_at_limit over 3 points, 24 shared seeds each, 200000 requests per session
+  fixed    maker.impact_centiticks = 0
+  fixed    rival.impact_centiticks = 15
+
+  0              done
+  4              done
+  40             done
+
+market health — every point must look like a market, or nothing below counts
+  maker.skew_ticks_at_limit | |mid - fundamental|      | worst     | one-sided  | trades
+  ----------------------------------------------------------------------------------
+  0              |  24.97 ticks ( 4.74..83.54) |     94 tk |      1.3% |    41074
+  4              |  21.70 ticks ( 3.38..79.14) |     90 tk |      0.9% |    39912
+  40             |  10.45 ticks ( 1.54..69.01) |     67 tk |      0.4% |    32706
+
+levels - medians across 24 seeds, range in brackets, currency units
+  maker.skew_ticks_at_limit | maker value                      | adverse    | spread     | rival     | informed  | fills
+  ----------------------------------------------------------------------------------------------------------------
+  0              |   +3008.73 ( -3146.00..+10667.55) |     -2.392 |  +3494.247 |  +8818.17 |  +6275.70 |    9029
+  4              |   +2836.40 ( -2529.55.. +8106.05) |    +16.197 |  +3116.186 |  +8457.97 |  +5656.38 |    8902
+  40             |   +4051.23 (  -910.00.. +7097.25) |    +10.123 |  +2790.733 |  +4600.10 |  +2027.22 |   11376
+
+paired against maker.skew_ticks_at_limit = 0, seed by seed - the statistic to read
+  maker.skew_ticks_at_limit | maker value, paired                | adverse per fill, paired           | value separated?
+  ----------------------------------------------------------------------------------------------------------
+  0              |       +0.00 (     +0.00..     +0.00) |      +0.000 (    +0.000..    +0.000) | baseline
+  4              |     -123.78 (  -3250.85..  +1888.95) |     +28.513 ( -2584.741..  +567.363) | no
+  40             |     +776.88 (  -4596.55..  +3412.15) |     +10.006 ( -3905.412.. +1834.174) | no
+
+  maker.skew_ticks_at_limit 0 -> 40
+    maker value, paired   +776.88   (range -4596.55..+3412.15 over 24 seeds)
+    the paired range STRADDLES zero, so the difference is NOT established at this seed count.
+    share of flow         9029 fills -> 11376 fills, 49574 looks at the market -> 42609
+  Value moves for two reasons at once: a slower maker is picked off more per fill, and it also
+  gets fewer fills, because it cannot keep a quote standing. Separate them by reading
+  `adverse` — which is per fill, so flow-independent — beside the fill counts.
+  session hash at seed 42, per point: e5ff0105c7f90f08 805e84b3069df9be 092c8bcd53ed362b

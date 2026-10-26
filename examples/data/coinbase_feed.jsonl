@@ -1,0 +1,9 @@
+{"type":"subscriptions","channels":[{"name":"level2_batch","product_ids":["BTC-USD"]},{"name":"matches","product_ids":["BTC-USD"]}]}
+{"type":"snapshot","product_id":"BTC-USD","bids":[["42000.01","0.5"],["42000.00","1.25"]],"asks":[["42000.02","0.75"],["42000.05","2"]]}
+{"type":"last_match","trade_id":100,"maker_order_id":"5e1c2c0a","taker_order_id":"9b0e7d11","side":"buy","size":"0.1","price":"41999.99","product_id":"BTC-USD","sequence":1,"time":"2024-01-02T08:59:59.000000Z"}
+{"type":"l2update","product_id":"BTC-USD","changes":[["buy","42000.01","0.7"]],"time":"2024-01-02T09:00:00.100000Z"}
+{"type":"match","trade_id":101,"maker_order_id":"77c1d0e2","taker_order_id":"0a9f3b44","side":"sell","size":"0.25","price":"42000.02","product_id":"BTC-USD","sequence":3,"time":"2024-01-02T09:00:00.200000Z"}
+{"type":"l2update","product_id":"BTC-USD","changes":[["sell","42000.02","0.5"]],"time":"2024-01-02T09:00:00.200500Z"}
+{"type":"heartbeat","last_trade_id":101,"product_id":"BTC-USD","sequence":4,"time":"2024-01-02T09:00:00.500000Z"}
+{"type":"match","trade_id":102,"maker_order_id":"3d2a9c55","taker_order_id":"e4b8f066","side":"buy","size":"0.7","price":"42000.01","product_id":"BTC-USD","sequence":5,"time":"2024-01-02T09:00:00.600000Z"}
+{"type":"l2update","product_id":"BTC-USD","changes":[["buy","42000.01","0"],["buy","42000.00","1.5"]],"time":"2024-01-02T09:00:00.600300Z"}
