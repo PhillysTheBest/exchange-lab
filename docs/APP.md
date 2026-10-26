@@ -48,7 +48,8 @@ need the session code compiled twice anyway.
 | `/watch [NAME,...] [seed=N] [still=NS] [script=PATH] [lineup=SPEC] [market=M]` | the live viewer, full screen, back to the prompt on `q` | `arena_lab` |
 | `/sweep [FLAGS] [market=M]` | free exploration: change one thing, many seeds | `sweep_lab`, flags passed through |
 | `/data [add FILE \| show NAME \| remove NAME]` | imports a data file you have into `data/NAME.tape`, lists the tapes, or shows one | `ingest` |
-| `/calibrate NAME` | runs the known-answer control, sets the market to resemble the tape, runs the health gate, writes `markets/NAME.cfg` | `calibrate` |
+| `/calibrate NAME [holdback=PCT]` | runs the known-answer control, sets the market to resemble the tape, says what else fits, runs the health gate, prints what was not fitted, writes `markets/NAME.cfg` | `calibrate` |
+| `/facts NAME` | the tape's stylised facts beside the standard market's and the calibrated one's: a diagnostic | `calibrate --facts=` |
 | `/replay NAME [STRATEGY] [reaction=T] [from=T] [for=T]` | plays an order-by-order tape back through the engine: the control alone, or one strategy in it | `replay` |
 | `/controls [smoke]` | the evaluator's own controls | `controls` |
 | `/book` | an order book driven by hand | `repl` |

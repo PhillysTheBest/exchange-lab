@@ -467,7 +467,7 @@ test-app: $(APP_BIN) $(LAB_BINS) $(REL)/controls$(EXE) $(REPL_BIN) $(INGEST_BIN)
 # of the market, so an importer cannot reach a session, a hash or a published
 # number. data/ and markets/ are git-ignored: a tape made from data you paid for
 # stays yours. Only the lab programs read a market (--market=NAME).
-.PHONY: data calibrate replay test-data
+.PHONY: data calibrate facts replay test-data
 
 $(INGEST_BIN): $(ROBJ)/marketdata/ingest.o
 	$(call announce,linking,$@)
@@ -485,7 +485,12 @@ data: $(INGEST_BIN)
 
 calibrate: $(CALIBRATE_BIN)
 	@[ -n '$(TAPE)' ] || { echo "make calibrate: say which tape: make calibrate TAPE=name (make data lists them)" >&2; exit 2; }
-	./$(CALIBRATE_BIN) '$(TAPE)'
+	./$(CALIBRATE_BIN) '$(TAPE)' $(if $(HOLDBACK),holdback=$(HOLDBACK))
+
+# A tape's stylised facts beside the simulated market's: a diagnostic, never a gate.
+facts: $(CALIBRATE_BIN)
+	@[ -n '$(TAPE)' ] || { echo "make facts: say which tape: make facts TAPE=name (make data lists them)" >&2; exit 2; }
+	./$(CALIBRATE_BIN) --facts='$(TAPE)'
 
 # An order-by-order tape played back through the engine; history cannot react.
 #   make replay TAPE=name [STRATEGY=name] [OPTS='from=1h for=10m reaction=50us']
@@ -634,6 +639,7 @@ test-data: $(INGEST_BIN) $(CALIBRATE_BIN) $(REPLAY_BIN) $(LAB_BINS) $(REL)/suite
 	$$C known data=$$D/data markets=$$D/markets > $$D/out || { cat $$D/out; fail "the known tape should calibrate"; }; okm; \
 	grep -q '^status=complete$$' $$M && grep -q '^health.passed=64$$' $$M && grep -q '^control.held=1$$' $$M \
 	    || fail "the market should be complete, admissible and say why"; okm; \
+	! grep -q '^calibration.holdback=' $$M || fail "with nothing held back, no holdback line among its conditions"; okm; \
 	grep -q '^set.maker.half_spread_ticks=3$$' $$M && grep -Eq '^set.noise.qty=(30|40|50)$$' $$M \
 	    && grep -Eq '^set.noise.timer_ns=(15000|20000|30000)$$' $$M || fail "it should recover the known market"; okm; \
 	sed -n 's/^set\./  /p' $$M; \
@@ -667,6 +673,32 @@ test-data: $(INGEST_BIN) $(CALIBRATE_BIN) $(REPLAY_BIN) $(LAB_BINS) $(REL)/suite
 	echo "  fingerprint $$(fp $$D/run) on the market, $$(fp $$D/standard) on standard"; \
 	rm -rf $$D; \
 	echo "$$k/$$k market checks passed"
+	@set -e; \
+	fail() { echo "FAIL: $$1"; exit 1; }; \
+	exits() { want=$$1; shift; rc=0; "$$@" > /dev/null 2>&1 || rc=$$?; [ $$rc -eq $$want ]; }; \
+	C=./$(CALIBRATE_BIN); D=$(BUILD)/facts-test; rm -rf $$D; mkdir -p $$D; f=0; okf() { f=$$((f+1)); }; \
+	echo "== stylised facts, and a calibration checked on the part of its tape it never saw"; \
+	$$C --known=known data=$$D/data > /dev/null; M=$$D/markets/known.cfg; \
+	exits 1 $$C --facts=nosuch data=$$D/data || fail "facts: a missing tape should exit 1"; okf; \
+	exits 2 $$C known holdback=60 data=$$D/data || fail "a holdback past 50% should exit 2"; okf; \
+	exits 2 $$C known holdback=x data=$$D/data || fail "a holdback that is not a number should exit 2"; okf; \
+	exits 2 $$C --facts=known holdback=30 data=$$D/data || fail "facts takes no holdback"; okf; \
+	$$C --facts=known data=$$D/data markets=$$D/markets > $$D/out || fail "facts should run on the known tape"; \
+	grep -q '^   return autocorrelation, lag 1 ' $$D/out && grep -q 'standard market' $$D/out \
+	    && grep -q 'no market known' $$D/out || fail "it should show the tape beside the standard market"; okf; \
+	$$C known holdback=30 data=$$D/data markets=$$D/markets > $$D/out \
+	    || { cat $$D/out; fail "the known tape should calibrate with 30% held back"; }; okf; \
+	grep -q '^2b. The held-back part' $$D/out && grep -q '^4. Statistics that were not fitted' $$D/out \
+	    || fail "it should check the held-back part and print what was not fitted"; okf; \
+	grep -Eq '^   (identified|NOT UNIQUELY IDENTIFIED)' $$D/out || fail "it should say how well the parameters are identified"; okf; \
+	grep -q '^calibration.holdback=last 30% of events, from t=' $$M && grep -q '^holdback.pct=30$$' $$M \
+	    && grep -q '^identified.tried=' $$M || fail "the market should record the holdback among its conditions"; okf; \
+	$$C --facts=known data=$$D/data markets=$$D/markets | grep -q 'market known' || fail "facts should show the calibrated market"; okf; \
+	./$(REL)/suite_lab --market=$$M --candidates=maker --block=smoke --out=$$D/run > /dev/null 2>&1 \
+	    && grep -q '^calibration.holdback=' $$D/run/suite.cfg || fail "a run on it should record the holdback"; okf; \
+	sed -n '/^2b\./,/^   A market/p' $$D/out | sed -n '3,5p'; \
+	rm -rf $$D; \
+	echo "$$f/$$f facts and holdback checks passed"
 
 $(LOBJ)/%.o: %.cpp $(MANIFEST)
 	$(call announce,compiling,$<)

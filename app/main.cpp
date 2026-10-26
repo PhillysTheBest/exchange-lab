@@ -409,9 +409,10 @@ std::vector<std::string> complete(const std::string& line, std::size_t& start) {
     }
     if (cmd == "/calibrate") {
         std::vector<std::string> options = names_in("data", ".tape");
-        options.insert(options.end(), {"--known=", "--control", "--robustness"});
+        options.insert(options.end(), {"--known=", "--control", "--robustness", "holdback="});
         return keep_prefixed(options, word);
     }
+    if (cmd == "/facts") return keep_prefixed(names_in("data", ".tape"), word);
     if (cmd == "/replay") {
         // The tape, then a strategy, then the settings.
         std::size_t names = 0;
