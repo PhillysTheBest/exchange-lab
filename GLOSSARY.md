@@ -219,6 +219,8 @@ Terms are grouped and sorted alphabetically within each group.
 
 **Suite** — A named, versioned set of conditions defined in code; a different set is a new suite, never a flag.
 
+**Suite version** — The number that names one set of a suite's conditions; "standard v1" is one set. Anything that moves the suite's fingerprint (a reference strategy, a default, the session or the engine) needs a version bump, never a silent re-pin. `suite.cfg` records it as `suite.version`, and `CHANGELOG.md` names every bump.
+
 **Sweep** — One parameter varied over several values on shared seeds.
 
 **Underpowered** — Smaller than the seeds could resolve: "not established", not "nothing there".

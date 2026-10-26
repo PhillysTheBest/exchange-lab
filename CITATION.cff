@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+message: >-
+  If you use exchange-lab in teaching or research, cite the tagged release you used,
+  not main. A result here can be reproduced only against a fixed version: a run
+  directory records the commit it was made with, and `make reproduce` compares
+  every file it wrote.
+type: software
+title: exchange-lab
+abstract: >-
+  A price-time-priority exchange matching engine in C++20 and a deterministic
+  market simulator built on it, for teaching and researching trading strategies:
+  paired experiments, tested controls and byte-for-byte reproduction. The market
+  is invented, so what a strategy earns in it predicts nothing about a real venue.
+authors:
+  - given-names: Philbert
+    family-names: Poku
+version: 1.0.0
+date-released: 2026-10-26
+license: Apache-2.0
+repository-code: https://github.com/PhillysTheBest/exchange-lab
+keywords:
+  - market microstructure
+  - matching engine
+  - limit order book
+  - market simulation
+  - trading strategies
+  - reproducibility

@@ -474,6 +474,11 @@ loose from the fundamental is not a market and nothing read off one counts.
   history keeps the trailers it already has; do not rewrite it.
 - Work on a branch, commit in coherent steps whose message says what changed and what
   the evidence was, and never commit a state where `mingw32-make test` fails.
+- **Releases are tagged `vX.Y.Z` on `main`.** Each one adds an entry to `CHANGELOG.md` that
+  names what changed in the engine, the strategies, the scenario definitions, the report's
+  calculations and the output formats, and every fingerprint that moved. It also sets
+  `version` and `date-released` in `CITATION.cff` to the tag. The licence is Apache-2.0,
+  and `CONTRIBUTING.md` states the contributor rules this file holds.
 - Plan before building anything substantial, in a markdown file, not in chat. When the
   thing is built, turn the plan into the design document rather than leaving a stale
   plan behind — `docs/ARENA.md` is what became of the arena's, and it keeps a record
