@@ -5,7 +5,7 @@
 // through the calibrate program, with its planted defects.
 //
 // The samples in examples/data/ are synthetic: made up for these tests, so they
-// carry no licence. The LOBSTER sample comes with its orderbook file, written by
+// carry no one else's licence. The LOBSTER sample comes with its orderbook file, written by
 // the same made-up market, so the book a tape rebuilds can be held to the book
 // LOBSTER's own format says it should be after every message.
 #include "marketdata/calibrate.hpp"
