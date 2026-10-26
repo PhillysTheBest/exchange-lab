@@ -184,7 +184,18 @@ stop orders and auctions.
 | `tests/`, `bench/`, `results/` | tests, benchmarks, and the committed evidence behind every number |
 | `docs/` | [`LEARN`](docs/LEARN.md), [`APP`](docs/APP.md), [`ARENA`](docs/ARENA.md), [`RESULTS`](docs/RESULTS.md), [`RUNNER`](docs/RUNNER.md), [`REPORT`](docs/REPORT.md), [`CONTROLS`](docs/CONTROLS.md), [`REPRODUCE`](docs/REPRODUCE.md), [`DATA`](docs/DATA.md), [`ENGINE`](docs/ENGINE.md), [`PLATFORMS`](docs/PLATFORMS.md) |
 
-## Licence and issues
+## Licence, citing and contributing
 
-There is no licence yet, so all rights are reserved until one is added. Questions and bugs go
-in [GitHub Issues](https://github.com/PhillysTheBest/exchange-lab/issues).
+exchange-lab is licensed under the [Apache License 2.0](LICENSE). That covers the code, the
+documentation, the committed evidence in `results/`, and the sample files in
+`examples/data/`, which were made up by hand and so carry no one else's licence. Data you
+bring in yourself stays yours and is never committed. [`NOTICE`](NOTICE) holds the
+copyright line.
+
+To cite it, use [`CITATION.cff`](CITATION.cff); GitHub shows it as "Cite this repository".
+Cite a tagged release such as `v1.0.0`, not `main`: a result can be reproduced only
+against a fixed version. [`CHANGELOG.md`](CHANGELOG.md) says what each release changed and
+which fingerprints moved.
+
+Questions and bugs go in [GitHub Issues](https://github.com/PhillysTheBest/exchange-lab/issues).
+To change the project itself, read [`CONTRIBUTING.md`](CONTRIBUTING.md) first.
