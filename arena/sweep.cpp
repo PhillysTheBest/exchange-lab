@@ -50,6 +50,9 @@
 //            the fundamental is not a market and nothing read off it counts.
 #include "arena/session.hpp"
 #include "px/types.hpp"
+#if defined(PX_ARENA_USER_STRATEGIES)
+#include "marketdata/market_file.hpp" // --market: sweep_lab only
+#endif
 
 #include <algorithm>
 #include <cstdio>
@@ -74,8 +77,9 @@ struct Options {
     bool replay_check = false;
     bool quiet = false;
     std::string label = "sweep";
-    std::string bots; // empty: the registry's default line-up
+    std::string strategies; // empty: the registry's default line-up
     std::vector<std::pair<std::string, std::int64_t>> overrides;
+    std::string market;     // --market: a calibrated market's name, or empty
 };
 
 void usage() {
@@ -86,9 +90,11 @@ void usage() {
         "  --seeds=N             sessions per point, all points sharing them (default 20)\n"
         "  --requests=N          engine requests per session (default 200000)\n"
         "  --base-seed=N         first seed (default 42)\n"
-        "  --bots=SPEC           compose the line-up by name, e.g. maker,rival,informed,noise:2\n"
+        "  --strategies=SPEC     compose the line-up by name, e.g. maker,rival,informed,noise:2\n"
         "  --set=NAME=VALUE      fix any other field; may be repeated\n"
         "  --null                shorthand for --set=informed.enabled=0\n"
+        "  --market=NAME         start from a market calibrated from a tape (markets/NAME.cfg;\n"
+        "                        docs/DATA.md); --set= still applies on top. sweep_lab only\n"
         "  --csv=PATH            one row per participant per session\n"
         "  --summary-csv=PATH    one row per swept point\n"
         "  --label=NAME          a name for the run, written into both CSVs\n"
@@ -98,7 +104,7 @@ void usage() {
         "fields:\n  %s\n  %s\n\n"
         "Every number this prints is simulated. The engine's measured latency is in\n"
         "README.md and is unrelated to any reaction delay set here.\n",
-        kBotNames, kRosterParamNames, Session::kSessionParamNames);
+        kStrategyNames, kRosterParamNames, Session::kSessionParamNames);
 }
 
 [[nodiscard]] bool parse_i64(std::string_view s, std::int64_t& out) {
@@ -142,7 +148,16 @@ struct Spread {
 }
 
 // One session's results: a single cell of the (point x seed) grid.
+// One participant's result in one session, kept for the per-participant table
+// that a composed line-up prints: with a strategy of your own in the roster, the
+// maker's columns alone would not say what that strategy did.
+struct Part {
+    std::string name;
+    double value = 0, fills = 0, orders = 0, rejects = 0;
+};
+
 struct Cell {
+    std::vector<Part> parts;
     double maker_value = 0, maker_adverse = 0, maker_spread = 0, maker_adv_pct = 0;
     double maker_fills = 0, maker_wakes = 0;
     double rival_value = 0, informed_value = 0;
@@ -164,15 +179,15 @@ struct Cell {
 
     Session s;
     Session::StartError bad = Session::StartError::None;
-    if (opt.bots.empty()) {
+    if (opt.strategies.empty()) {
         bad = s.start(sc, rc);
     } else {
         // A named line-up. The config still supplies every participant's
         // parameters; the spec only decides who is in the room.
         Roster roster;
         std::string why;
-        if (!roster_from_spec(opt.bots, rc, roster, why)) {
-            std::fprintf(stderr, "--bots=%s: %s\n", opt.bots.c_str(), why.c_str());
+        if (!roster_from_spec(opt.strategies, rc, roster, why)) {
+            std::fprintf(stderr, "--strategies=%s: %s\n", opt.strategies.c_str(), why.c_str());
             return false;
         }
         bad = s.start(sc, std::move(roster));
@@ -192,8 +207,17 @@ struct Cell {
     }
 
     if (opt.replay_check) {
+        // The replay must run the same line-up as the original, so a composed
+        // one is rebuilt from its spec rather than falling back to the default.
         Session again;
-        again.start(sc, rc);
+        if (opt.strategies.empty()) {
+            again.start(sc, rc);
+        } else {
+            Roster roster;
+            std::string why;
+            if (!roster_from_spec(opt.strategies, rc, roster, why)) return false;
+            again.start(sc, std::move(roster));
+        }
         again.run();
         cell.replayed = again.hash() == s.hash();
     }
@@ -230,6 +254,8 @@ struct Cell {
                          static_cast<unsigned long long>(s.stats().trades), s.stats().mean_gap_ticks(),
                          static_cast<unsigned long long>(s.hash()));
         }
+        cell.parts.push_back(Part{s.name_of(i), to_currency(a.value(mark)), static_cast<double>(a.fills),
+                                  static_cast<double>(a.orders_sent), static_cast<double>(a.rejects)});
         if (static_cast<int>(i) == mi) {
             cell.maker_value = to_currency(a.value(mark));
             cell.maker_adverse = static_cast<double>(a.adverse_milli()) / 1000.0;
@@ -311,8 +337,8 @@ int main(int argc, char** argv) {
             opt.param = std::string(a.substr(8));
         } else if (a.starts_with("--label=")) {
             opt.label = std::string(a.substr(8));
-        } else if (a.starts_with("--bots=")) {
-            opt.bots = std::string(a.substr(7));
+        } else if (a.starts_with("--strategies=")) {
+            opt.strategies = std::string(a.substr(13));
         } else if (a.starts_with("--csv=")) {
             opt.csv = std::string(a.substr(6));
         } else if (a.starts_with("--summary-csv=")) {
@@ -345,6 +371,8 @@ int main(int argc, char** argv) {
                 return 2;
             }
             opt.overrides.emplace_back(std::string(kv.substr(0, eq)), n);
+        } else if (a.starts_with("--market=")) {
+            opt.market = std::string(a.substr(9));
         } else {
             std::fprintf(stderr, "unknown argument: %.*s (try --help)\n", static_cast<int>(a.size()), a.data());
             return 2;
@@ -353,6 +381,26 @@ int main(int argc, char** argv) {
     if (opt.values.empty()) {
         std::fprintf(stderr, "nothing to sweep\n");
         return 2;
+    }
+    std::string market_note;
+    if (!opt.market.empty()) {
+#if defined(PX_ARENA_USER_STRATEGIES)
+        // The market's values go first, so a --set= given beside it still wins.
+        data::MarketFile m;
+        std::string why;
+        if (!data::read_market(opt.market, "markets", m, why)) {
+            std::fprintf(stderr, "--market=%s: %s\n", opt.market.c_str(), why.c_str());
+            return 2;
+        }
+        opt.overrides.insert(opt.overrides.begin(), m.sets.begin(), m.sets.end());
+        market_note = m.name + ", calibrated from the tape " +
+                      arena::suite::cfg_value(m.calibration, "calibration.tape") + " (" +
+                      arena::suite::cfg_value(m.calibration, "calibration.depth") + "): like it in " +
+                      arena::suite::cfg_value(m.calibration, "calibration.matched") + ", and in nothing else";
+#else
+        std::fprintf(stderr, "--market: a calibrated market runs in sweep_lab only, never in the evidence programs\n");
+        return 2;
+#endif
     }
 
     std::FILE* csv = nullptr;
@@ -372,6 +420,7 @@ int main(int argc, char** argv) {
         std::printf("arena sweep — simulated, not measured. The engine's latency is in README.md.\n");
         std::printf("  sweeping %s over %zu points, %d shared seeds each, %zu requests per session\n",
                     opt.param.c_str(), opt.values.size(), opt.seeds, opt.requests);
+        if (!market_note.empty()) std::printf("  market   %s\n", market_note.c_str());
         for (const auto& o : opt.overrides) {
             std::printf("  fixed    %s = %lld\n", o.first.c_str(), static_cast<long long>(o.second));
         }
@@ -483,6 +532,30 @@ int main(int argc, char** argv) {
         std::printf("  Value moves for two reasons at once: a slower maker is picked off more per fill, and it also\n"
                     "  gets fewer fills, because it cannot keep a quote standing. Separate them by reading\n"
                     "  `adverse` — which is per fill, so flow-independent — beside the fill counts.\n");
+    }
+
+    // A composed line-up may hold a strategy the maker-centred tables above say
+    // nothing about, so every participant gets a row of its own.
+    if (!opt.strategies.empty()) {
+        for (std::size_t p = 0; p < grid.size(); ++p) {
+            const std::vector<Cell>& row = grid[p];
+            if (row.empty()) continue;
+            std::printf("\nparticipants at %s = %lld - medians across %d seeds, value range in brackets\n",
+                        opt.param.c_str(), static_cast<long long>(opt.values[p]), opt.seeds);
+            std::printf("  %-3s | %-14s | %-32s | %-8s | %-8s | %s\n", "#", "strategy", "value", "orders",
+                        "fills", "rejects");
+            std::printf("  %s\n", std::string(86, '-').c_str());
+            for (std::size_t i = 0; i < row.front().parts.size(); ++i) {
+                auto get = [i](auto field) {
+                    return [i, field](const Cell& c) { return c.parts[i].*field; };
+                };
+                const Spread v = column(row, get(&Part::value));
+                std::printf("  %-3zu | %-14s | %+10.2f (%+9.2f..%+9.2f) | %8.0f | %8.0f | %7.0f\n", i,
+                            row.front().parts[i].name.c_str(), v.median, v.lo, v.hi,
+                            column(row, get(&Part::orders)).median, column(row, get(&Part::fills)).median,
+                            column(row, get(&Part::rejects)).median);
+            }
+        }
     }
 
     bool all_replay = true;

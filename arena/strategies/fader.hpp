@@ -1,15 +1,15 @@
-// arena/bots/fader.hpp — the worked example: a bot written from the contract.
+// arena/strategies/fader.hpp — the worked example: a strategy written from the contract.
 //
 // This exists to keep `docs/ARENA.md`'s claim that someone can add a strategy
 // without reading the engine from being a claim. Everything it uses is in
-// arena/bot.hpp: a view in, a batch of actions out. It never includes the
+// arena/strategy.hpp: a view in, a batch of actions out. It never includes the
 // engine, the session, the scheduler or the book mirror directly, and it could
 // not reach them if it tried.
 //
 // The strategy, such as it is: lean against the recent move. It keeps a slow
 // average of the traded price and takes the other side when the last print is
 // far enough from that average, which makes it a counterparty for the momentum
-// bot and a supplier of adverse flow to whichever maker is quoting the extreme.
+// strategy and a supplier of adverse flow to whichever maker is quoting the extreme.
 // It is uninformed — it cannot see the fundamental value, so `v.signal` is
 // always 0 for it — and it is not meant to be good.
 //
@@ -17,9 +17,9 @@
 // stays bit-identical across platforms (see arena/clock.hpp).
 #pragma once
 
-#include "arena/bot.hpp"
+#include "arena/strategy.hpp"
 
-namespace px::arena::bots {
+namespace px::arena::strategies {
 
 struct Fader {
     const char* name = "fader";
@@ -69,4 +69,4 @@ private:
     int seen_ = 0;
 };
 
-} // namespace px::arena::bots
+} // namespace px::arena::strategies

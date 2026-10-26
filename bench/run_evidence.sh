@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # bench/run_evidence.sh — regenerate results/<label>/: the machine's state plus
-# the raw output of every benchmark run the README quotes. Nothing is filtered:
+# the raw output of every benchmark run README.md and docs/ENGINE.md quote. Nothing is filtered:
 # every run's text output, CSV rows and outlier dumps are kept.
 #
 #   bench/run_evidence.sh windows          (Git Bash on Windows, MSYS2 UCRT64 on PATH)

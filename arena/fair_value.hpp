@@ -2,7 +2,7 @@
 // session that does not come out of the order book.
 //
 // WHY THIS EXISTS. Without it the headline experiment is circular. If the only
-// participants are bots trading off each other's quotes, then "the slow market
+// participants are strategies trading off each other's quotes, then "the slow market
 // maker got picked off" is true by construction: it happens because a sniper was
 // written to do it, and the resulting curve measures that sniper's parameters,
 // not the value of being fast. Latency only has a price when somebody else knows
@@ -37,12 +37,12 @@
 // reported rather than hidden.
 //
 // Who may look at V:
-//   * the informed bot, which is the entire mechanism;
+//   * the informed strategy, which is the entire mechanism;
 //   * the accounting, which marks inventory and computes fill markouts against
 //     it — V is the only defensible mark in a closed world, and marking against
 //     the mid would let a participant improve its own P&L by moving the mid;
 //   * the renderer, which draws it as the line the book is chasing.
-// The market maker, the noise traders and the momentum bot may not, and the
+// The market maker, the noise traders and the momentum strategy may not, and the
 // session does not pass it to them.
 #pragma once
 
@@ -80,7 +80,7 @@ public:
     [[nodiscard]] std::uint64_t steps() const noexcept { return steps_; }
     [[nodiscard]] SimTime last_step_at() const noexcept { return last_step_at_; }
     // Which way the most recent jump went: the renderer draws it, and nothing in
-    // a bot's decision path is allowed to read it.
+    // a strategy's decision path is allowed to read it.
     [[nodiscard]] bool last_was_up() const noexcept { return up_; }
 
     [[nodiscard]] SimTime next_interval() noexcept { return rng_.interval(cfg_.step_mean_ns); }

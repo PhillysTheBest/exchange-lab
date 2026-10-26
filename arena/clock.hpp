@@ -5,16 +5,16 @@
 // a participant's reaction delay can be a controlled variable rather than a
 // property of the machine the session happens to run on. Those two kinds of
 // nanosecond must never be confused, which is why nothing here is called
-// "latency": a bot has a `reaction_ns`, the engine has a measured latency, and
+// "latency": a strategy has a `reaction_ns`, the engine has a measured latency, and
 // README.md keeps them apart in the same words.
 //
 // THE REACTION MODEL, stated once and relied on everywhere
-//   A bot with reaction delay d, woken by something that happened at time t:
+//   A strategy with reaction delay d, woken by something that happened at time t:
 //     * acts at time t + d — that is `now` in its MarketView, and the timestamp
 //       its orders carry into the engine;
 //     * sees the world as of t — its mirror is advanced only to `now - d`.
 //   One knob therefore buys both halves of being slow: the view is stale, and
-//   the order is late. A fast bot sees fresher prices *and* lands sooner, which
+//   the order is late. A fast strategy sees fresher prices *and* lands sooner, which
 //   is exactly the advantage the headline experiment prices.
 //
 // DETERMINISM. Two rules, and together they are the whole contract:
@@ -43,14 +43,14 @@ using SimTime = std::int64_t;
 
 inline constexpr SimTime kNever = INT64_MAX;
 
-// The four things that can happen, plus the three flavours of a bot looking at
+// The four things that can happen, plus the three flavours of a strategy looking at
 // the market. They are separate kinds rather than one kind with a reason byte so
 // that the scheduler stays a POD queue and the reason survives replay verbatim.
 enum class WakeKind : std::uint8_t {
     OrderArrival = 0, // a request reaches the engine
-    BotEvent,         // a bot reacts to something it saw on the feed
-    BotTimer,         // a bot's own periodic wake elapsed
-    BotSignal,        // the one informed bot reacts to its information moving
+    StrategyEvent,         // a strategy reacts to something it saw on the feed
+    StrategyTimer,         // a strategy's own periodic wake elapsed
+    StrategySignal,        // the one informed strategy reacts to its information moving
     FairValueStep,    // the fundamental value jumps
 };
 
@@ -59,8 +59,8 @@ enum class WakeKind : std::uint8_t {
 struct Wake {
     SimTime at = 0;
     std::uint64_t seq = 0; // assigned on push; makes (at, seq) a total order
-    WakeKind kind = WakeKind::BotEvent;
-    std::uint16_t who = 0; // bot index for BotWake, order slot for OrderArrival
+    WakeKind kind = WakeKind::StrategyEvent;
+    std::uint16_t who = 0; // strategy index for StrategyWake, order slot for OrderArrival
 };
 
 // Earlier time first; equal times by sequence. Strict weak ordering with no ties,
