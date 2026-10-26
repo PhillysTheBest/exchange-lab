@@ -27,7 +27,8 @@ files; `all` writes one directory per family and a `families.txt` above them.
 2. **The paired difference against the placebo**, with its interval and verdict.
 3. **The seat, metric by metric**: how the value was made.
 4. **Where the money came from**: who paid.
-5. **The count of interval tests**, before believing any lone separation.
+5. **The count of interval tests, and the Holm correction** when there is more than one
+   value comparison, before believing any lone separation.
 
 ## The seat, metric by metric
 
@@ -143,9 +144,51 @@ requests, remains the place for that control, and `suite --suite=null` is refuse
 
 The standard report above makes 28 interval tests: 3 against the placebo and 25 between
 candidates. 22 separate. The report prints how many tests it ran and how many a 5% test would
-separate by chance if nothing were there (1.4 here). It applies no correction silently;
-several separations are trivially true (`maker` has a higher maker share than `imbalance`),
-so the line is a warning about lone separations, not a correction.
+separate by chance if nothing were there (1.4 here). That count stays as it was.
+
+**The Holm correction.** Which of the 28 are hypotheses? The decision this section used to
+leave open is made like this: the **value comparisons**, the rows of the paired table, are
+the hypotheses a run tests, and the metric rows describe how the money was made. Several of
+those are trivially true (`maker` has a higher maker share than `imbalance`), and correcting
+them would only dilute the correction. So when a run has more than one value comparison,
+the report prints a Holm step-down correction across them, beside the raw intervals:
+
+```
+  Holm across the value comparisons above: 5 tests, family-wise 5%
+  test                               | p        | p Holm   | raw verdict   | after Holm
+  ----------------------------------------------------------------------------------------
+  imbalance vs placebo               | <0.0001  | <0.0001  | separated     | separated
+  maker vs placebo                   | <0.0001  | <0.0001  | separated     | separated
+  momentum vs placebo                | 0.0476   | 0.0476   | separated     | separated
+  maker vs imbalance                 | <0.0001  | <0.0001  | separated     | separated
+  momentum vs imbalance              | <0.0001  | <0.0001  | separated     | separated
+```
+
+`--suite=all` adds one more family of tests to `families.txt`: every cell of the family table,
+because a strategy tried in three markets has three chances to separate. The cells are still
+never pooled; only the threshold each must clear moves. On this run it changes one verdict:
+
+```
+  momentum vs placebo, standard      | 0.0476   | 0.0951   | separated     | not separated
+```
+
+`momentum`'s −2.36 ± 1.17 in the standard market separates on its own and does not survive
+being one of nine. Report it that way: a raw separation at p = 0.048 among nine family cells
+is not established.
+
+- **Holm, not Bonferroni.** Both control the chance of any false separation among the tests
+  at 5%, for any dependence between them. Holm rejects everything Bonferroni does, and
+  sometimes more.
+- **The p-values are derived, and computed portably.** Two-sided, from Student's t with
+  n − 1 degrees of freedom, by the finite sums for integer degrees of freedom (Abramowitz and
+  Stegun 26.7.3 and 26.7.4). They use + − × ÷ and `sqrt` only, which IEEE 754 rounds exactly,
+  and an arctangent written out as a series, so no library's `atan` can change a digit.
+  `make canonical` records a two-candidate report as `derived.holm.report.txt`.
+- **At a boundary the p-value and the interval can disagree.** The interval's t is a
+  three-digit table (1.998 at 63 degrees of freedom; exactly 1.99834), so a difference whose
+  t falls between the two separates by the interval at p = 0.0500 to 0.0501.
+- **One value comparison gets no correction**, and its report is unchanged: there is
+  nothing to correct.
 
 ## Where it lives
 
@@ -157,11 +200,9 @@ so the line is a warning about lone separations, not a correction.
 - `arena/suite.cpp`: `--suite=NAME|all`. `outcome.cfg` is written only if every other file
   was.
 - `tests/test_arena.cpp`: `test_report_path`, `test_report_metrics`,
-  `test_report_attribution`, `test_report_t_table`, `test_report_families`.
+  `test_report_attribution`, `test_report_t_table`, `test_report_holm`, `test_report_families`.
 
 ## Not built
 
-- **A multiple-comparison correction.** Counting is honest; a Holm correction across a table
-  this mixed would need a decision about which metrics are hypotheses at all.
 - **A `null` family that is a market.** It would need another participant to anchor the book,
   which changes the market a second way and so is not the control it was meant to be.

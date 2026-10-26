@@ -177,11 +177,13 @@ Terms are grouped and sorted alphabetically within each group.
 
 **Holdout block** — `holdout`, seeds 1,000,000..1,000,063: a confirmatory block shared with no other and used by no example. Tune on `standard`, then report once on `holdout`, beside the standard run and never pooled with it. *Where:* `docs/RUNNER.md`.
 
+**Holm correction** — A step-down adjustment of p-values that keeps the chance of any false separation among a run's value comparisons at 5%. Printed beside the raw intervals when a run has more than one value comparison, and across every cell of `families.txt`; the metric rows are not corrected. *Where:* `docs/REPORT.md`.
+
 **Inert** — A seat that sent no orders; its arm must equal the placebo arm.
 
 **Interval (95%)** — The paired mean ± t × standard error.
 
-**Many comparisons** — The report prints how many separations chance alone would produce.
+**Many comparisons** — The report prints how many separations chance alone would produce, and a Holm correction across the value comparisons.
 
 **No-seat check** — Each placebo session must hash the same as the line-up without a seat.
 

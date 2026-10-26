@@ -1602,6 +1602,54 @@ void test_report_t_table() {
     for (std::size_t df = 31; df < 200; ++df) PX_CHECK(suite::t975(df + 1) < suite::t975(df) + 5e-4);
 }
 
+// The p-values behind the Holm correction: against quantiles computed
+// independently, for odd and even degrees of freedom, and the step-down
+// adjustment against a worked example.
+void test_report_holm() {
+    auto near = [](double a, double b, double tol) { return a - b < tol && b - a < tol; };
+    for (double x = 0; x < 50; x += 0.37) PX_CHECK(near(suite::atan_portable(x), std::atan(x), 1e-15));
+    PX_CHECK(near(suite::atan_portable(-2.5), -std::atan(2.5), 1e-15));
+    PX_CHECK(near(suite::t_two_sided_p(1.0, 1), 0.5, 1e-12));
+    PX_CHECK(near(suite::t_two_sided_p(4.302653, 2), 0.05, 1e-6));
+    PX_CHECK(near(suite::t_two_sided_p(3.182446, 3), 0.05, 1e-6));
+    PX_CHECK(near(suite::t_two_sided_p(2.228139, 10), 0.05, 1e-6));
+    PX_CHECK(near(suite::t_two_sided_p(1.998341, 63), 0.05, 1e-6));
+    PX_CHECK(near(suite::t_two_sided_p(-2.0, 10), 0.073388, 1e-6));
+    PX_CHECK(near(suite::t_two_sided_p(3.5, 64), 0.0008528, 1e-7));
+    PX_CHECK(near(suite::t_two_sided_p(0.3, 63), 0.7651648, 1e-7));
+    PX_CHECK(suite::t_two_sided_p(0, 63) == 1.0);
+    // The interval and the p-value agree away from the boundary.
+    for (std::size_t df : {3u, 10u, 63u}) {
+        PX_CHECK(suite::t_two_sided_p(suite::t975(df) * 1.01, df) < 0.05);
+        PX_CHECK(suite::t_two_sided_p(suite::t975(df) * 0.99, df) > 0.05);
+    }
+    // Holm, in the input's order: sorted 0.005 0.01 0.03 0.04 -> x4 x3 x2 x1,
+    // with the running maximum carried.
+    const std::vector<double> adj = suite::holm_adjusted({0.01, 0.04, 0.03, 0.005});
+    PX_CHECK(adj.size() == 4);
+    PX_CHECK(near(adj[0], 0.03, 1e-12) && near(adj[1], 0.06, 1e-12) && near(adj[2], 0.06, 1e-12) &&
+             near(adj[3], 0.02, 1e-12));
+    PX_CHECK(suite::holm_adjusted({0.6, 0.7})[0] == 1.0);
+    PX_CHECK(suite::holm_adjusted({}).empty());
+    // Only tests enter the family: identical and inadmissible rows do not.
+    suite::ComparisonRow sep, ns, same, bad;
+    sep.stats = suite::paired({0, 0, 0, 0}, {10, 11, 12, 13});
+    sep.verdict = "separated";
+    ns.stats = suite::paired({0, 0, 0, 0}, {-3, 4, -2, 2});
+    ns.verdict = "not_separated";
+    same.verdict = "identical";
+    bad.verdict = "not_admissible";
+    const std::vector<suite::HolmRow> h =
+        suite::holm_rows({{"a", &sep}, {"b", &ns}, {"c", &same}, {"d", &bad}});
+    PX_CHECK(h.size() == 2 && h[0].label == "a" && h[1].label == "b");
+    PX_CHECK(h[0].p_holm >= h[0].p && h[1].p_holm >= h[1].p);
+    PX_CHECK(h[0].raw_separated && !h[1].raw_separated && !h[1].separated());
+    const std::string text = suite::holm_text(h, "x");
+    PX_CHECK(text.find("Holm across x: 2 tests") != std::string::npos);
+    std::printf("  holm: p(1.998, 63) = %.6f; {0.01 0.04 0.03 0.005} -> {%.2f %.2f %.2f %.3f}\n",
+                suite::t_two_sided_p(1.998, 63), adj[0], adj[1], adj[2], adj[3]);
+}
+
 void test_report_families() {
     const std::vector<std::string> names = suite::split_names(suite::kSuiteNames);
     PX_CHECK(names.size() == 3 && names[0] == "standard");
@@ -1909,6 +1957,7 @@ int main() {
     test_report_metrics();
     test_report_attribution();
     test_report_t_table();
+    test_report_holm();
     test_report_families();
     test_controls_hold();
     test_controls_catch_defects();
