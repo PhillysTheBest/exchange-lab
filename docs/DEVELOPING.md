@@ -14,7 +14,8 @@ replays it — and `app/`, the terminal app in front of all of it. README.md is 
 page; `docs/APP.md` is the app's design, `docs/DATA.md` the market data's,
 `docs/ENGINE.md` the engine's design and measurements, `docs/ARENA.md` the arena's design,
 its reasoning and the viewer, `docs/RESULTS.md` the arena's published results,
-`docs/LEARN.md` the students' path and `GLOSSARY.md` the terms; this file covers how to
+`docs/LEARN.md` the students' path, `docs/CODING-AGENT.md` how to use a coding agent beside it
+(and why no model runs inside a session) and `GLOSSARY.md` the terms; this file covers how to
 work in the repo.
 
 **Who it is for (decided 2026-10-17).** exchange-lab is a research and learning tool for
@@ -219,7 +220,9 @@ the line editor. A new command is a row in `kCommands` and a branch in `plan_for
 Adding one is a header plus one line in `add_named_strategy()` and its name in `kStrategyNames`,
 which `test_arena` holds together so the two cannot drift. `arena/strategies/fader.hpp` is the
 worked example, written against `arena/strategy.hpp` alone. `zi` (`arena/strategies/zi.hpp`) is the
-zero-intelligence floor, never in a default line-up. `--strategies=maker,rival,noise:3`
+zero-intelligence floor, never in a default line-up. `examples/strategies/frozen.hpp` is generated
+by `examples/frozen/train.py` (standard-library Python, least squares, + − × ÷ only); regenerate it
+rather than editing it, and check with `python3 examples/frozen/train.py --check data/known.tape`. `--strategies=maker,rival,noise:3`
 composes a line-up by name; without it the registry's default line-up is used, which is
 what every published number came from. The strategy lab below turns those two steps
 into one make target for a strategy of your own; it does not change what a strategy is.

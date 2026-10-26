@@ -175,6 +175,10 @@ make bench                    # the engine's benchmarks
 
 ## Scope
 
+A coding agent can write a strategy and read a report beside the app
+([`docs/CODING-AGENT.md`](docs/CODING-AGENT.md)); a model trained elsewhere can run frozen into
+integers ([`examples/frozen/`](examples/frozen/README.md)). No model is ever called from a session.
+
 **Not built, on purpose:** a browser or desktop interface, an AI model, live trading, a
 network connection of any kind (data files are read from disk, never fetched), order amend,
 stop orders and auctions.
@@ -187,9 +191,9 @@ stop orders and auctions.
 | `include/px/`, `src/` | the matching engine |
 | `arena/` | the simulated market, its strategies, the runner, the controls and the viewer |
 | `marketdata/` | your own data: the tape, the importers, calibration and replay |
-| `examples/` | a complete strategy of your own to copy, and made-up data files to import |
+| `examples/` | a complete strategy of your own to copy, a frozen learned model, and made-up data files to import |
 | `tests/`, `bench/`, `results/` | tests, benchmarks, and the committed evidence behind every number |
-| `docs/` | [`LEARN`](docs/LEARN.md), [`APP`](docs/APP.md), [`ARENA`](docs/ARENA.md), [`RESULTS`](docs/RESULTS.md), [`RUNNER`](docs/RUNNER.md), [`REPORT`](docs/REPORT.md), [`CONTROLS`](docs/CONTROLS.md), [`REPRODUCE`](docs/REPRODUCE.md), [`DATA`](docs/DATA.md), [`ENGINE`](docs/ENGINE.md), [`PLATFORMS`](docs/PLATFORMS.md) |
+| `docs/` | [`LEARN`](docs/LEARN.md), [`CODING-AGENT`](docs/CODING-AGENT.md), [`APP`](docs/APP.md), [`ARENA`](docs/ARENA.md), [`RESULTS`](docs/RESULTS.md), [`RUNNER`](docs/RUNNER.md), [`REPORT`](docs/REPORT.md), [`CONTROLS`](docs/CONTROLS.md), [`REPRODUCE`](docs/REPRODUCE.md), [`DATA`](docs/DATA.md), [`ENGINE`](docs/ENGINE.md), [`PLATFORMS`](docs/PLATFORMS.md) |
 
 ## Licence, citation and issues
 
