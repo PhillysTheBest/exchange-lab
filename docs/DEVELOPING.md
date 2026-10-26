@@ -45,8 +45,8 @@ strategy in the engine: strategies live in `arena/strategies/`, never in `includ
 measured and committed: see `docs/ARENA.md` for its design, the modelling mistakes that
 produced confidently wrong results on the way, and the parameters that turned out to be
 load-bearing. Its scope boundary is binding — everything compiles into one binary and
-nothing talks over a network. All of it sits on the branch `arena`, open as pull request
-#1 against `main`. The arena is being turned into a strategy research platform in five
+nothing talks over a network. All of it is on `main`, merged on 2026-10-26 through pull
+requests #2 (into `arena`) and #1 (into `main`). The arena is being turned into a strategy research platform in five
 steps, and all five are built: the strategy interface, the standard experiment runner,
 the evaluation report, its validation and one-command reproducibility. See "Strategies of
 your own" below for what is built. The terminal app in front of it is built too.
