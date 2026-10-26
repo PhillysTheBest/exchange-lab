@@ -17,7 +17,7 @@ Cite a tagged release, not `main` (`CITATION.cff`).
 
 The first release. It is `main` after #2 and #1 merged the arena, the strategy research
 platform, the terminal app and market data onto the matching engine, plus the licence,
-citation file and contributor pack. As the first release it has nothing to move against,
+citation file and contributor pack (#4). As the first release it has nothing to move against,
 so each section below records the baseline that later releases are compared with.
 
 **Engine.** The price-time-priority matching engine as it was before the arena, unchanged.
