@@ -25,7 +25,7 @@ build/release/exchange-lab    # run it from the repository root
 You get a prompt. Try these four commands:
 
 ```
-> /learn 1                                  # the first of nine guided exercises
+> /learn 1                                  # the first of ten guided exercises
 > /add examples/strategies/imbalance.hpp    # install a strategy: one C++ header
 > /compare imbalance smoke                  # score it on 4 seeds against an empty seat
 > /watch imbalance                          # watch it trade live; q comes back
@@ -115,7 +115,8 @@ replay of history. What it adds:
 - `/watch` to see a whole market: two makers, an informed trader, noise traders and momentum.
 - `/add` and `/compare` to write a strategy and learn where its profit really comes from:
   spread earned, the price move after each fill, carry to the close, and who paid for it.
-- `/learn` takes you through all of it in nine exercises; every command in them was run as
+- `/learn` takes you through all of it in ten exercises, the last a whole study from hypothesis
+  to holdout; every command in them was run as
   written. [`GLOSSARY.md`](GLOSSARY.md) defines every term.
 
 ## For researchers

@@ -112,7 +112,7 @@ just "3". After a complete `/compare`, the app says where the run was saved.
   `/report` find it, `/reproduce` of a copy says REPRODUCED and of a tampered copy exits 1
   through `-c`, `/controls smoke`, `/watch` with `still=`, `/sweep --help` and `/book` each
   run, `/data` imports, lists, shows and removes a tape, `/calibrate` and `/replay` refuse a
-  trades-only tape, `/replay` runs its control and a strategy, `/learn` lists the nine
+  trades-only tape, `/replay` runs its control and a strategy, `/learn` lists the ten
   exercises, and outside the repository root it refuses. It writes `runs/maker-smoke`, as
   that command would for anyone, and nothing else outside `$(BUILD)/app-test`.
 
