@@ -123,7 +123,11 @@ replay of history. What it adds:
   comparable only if their fingerprints match. Scenario families (`wide`, `busy`) are
   reported side by side, never pooled.
 - **Honest statistics.** Paired differences with intervals, the smallest effect a seed count
-  can resolve, a count of interval tests, and a measured noise floor of about ±2 a session.
+  can resolve, a count of interval tests with a Holm correction across the value comparisons,
+  and a measured noise floor of about ±2 a session.
+- **A floor and a holdout.** `zi`, a zero-intelligence strategy, is the baseline a candidate
+  has to beat, not just the empty seat. Tune on the standard seeds, then confirm once on the
+  `holdout` block, which no example touches.
 - **Known limits.** One instrument, one informed trader, no second venue, no quote fade, and
   a thin book. Results are statements about this instrument, not about trading.
   [`docs/RUNNER.md`](docs/RUNNER.md#known-weaknesses) lists the runner's own weaknesses.

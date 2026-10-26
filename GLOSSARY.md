@@ -103,6 +103,8 @@ Terms are grouped and sorted alphabetically within each group.
 
 **Uninformed flow** — Trading by participants that cannot see the fundamental: the makers' income.
 
+**Zero intelligence (`zi`)** — The floor a candidate has to clear, after Gode and Sunder: random limit orders drawn uniformly around the mid, one at a time, within a position budget, with no view at all. It loses about 92 a session on the standard block, mostly in spread. *Where:* `arena/strategies/zi.hpp`, `docs/RUNNER.md`.
+
 ## Inside a session
 
 **ActionBatch** — Up to six actions a strategy returns from one wake.

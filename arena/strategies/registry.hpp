@@ -40,6 +40,7 @@
 #include "arena/strategies/noise.hpp"
 #include "arena/strategies/placebo.hpp"
 #include "arena/strategies/roundtrip.hpp"
+#include "arena/strategies/zi.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -382,6 +383,13 @@ namespace px::arena {
         // docs/CONTROLS.md). Never in a default line-up.
         r.strategies.push_back(make_strategy(strategies::Roundtrip{}));
         r.informed.push_back(false);
+    } else if (name == "zi") {
+        // The zero-intelligence floor (arena/strategies/zi.hpp). Never in a
+        // default line-up. It quotes around the market, so it takes the anchor.
+        strategies::Zi zi;
+        zi.anchor = cfg.anchor;
+        r.strategies.push_back(make_strategy(zi));
+        r.informed.push_back(false);
     } else {
 #if defined(PX_ARENA_USER_STRATEGIES)
         return add_user_strategy(name, r);
@@ -392,7 +400,7 @@ namespace px::arena {
     return true;
 }
 
-inline constexpr const char* kStrategyNames = "maker rival informed noise momentum fader placebo roundtrip";
+inline constexpr const char* kStrategyNames = "maker rival informed noise momentum fader placebo roundtrip zi";
 
 // Builds a roster from a spec like "maker,rival,informed,noise:2,momentum":
 // comma-separated names, each optionally followed by :count to repeat it. On a
