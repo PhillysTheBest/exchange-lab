@@ -1,7 +1,9 @@
 # Still to do before going public
 
 Left for Philbert on purpose (2026-10-26). Everything else on the gap-review task list is
-built on the `release-1.0` branch.
+built on the `release-1.0` branch: every check passes on Linux (GCC 13.3, with ASan and UBSan)
+and on Windows (MSYS2 GCC 13.2), and `make canonical` gives the same 26 lines on both. CI has
+not run it yet, so macOS and ARM64 are unchecked until the branch is pushed.
 
 - [ ] **Code of conduct.** Add `CODE_OF_CONDUCT.md` (Contributor Covenant). It needs a contact
       for reports: an address, or GitHub's private reporting. Then link it from
