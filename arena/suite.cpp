@@ -81,7 +81,8 @@ void usage() {
     std::printf(
         "arena suite - every candidate in the same seat of the same market, on the same seeds.\n\n"
         "  --candidates=A[,B,...]  1 to 8 strategies; the first is the baseline of the paired rows\n"
-        "  --block=NAME            standard (64 seeds, the default) or smoke (4 seeds)\n"
+        "  --block=NAME            standard (64 seeds, the default), smoke (4 seeds), or holdout\n"
+        "                          (64 other seeds: confirmatory, reported once after tuning on standard)\n"
         "  --suite=NAME            standard (the default), wide, busy, or all: every one, one directory each\n"
         "  --market=NAME           a market calibrated from a tape (markets/NAME.cfg, or a path to one;\n"
         "                          docs/DATA.md): a suite of its own. suite_lab only\n"
@@ -502,7 +503,7 @@ int main(int argc, char** argv) {
     }
     const SeedBlock* block = find_block(block_name);
     if (block == nullptr) {
-        std::fprintf(stderr, "unknown block '%s': standard or smoke\n", block_name.c_str());
+        std::fprintf(stderr, "unknown block '%s': standard, smoke or holdout\n", block_name.c_str());
         return 2;
     }
     std::vector<SuiteDef> suites;

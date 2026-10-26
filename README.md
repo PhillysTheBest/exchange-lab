@@ -50,7 +50,7 @@ project is built to show.
 | `/learn [N]` | the guided exercises, from one order book to a strategy of your own |
 | `/strategies` | the built-in strategies, and the ones you installed |
 | `/add PATH` | install a strategy of your own |
-| `/compare NAME[,NAME...] [smoke] [wide\|busy\|all\|market=M]` | score strategies in the same seat of the same market, and print the report |
+| `/compare NAME[,NAME...] [smoke\|holdout] [wide\|busy\|all\|market=M]` | score strategies in the same seat of the same market, and print the report; tune on the standard block, confirm once on `holdout` |
 | `/runs`, `/report [RUN]` | list your runs; show one's report |
 | `/reproduce [RUN]` | re-run a run from its own record and compare every file |
 | `/watch [NAME,...] [seed=N]` | watch the market trade live, full screen |

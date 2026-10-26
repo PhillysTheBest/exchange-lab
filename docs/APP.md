@@ -41,7 +41,7 @@ need the session code compiled twice anyway.
 | `/learn [N]` | lists the exercises in `docs/LEARN.md`, or shows exercise N | reads `docs/LEARN.md` |
 | `/strategies` | the built-in strategies, and the installed ones, saying whether the lab is built with them | reads `arena/strategies/user/` and the generated manifest |
 | `/add PATH` | validates and installs a strategy, then rebuilds the lab programs | `make strategy STRATEGY=PATH` |
-| `/compare NAME[,NAME...] [smoke] [wide\|busy\|all\|market=M]` | scores strategies in the standard seat, then prints the report | `suite_lab` |
+| `/compare NAME[,NAME...] [smoke\|holdout] [wide\|busy\|all\|market=M]` | scores strategies in the standard seat, then prints the report | `suite_lab` |
 | `/runs` | the run directories in `runs/`, newest first: complete or not, suite, block, candidates | reads `runs/` |
 | `/report [RUN]` | a run's report; the newest complete run by default | reads `report.txt`, or `families.txt` |
 | `/reproduce [RUN]` | re-runs a run and compares every file | `suite_lab --reproduce` |

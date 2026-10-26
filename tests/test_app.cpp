@@ -100,6 +100,9 @@ void test_argument_vectors() {
     PX_CHECK(!plan("/compare").error.empty());
     PX_CHECK(!plan("/compare smoke").error.empty());
     PX_CHECK(!plan("/compare maker wide busy").error.empty());
+    p = plan("/compare imbalance holdout");
+    PX_CHECK((p.run == std::vector<std::string>{"build/release/suite_lab", "--candidates=imbalance", "--block=holdout"}));
+    PX_CHECK(!plan("/compare maker smoke holdout").error.empty());
 
     p = plan("/add examples/strategies/imbalance.hpp");
     PX_CHECK(p.program == Program::Make && p.run.empty());

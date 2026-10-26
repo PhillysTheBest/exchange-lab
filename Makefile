@@ -208,10 +208,13 @@ test-cli: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(REL)/controls$(EXE)
 	[ -n "$$bare" ] && [ "$$bare" = "$$seated" ] || fail "an appended placebo should not move the sweep's hash"; \
 	$$S --candidates=momentum --out=$$D/suite-std > /dev/null 2>&1 || fail "the standard block should run (exit 3: reference not admissible)"; \
 	grep -qx 'reference_admissible=1' $$D/suite-std/outcome.cfg || fail "the reference should be admissible"; \
+	$$S --block=holdout --candidates=momentum --out=$$D/suite-hold > /dev/null 2>&1 || fail "the holdout block should run"; \
+	grep -qx 'fingerprint=6e1fe05931a6f560' $$D/suite-hold/outcome.cfg || fail "the holdout fingerprint is pinned"; \
+	grep -q '^  holdout block: confirmatory' $$D/suite-hold/report.txt || fail "a holdout report should say it is confirmatory"; \
 	! grep -nwE 'double|float' arena/suite.hpp || fail "arena/suite.hpp must stay integer-only"; \
 	rm -rf $$D; \
 	echo "  placebo arm at seed 42: $$ref, the sweep's market"; \
-	echo "34/34 suite command-line checks passed"
+	echo "37/37 suite command-line checks passed"
 	@set -e; \
 	fail() { echo "FAIL: $$1"; exit 1; }; \
 	exits() { want=$$1; shift; rc=0; "$$@" > /dev/null 2>&1 || rc=$$?; [ $$rc -eq $$want ]; }; \

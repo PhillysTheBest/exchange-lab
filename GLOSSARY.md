@@ -175,6 +175,8 @@ Terms are grouped and sorted alphabetically within each group.
 
 **Health gate** — The suite's per-session test: book close to V and two-sided, no BookFull, ended on time, replay matched.
 
+**Holdout block** — `holdout`, seeds 1,000,000..1,000,063: a confirmatory block shared with no other and used by no example. Tune on `standard`, then report once on `holdout`, beside the standard run and never pooled with it. *Where:* `docs/RUNNER.md`.
+
 **Inert** — A seat that sent no orders; its arm must equal the placebo arm.
 
 **Interval (95%)** — The paired mean ± t × standard error.
@@ -211,7 +213,7 @@ Terms are grouped and sorted alphabetically within each group.
 
 **Seat** — The slot a candidate occupies, appended after the line-up and never informed. Its real delay is `now_ns − as_of_ns`, whatever the strategy declares.
 
-**Seed block** — A named set of seeds: `standard` is 42..105; `smoke`, 42..45, shows a strategy runs.
+**Seed block** — A named set of seeds: `standard` is 42..105; `smoke`, 42..45, shows a strategy runs; `holdout` is the confirmatory block.
 
 **Smallest resolvable effect (`resolvable`)** — About 2.8 × the paired standard error.
 

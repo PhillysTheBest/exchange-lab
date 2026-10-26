@@ -69,6 +69,9 @@ constexpr std::uint64_t kPinnedSmokeFingerprint = 0xd461c30ab2446acfULL;
 // The scenario families, likewise pinned: a change needs a version bump.
 constexpr std::uint64_t kPinnedWideFingerprint = 0x9bb1a7c184ccb2d7ULL;
 constexpr std::uint64_t kPinnedBusyFingerprint = 0x5d735a9faa384bf5ULL;
+// The standard suite over the holdout block, the confirmatory seeds: pinned so
+// that the block cannot drift under the people who report on it.
+constexpr std::uint64_t kPinnedHoldoutFingerprint = 0x6e1fe05931a6f560ULL;
 
 // ---- 1. the mirror against the engine ------------------------------------
 
@@ -1330,6 +1333,33 @@ void test_suite_fingerprint() {
     PX_CHECK(suite::suite_fingerprint(ref, smoke_block(), moved) != fp);
 }
 
+// The holdout block: disjoint from standard (so tuning on standard cannot reach
+// it), as long as standard (so its intervals are as wide), marked confirmatory,
+// healthy on every seed, and pinned.
+void test_suite_holdout() {
+    const suite::SeedBlock* std_blk = suite::find_block("standard");
+    const suite::SeedBlock* hold = suite::find_block("holdout");
+    PX_CHECK(std_blk != nullptr && hold != nullptr);
+    if (std_blk == nullptr || hold == nullptr) return;
+    PX_CHECK(hold->count == std_blk->count);
+    PX_CHECK(hold->first >= std_blk->first + std_blk->count);
+    PX_CHECK(hold->confirmatory && !std_blk->confirmatory && !smoke_block().confirmatory);
+    const suite::SuiteDef def = suite::standard_suite();
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> hashes;
+    int healthy = 0;
+    for (std::uint64_t seed = hold->first; seed < hold->first + hold->count; ++seed) {
+        const suite::ArmRecord rec = run_named(def, seed, "placebo");
+        healthy += rec.session.healthy() ? 1 : 0;
+        hashes.emplace_back(seed, rec.session.session_hash);
+    }
+    PX_CHECK(healthy == static_cast<int>(hold->count));
+    const std::uint64_t fp = suite::suite_fingerprint(def, *hold, hashes);
+    std::printf("  holdout: %d/%u placebo seeds healthy, fingerprint %016llx\n", healthy, hold->count,
+                static_cast<unsigned long long>(fp));
+    PX_CHECK(fp == kPinnedHoldoutFingerprint);
+    PX_CHECK(fp != kPinnedSmokeFingerprint);
+}
+
 void test_paired_stats() {
     const suite::Paired p = suite::paired({1, 2, 3, 4}, {2, 4, 6, 8});
     auto near = [](double a, double b) { return a - b < 1e-3 && b - a < 1e-3; };
@@ -1871,6 +1901,7 @@ int main() {
     test_suite_closed_identity();
     test_suite_param_dump();
     test_suite_fingerprint();
+    test_suite_holdout();
     test_paired_stats();
     test_suite_compare();
     test_suite_rows();
