@@ -112,6 +112,14 @@ void test_argument_vectors() {
     PX_CHECK((plan("/sweep --strategies=maker,imbalance --param=imbalance.ratio --values=3,5").run ==
               std::vector<std::string>{"build/release/sweep_lab", "--strategies=maker,imbalance",
                                        "--param=imbalance.ratio", "--values=3,5"}));
+    PX_CHECK((plan("/compare imbalance suite=slow_seat").run ==
+              std::vector<std::string>{"build/release/suite_lab", "--candidates=imbalance",
+                                       "--suite-file=suites/slow_seat.cfg"}));
+    PX_CHECK((plan("/compare imbalance suite=examples/suites/slow_seat.cfg").run.back() ==
+              "--suite-file=examples/suites/slow_seat.cfg"));
+    PX_CHECK(plan("/compare imbalance suite=x market=y").error.find("not built yet") != std::string::npos);
+    PX_CHECK(!plan("/compare imbalance suite=x smoke").error.empty() && !plan("/compare imbalance suite=x wide").error.empty());
+    PX_CHECK(!plan("/compare imbalance suite=").error.empty());
     PX_CHECK((plan("/compare imbalance sensitivity").run ==
               std::vector<std::string>{"build/release/suite_lab", "--candidates=imbalance", "--suite=sensitivity"}));
     PX_CHECK(!plan("/compare maker all sensitivity").error.empty());

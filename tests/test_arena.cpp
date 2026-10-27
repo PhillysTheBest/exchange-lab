@@ -30,6 +30,7 @@
 #include "arena/session.hpp"
 #include "arena/suite.hpp"
 #include "arena/suite_report.hpp"
+#include "arena/suite_file.hpp"
 #include "arena/controls.hpp"
 #include "arena/ui.hpp"
 #include "px/matching_engine.hpp"
@@ -1373,6 +1374,196 @@ void test_strategy_settings() {
     PX_CHECK(suite::condition_lines(suite::suite_cfg_text(def, smoke_block(), changed)) != cond);
 }
 
+// ---- a suite of one's own (arena/suite_file.hpp) -----------------------------
+
+const char* const kSlowSeat = "# a comment\n"
+                              "suitefile.format=1\n"
+                              "suite.name=slow_seat\n"
+                              "suite.version=1\n"
+                              "suite.lineup=maker,rival,informed,noise:2,momentum\n"
+                              "suite.session_ns=25000000\n"
+                              "seat.reaction_ns=100000\n"
+                              "block.first_seed=42\n"
+                              "block.seeds=64\n";
+
+// The text with one line replaced (or, with `from` absent from it, appended).
+std::string edited(std::string text, const std::string& from, const std::string& to) {
+    const std::size_t at = text.find(from);
+    if (at == std::string::npos) return text + to + "\n";
+    return text.replace(at, from.size(), to);
+}
+
+using SuiteFp = std::uint64_t (*)(const std::string&);
+// The conditions' half of the fingerprint (the placebo hashes are the other).
+std::uint64_t fp_real(const std::string& text) {
+    suite::SuiteFile f;
+    suite::SuiteDef d = suite::standard_suite();
+    suite::SeedBlock b{"file", 0, 0};
+    std::string why;
+    if (!suite::parse_suite_file(text, f, why) || !suite::suite_from_file(f, d, b, why)) return 0;
+    return suite::suite_fingerprint(d, b, {});
+}
+// Planted defect: a fingerprint that leaves out the suitefile.* lines.
+std::uint64_t fp_without_definition(const std::string& text) {
+    suite::SuiteFile f;
+    suite::SuiteDef d = suite::standard_suite();
+    suite::SeedBlock b{"file", 0, 0};
+    std::string why;
+    if (!suite::parse_suite_file(text, f, why) || !suite::suite_from_file(f, d, b, why)) return 0;
+    d.definition.clear();
+    return suite::suite_fingerprint(d, b, {});
+}
+// Every field of the file, changed alone, must change the fingerprint: version
+// included, and a parameter of a participant that is not in the line-up.
+bool fingerprint_covers_every_field(SuiteFp fp) {
+    const std::string base = kSlowSeat;
+    const std::uint64_t f0 = fp(base);
+    if (f0 == 0) return false;
+    const std::pair<const char*, const char*> changes[] = {
+        {"suite.name=slow_seat", "suite.name=slow_seat2"},
+        {"suite.version=1", "suite.version=2"},
+        {"suite.lineup=maker,rival,informed,noise:2,momentum", "suite.lineup=maker,informed,noise:2,momentum"},
+        {"suite.session_ns=25000000", "suite.session_ns=20000000"},
+        {"seat.reaction_ns=100000", "seat.reaction_ns=100001"},
+        {"block.first_seed=42", "block.first_seed=43"},
+        {"block.seeds=64", "block.seeds=63"},
+        {"(absent)", "set.fader.qty=11"},
+        {"(absent)", "set.maker.half_spread_ticks=3"},
+    };
+    std::vector<std::uint64_t> seen{f0};
+    for (const auto& [from, to] : changes) {
+        const std::uint64_t f = fp(edited(base, from, to));
+        if (f == 0 || std::find(seen.begin(), seen.end(), f) != seen.end()) return false;
+        seen.push_back(f);
+    }
+    return true;
+}
+
+using SuiteReader = bool (*)(const std::string&, suite::SuiteFile&, std::string&);
+bool read_real(const std::string& t, suite::SuiteFile& f, std::string& why) { return suite::parse_suite_file(t, f, why); }
+// Planted defect: a reader that drops every line it does not know before reading.
+bool read_lenient(const std::string& t, suite::SuiteFile& f, std::string& why) {
+    std::string kept;
+    std::size_t at = 0;
+    while (at < t.size()) {
+        std::size_t end = t.find('\n', at);
+        if (end == std::string::npos) end = t.size();
+        const std::string line = t.substr(at, end - at);
+        at = end + 1;
+        if (!line.starts_with("suite.colour") && !line.starts_with("health.") && !line.starts_with("suite.step"))
+            kept += line + "\n";
+    }
+    return suite::parse_suite_file(kept, f, why);
+}
+bool refuses_what_a_file_cannot_set(SuiteReader read) {
+    suite::SuiteFile f;
+    std::string why;
+    for (const char* bad : {"suite.colour=red", "health.max_mean_gap_ticks=40", "suite.step_ceiling=10"}) {
+        if (read(edited(kSlowSeat, "(absent)", bad), f, why)) return false;
+    }
+    return true;
+}
+
+using Admit = bool (*)(const suite::SuiteDef&, const suite::SeedBlock&, std::vector<std::pair<std::uint64_t, suite::Health>>&,
+                       std::string&);
+bool admit_real(const suite::SuiteDef& d, const suite::SeedBlock& b,
+                std::vector<std::pair<std::uint64_t, suite::Health>>& failing, std::string& why) {
+    return suite::admit_suite(d, b, failing, why);
+}
+// Planted defect: an admission that looks only at the block's first seed.
+bool admit_first_only(const suite::SuiteDef& d, const suite::SeedBlock& b,
+                      std::vector<std::pair<std::uint64_t, suite::Health>>& failing, std::string& why) {
+    return suite::admit_suite(d, suite::SeedBlock{b.name, b.first, 1}, failing, why);
+}
+// A third noise trader breaks the book on seed 79 (docs/RUNNER.md, "Sensitivity"); 78 is fine.
+bool refuses_a_loose_placebo(Admit admit) {
+    suite::SuiteFile f;
+    suite::SuiteDef d = suite::standard_suite();
+    suite::SeedBlock b{"file", 0, 0};
+    std::string why;
+    std::string text = edited(kSlowSeat, "suite.lineup=maker,rival,informed,noise:2,momentum",
+                              "suite.lineup=maker,rival,informed,noise:3,momentum");
+    text = edited(edited(text, "block.first_seed=42", "block.first_seed=78"), "block.seeds=64", "block.seeds=2");
+    if (!suite::parse_suite_file(text, f, why) || !suite::suite_from_file(f, d, b, why)) return false;
+    std::vector<std::pair<std::uint64_t, suite::Health>> failing;
+    if (!admit(d, b, failing, why)) return false;
+    return failing.size() == 1 && failing.front().first == 79 && failing.front().second == suite::Health::Gap;
+}
+
+void test_suite_file() {
+    suite::SuiteFile f;
+    std::string why;
+    PX_CHECK(suite::parse_suite_file(kSlowSeat, f, why) && f.name == "slow_seat" && f.version == 1 &&
+             f.seat_reaction_ns == 100'000 && f.first_seed == 42 && f.seeds == 64 && f.sets.empty());
+    std::string crlf = kSlowSeat;
+    for (std::size_t at = crlf.find('\n'); at != std::string::npos; at = crlf.find('\n', at + 2)) crlf.insert(at, "\r");
+    suite::SuiteFile g;
+    PX_CHECK(suite::parse_suite_file(crlf, g, why) && suite::suite_file_text(g) == suite::suite_file_text(f));
+    suite::SuiteDef d = suite::standard_suite();
+    suite::SeedBlock b{"file", 0, 0};
+    PX_CHECK(suite::suite_from_file(f, d, b, why) && std::string(d.name) == "slow_seat" && d.seat_reaction_ns == 100'000 &&
+             b.first == 42 && b.count == 64 && std::string(d.change) == "seat reaction 100000 ns");
+    // The seat, the placebo, the health gate and the step ceiling are standard's.
+    PX_CHECK(d.step_ceiling == suite::standard_suite().step_ceiling &&
+             d.health.max_mean_gap_ticks == suite::standard_suite().health.max_mean_gap_ticks);
+
+    // The pairings: each check holds for the real code and fails for its defect.
+    PX_CHECK(fingerprint_covers_every_field(fp_real) && !fingerprint_covers_every_field(fp_without_definition));
+    PX_CHECK(refuses_what_a_file_cannot_set(read_real) && !refuses_what_a_file_cannot_set(read_lenient));
+    PX_CHECK(refuses_a_loose_placebo(admit_real) && !refuses_a_loose_placebo(admit_first_only));
+
+    // Every other refusal names its line or its reason.
+    auto refused = [&](const std::string& text, const char* says) {
+        suite::SuiteFile x;
+        std::string w;
+        const bool no = !suite::parse_suite_file(text, x, w) && w.find(says) != std::string::npos;
+        if (!no) std::printf("  suite file: expected a refusal saying '%s', got '%s'\n", says, w.c_str());
+        return no;
+    };
+    PX_CHECK(refused(edited(kSlowSeat, "(absent)", "seat.index=3"), "is fixed by the runner"));
+    PX_CHECK(refused(edited(kSlowSeat, "(absent)", "session.fee_per_qty=1"), "not settable by a suite file"));
+    PX_CHECK(refused(edited(kSlowSeat, "(absent)", "fair.step_mean_ns=5"), "not settable by a suite file"));
+    PX_CHECK(refused(edited(kSlowSeat, "(absent)", "suite.version=3"), "suite.version is given twice"));
+    PX_CHECK(refused(edited(kSlowSeat, "(absent)", "set.maker.colour=1"), "is not a reference parameter"));
+    PX_CHECK(refused(edited(kSlowSeat, "suite.version=1\n", ""), "sets no suite.version"));
+    PX_CHECK(refused(edited(kSlowSeat, "suite.session_ns=25000000", "suite.session_ns=5"), "from 1000000 to 1000000000"));
+    PX_CHECK(refused(edited(kSlowSeat, "block.seeds=64", "block.seeds=1"), "block.seeds must be"));
+    PX_CHECK(refused(edited(kSlowSeat, "seat.reaction_ns=100000", "seat.reaction_ns=ten"), "seat.reaction_ns must be"));
+    PX_CHECK(refused(edited(kSlowSeat, "block.first_seed=42", "block.first_seed=999990"), "overlaps the holdout block"));
+    for (const char* r : {"standard", "wide", "busy", "smoke", "holdout", "sensitivity", "thin"})
+        PX_CHECK(refused(edited(kSlowSeat, "suite.name=slow_seat", std::string("suite.name=") + r), "cannot be called"));
+    PX_CHECK(refused(edited(kSlowSeat, "suite.name=slow_seat", "suite.name=Slow"), "a suite name is"));
+    PX_CHECK(refused("suite.name\n", "not key=value"));
+    suite::SuiteFile h;
+    PX_CHECK(suite::parse_suite_file(edited(kSlowSeat, "suite.lineup=maker,rival,informed,noise:2,momentum",
+                                            "suite.lineup=maker,bogus"), h, why));
+    PX_CHECK(!suite::suite_from_file(h, d, b, why) && why.find("unknown participant 'bogus'") != std::string::npos);
+
+    // No built-in suite carries a suitefile.* line, so no pinned fingerprint moved.
+    for (const std::string& n : suite::split_names(suite::kSensitivityNames)) {
+        suite::SuiteDef s = suite::standard_suite();
+        PX_CHECK(suite::find_suite(n, s) && s.definition.empty());
+        PX_CHECK(suite::conditions_text(s, smoke_block()).find("suitefile.") == std::string::npos);
+    }
+
+    // The record alone gives the same suite back; an edited line in it does not.
+    suite::SuiteDef rd = suite::standard_suite();
+    suite::SeedBlock rb{"file", 0, 0};
+    PX_CHECK(suite::suite_from_file(f, rd, rb, why));
+    const std::string cfg = suite::suite_cfg_text(rd, rb, suite::RunInfo{});
+    PX_CHECK(cfg.find("\nsuitefile.format=1\n") != std::string::npos && cfg.find("\nsuitefile.digest=") != std::string::npos);
+    suite::SuiteFile back;
+    PX_CHECK(suite::suite_file_from_record(cfg, back, why) && suite::suite_file_text(back) == suite::suite_file_text(f));
+    const std::string tampered = edited(cfg, "seat.reaction_ns=100000", "seat.reaction_ns=90000");
+    suite::SuiteFile t;
+    suite::SuiteDef td = suite::standard_suite();
+    suite::SeedBlock tb{"file", 0, 0};
+    PX_CHECK(suite::suite_file_from_record(tampered, t, why) && suite::suite_from_file(t, td, tb, why));
+    PX_CHECK(suite::condition_lines(suite::suite_cfg_text(td, tb, suite::RunInfo{})) != suite::condition_lines(tampered));
+    std::printf("  suite file: slow_seat, conditions fingerprint %016llx\n",
+                static_cast<unsigned long long>(fp_real(kSlowSeat)));
+}
+
 void test_suite_ceiling() {
     suite::SuiteDef def = suite::standard_suite();
     def.step_ceiling = 5'000;
@@ -2154,6 +2345,7 @@ int main() {
     test_suite_inert_arm();
     test_suite_ceiling();
     test_strategy_settings();
+    test_suite_file();
     test_zi_floor();
     test_suite_closed_identity();
     test_suite_param_dump();

@@ -234,10 +234,13 @@ test-cli: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(REL)/controls$(EXE) $(REL)/are
 	exits 2 ./$(REL)/sweep$(EXE) --strategies=maker,zi --param=zi.band_ticks --values=1,2 --seeds=1 \
 	    || fail "the evidence sweep must refuse a swept setting"; \
 	exits 2 ./$(REL)/arena$(EXE) --strategies=maker,zi+band_ticks=4 --still=1000000 || fail "the evidence viewer must refuse a setting"; \
-	! grep -q 'settings on its name' $$D/err && ! $$S --help | grep -q 'settings on its name' \
-	    || fail "the evidence suite should not advertise settings"; \
+	! grep -q 'settings on its name' $$D/err && ! $$S --help | grep -q 'settings on its name\|--suite-file' \
+	    || fail "the evidence suite should not advertise settings or suite files"; \
+	rc=0; $$S --suite-file=examples/suites/slow_seat.cfg --candidates=maker --out=$$D/x > $$D/err 2>&1 || rc=$$?; \
+	[ $$rc -eq 2 ] && grep -q 'a suite file is read by suite_lab only' $$D/err && [ ! -d $$D/x ] \
+	    || fail "the evidence suite must refuse a suite file and write nothing"; \
 	rm -rf $$D; \
-	echo "5/5 evidence-refusal checks passed"
+	echo "6/6 evidence-refusal checks passed"
 	@set -e; \
 	fail() { echo "FAIL: $$1"; exit 1; }; \
 	exits() { want=$$1; shift; rc=0; "$$@" > /dev/null 2>&1 || rc=$$?; [ $$rc -eq $$want ]; }; \
@@ -343,12 +346,12 @@ lab: $(LAB_BINS) $(REPLAY_BIN)
 
 # The standard experiment (docs/RUNNER.md): every candidate in the same seat of
 # the same market on the same named block of seeds, written to runs/.
-#   make compare CANDIDATES=mine,other [BLOCK=smoke] [SUITE=wide|busy|all | MARKET=name] [OUT=dir]
+#   make compare CANDIDATES=mine,other [BLOCK=smoke] [SUITE=wide|busy|all | MARKET=name | SUITE_FILE=path] [OUT=dir]
 # BLOCK rather than SEEDS, because bench/run_arena_evidence.sh reads a numeric
 # SEEDS from the environment and an exported one would leak in here.
 compare: $(REL)/suite_lab$(EXE)
 	@[ -n '$(CANDIDATES)' ] || { echo "make compare: say which strategies: make compare CANDIDATES=a[,b,...]" >&2; exit 2; }
-	./$(REL)/suite_lab$(EXE) --candidates=$(CANDIDATES) $(if $(BLOCK),--block=$(BLOCK)) $(if $(SUITE),--suite=$(SUITE)) $(if $(MARKET),--market=$(MARKET)) $(if $(OUT),--out=$(OUT))
+	./$(REL)/suite_lab$(EXE) --candidates=$(CANDIDATES) $(if $(BLOCK),--block=$(BLOCK)) $(if $(SUITE),--suite=$(SUITE)) $(if $(MARKET),--market=$(MARKET)) $(if $(SUITE_FILE),--suite-file=$(SUITE_FILE)) $(if $(OUT),--out=$(OUT))
 
 # Re-run a run directory from its own suite.cfg and compare every file (docs/REPRODUCE.md).
 reproduce: $(REL)/suite_lab$(EXE)
@@ -830,6 +833,41 @@ test-lab: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(INGEST_BIN)
 	exits 2 $$W --strategies=$$L,imbalance+ratio=5 --param=imbalance.ratio --values=3,5 --seeds=1 || fail "a setting given twice should be refused"; ok; \
 	rm -rf $$D; \
 	echo "$$n/$$n strategy-settings checks passed"
+	@set -e; \
+	fail() { echo "FAIL: $$1"; exit 1; }; \
+	exits() { want=$$1; shift; rc=0; "$$@" > /dev/null 2>&1 || rc=$$?; [ $$rc -eq $$want ]; }; \
+	echo "== a suite of one's own (examples/suites/slow_seat.cfg)"; \
+	S=./$(REL)/suite_lab$(EXE); E=examples/suites/slow_seat.cfg; D=$(BUILD)/lab-suite; rm -rf $$D; mkdir -p $$D; n=0; ok() { n=$$((n+1)); }; \
+	cp $$E $$D/mine.cfg; \
+	$$S --suite-file=$$D/mine.cfg --candidates=maker --out=$$D/run > /dev/null 2>&1 || fail "suite_lab should run the example suite"; ok; \
+	grep -qx 'suite.name=slow_seat' $$D/run/suite.cfg && grep -qx 'seat.reaction_ns=100000' $$D/run/suite.cfg \
+	    && grep -qx 'block.name=file' $$D/run/suite.cfg && grep -q '^suitefile.digest=' $$D/run/suite.cfg \
+	    && grep -qx "run.suite_file=$$D/mine.cfg" $$D/run/suite.cfg || fail "the run should record the whole suite"; ok; \
+	fp=$$(sed -n 's/^fingerprint=//p' $$D/run/outcome.cfg); [ -n "$$fp" ] && [ "$$fp" != d461c30ab2446acf ] \
+	    || fail "a suite file is a suite of its own, with its own fingerprint"; ok; \
+	sed 's/^suite.version=1$$/suite.version=2/' $$E > $$D/mine.cfg; \
+	rc=0; $$S --reproduce=$$D/run --out=$$D/re0 > $$D/err 2>&1 || rc=$$?; \
+	[ $$rc -eq 2 ] && grep -q 'has changed since the run' $$D/err || fail "a changed suite file should be refused"; ok; \
+	rm $$D/mine.cfg; \
+	$$S --reproduce=$$D/run --out=$$D/re 2>/dev/null | grep -q '^  REPRODUCED' || fail "it should reproduce with the file deleted"; ok; \
+	sed 's/^seat.reaction_ns=100000$$/seat.reaction_ns=90000/' $$D/run/suite.cfg > $$D/cfg; cp $$D/cfg $$D/run/suite.cfg; \
+	rc=0; $$S --reproduce=$$D/run --out=$$D/re2 > $$D/err 2>&1 || rc=$$?; \
+	[ $$rc -eq 2 ] && grep -q 'suitefile.digest=' $$D/err || fail "a record with an edited condition should be refused"; ok; \
+	sed 's/^suite.lineup=.*/suite.lineup=maker,rival,informed,noise:3,momentum/; s/^block.first_seed=.*/block.first_seed=78/; s/^block.seeds=.*/block.seeds=3/; s/^suite.name=.*/suite.name=crowded/' \
+	    $$E > $$D/bad.cfg; \
+	rc=0; $$S --suite-file=$$D/bad.cfg --candidates=maker --out=$$D/bad > $$D/err 2>&1 || rc=$$?; \
+	[ $$rc -eq 3 ] && grep -q 'not admitted: its placebo fails the health gate on 1 of 3 seeds: 79 (gap)' $$D/err && [ ! -d $$D/bad ] \
+	    || fail "a suite whose placebo is not a market should be refused, exit 3, naming the seed, writing nothing"; ok; \
+	sed 's/^suite.name=.*/suite.name=busy/' $$E > $$D/res.cfg; \
+	exits 2 $$S --suite-file=$$D/res.cfg --candidates=maker --out=$$D/x || fail "a reserved name should be refused"; ok; \
+	sed 's/^seat.reaction_ns=.*/seat.reaction_ns=100000/; $$a health.max_mean_gap_ticks=40' $$E > $$D/fix.cfg; \
+	exits 2 $$S --suite-file=$$D/fix.cfg --candidates=maker --out=$$D/x || fail "a fixed key should be refused"; ok; \
+	exits 2 $$S --suite-file=$$E --market=known --candidates=maker --out=$$D/x || fail "a suite file with a market should be refused"; ok; \
+	exits 2 $$S --suite-file=$$E --block=smoke --candidates=maker --out=$$D/x || fail "a suite file with --block should be refused"; ok; \
+	$(MAKE) --no-print-directory compare CANDIDATES=maker SUITE_FILE=$$E OUT=$$D/mk > /dev/null 2>&1 \
+	    && grep -qx 'suite.name=slow_seat' $$D/mk/suite.cfg || fail "make compare SUITE_FILE= should run it"; ok; \
+	rm -rf $$D; \
+	echo "$$n/$$n suite-file checks passed"
 
 # The outputs that must be identical on every platform, compared line by line with
 # the record committed from Linux (docs/PLATFORMS.md). The first

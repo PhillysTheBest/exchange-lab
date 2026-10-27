@@ -137,6 +137,10 @@ struct SuiteDef {
     // calibration.* lines, which say which tape, as conditions. Empty for every
     // built-in suite, so their conditions and fingerprints do not move.
     std::string calibration = "";
+    // A suite read from a file (arena/suite_file.hpp): its whole definition as
+    // suitefile.* lines, so every line of the file is fingerprinted. Empty for
+    // every built-in suite, likewise.
+    std::string definition = "";
 };
 
 // The one definition. A change to any of it, or to a reference strategy, a
@@ -690,6 +694,7 @@ struct RunInfo {
     std::vector<CandidateInfo> candidates;
     BuildInfo build;             // empty commit: not recorded (tests)
     std::string market_file;     // the markets/NAME.cfg a calibrated suite was read from, or empty
+    std::string suite_file;      // the suite file a file suite was read from, or empty
 };
 
 // Exactly what the three raw files hold, so a report is a function of this
@@ -946,6 +951,7 @@ inline void append_participant_rows(std::string& s, const std::vector<Participan
         if (Session::get_param(sc, k, v)) append_kv(s, k, v);
     }
     s += def.calibration;
+    s += def.definition;
     return s;
 }
 
@@ -998,6 +1004,7 @@ inline void append_participant_rows(std::string& s, const std::vector<Participan
         if (!c.digest.empty()) append_kv(s, k + ".digest", c.digest);
     }
     if (!info.market_file.empty()) append_kv(s, "run.market_file", info.market_file);
+    if (!info.suite_file.empty()) append_kv(s, "run.suite_file", info.suite_file);
     if (!info.build.commit.empty()) {
         s += "# Which build ran it. Not conditions: `suite --reproduce` re-runs on any build.\n";
         append_kv(s, "build.commit", info.build.commit);

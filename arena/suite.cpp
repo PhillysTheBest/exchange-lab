@@ -21,6 +21,7 @@
 // session gave a different hash on replay; 2 usage or configuration error,
 // nothing was run; 3 the reference market is not admissible on this build.
 #include "arena/suite.hpp"
+#include "arena/suite_file.hpp"
 #include "arena/suite_report.hpp"
 #include "marketdata/market_file.hpp"
 
@@ -96,6 +97,11 @@ void usage() {
         "                          docs/DATA.md): a suite of its own. suite_lab only\n"
         "  --out=DIR               default runs/<a>[-vs-<b>...][-<suite or market>]-<block>/; a previous run there is replaced\n"
         "  --reproduce=DIR         re-run the run in DIR from its suite.cfg and compare every file (docs/REPRODUCE.md)\n"
+#if defined(PX_ARENA_USER_STRATEGIES)
+        "  --suite-file=PATH       a suite of your own (suites/NAME.cfg; docs/RUNNER.md): its own line-up, session,\n"
+        "                          seat delay, parameters and seed block, admitted only if its placebo is a market\n"
+#endif
+
         "  --help\n\n"
         "%s\n\n"
         "Each suite is a fixed market (arena/suite.hpp); wide and busy each change one thing about\n"
@@ -164,13 +170,15 @@ void usage() {
 // files, then the printed report. Returns the exit code of this suite alone;
 // `family` receives what the --suite=all table needs.
 int run_suite(const SuiteDef& def, const SeedBlock& block, const std::vector<std::string>& names,
-              const fs::path& dir, FamilyResult& family, const std::string& market_file = {}) {
+              const fs::path& dir, FamilyResult& family, const std::string& market_file = {},
+              const std::string& suite_file = {}) {
     RunRecord run;
     run.def = def;
     run.block = block;
     run.info.binary = kBinary;
     run.info.build = this_build();
     run.info.market_file = market_file;
+    run.info.suite_file = suite_file;
 #if defined(PX_ARENA_USER_STRATEGIES)
     run.info.user_strategies = kUserStrategyNames[0] != '\0' ? kUserStrategyNames : "none";
 #else
@@ -306,6 +314,41 @@ int run_suite(const SuiteDef& def, const SeedBlock& block, const std::vector<std
     return std::fclose(f) == 0;
 }
 
+#if defined(PX_ARENA_USER_STRATEGIES)
+// A suite file from disk: read, checked, and turned into a suite and its block.
+// A new run also refuses the name of a calibrated market in markets/.
+[[nodiscard]] bool load_suite_file(const std::string& path, SuiteDef& def, SeedBlock& block, bool new_run,
+                                   std::string& why) {
+    std::string text;
+    if (!read_file(path, text)) {
+        why = "cannot read " + path;
+        return false;
+    }
+    SuiteFile f;
+    if (!parse_suite_file(text, f, why)) return false;
+    std::error_code ec;
+    if (new_run && fs::exists(fs::path("markets") / (f.name + ".cfg"), ec)) {
+        why = "a suite file cannot be called '" + f.name + "', which names a calibrated market in markets/";
+        return false;
+    }
+    return suite_from_file(f, def, block, why);
+}
+
+// The placebo on every seed of a file suite's block, or exit 3 saying which failed.
+[[nodiscard]] int admit_or_refuse(const SuiteDef& def, const SeedBlock& block) {
+    std::vector<std::pair<std::uint64_t, Health>> failing;
+    std::string why;
+    std::fprintf(stderr, "%s: admission, the placebo on %u seeds against the health gate\n", def.name, block.count);
+    if (!admit_suite(def, block, failing, why)) {
+        std::fprintf(stderr, "suite %s: %s\n", def.name, why.c_str());
+        return 2;
+    }
+    if (failing.empty()) return 0;
+    std::fprintf(stderr, "%s\n", admission_text(def, block, failing).c_str());
+    return 3;
+}
+#endif
+
 // Re-runs one run directory from its suite.cfg into `out`, then compares every
 // file. Refuses (2) before running anything if this build cannot face the same
 // conditions or no longer holds the same version of an installed strategy;
@@ -325,6 +368,9 @@ int reproduce_one(const fs::path& from, const fs::path& out) {
     SuiteDef def = standard_suite();
     const std::string suite_name = cfg_value(cfg, "suite.name");
     const std::string market_file = cfg_value(cfg, "run.market_file");
+    const std::string suite_file = cfg_value(cfg, "run.suite_file");
+    const bool from_file = !cfg_value(cfg, "suitefile.format").empty();
+    SeedBlock file_block{"file", 0, 0};
     if (!cfg_value(cfg, "calibration.market").empty()) {
 #if defined(PX_ARENA_USER_STRATEGIES)
         // A calibrated market comes back from the run's own record, so neither
@@ -366,13 +412,53 @@ int reproduce_one(const fs::path& from, const fs::path& out) {
                      from.string().c_str(), suite_name.c_str());
         return 2;
 #endif
+    } else if (from_file) {
+#if defined(PX_ARENA_USER_STRATEGIES)
+        // A file suite comes back from the run's own record: every line a file can
+        // set is among its conditions. If the file is still where it was read from,
+        // it must still say the same thing.
+        std::string why;
+        SuiteFile sf;
+        if (!suite_file_from_record(cfg, sf, why) || !suite_from_file(sf, def, file_block, why)) {
+            std::fprintf(stderr, "%s: %s\n", from.string().c_str(), why.c_str());
+            return 2;
+        }
+        std::error_code ec;
+        if (!suite_file.empty() && fs::exists(suite_file, ec)) {
+            SuiteDef local = standard_suite();
+            SeedBlock lb{"file", 0, 0};
+            if (!load_suite_file(suite_file, local, lb, false, why)) {
+                std::fprintf(stderr, "%s: the run's suite file %s is no longer one this build reads (%s); move it aside "
+                                     "to reproduce from the run's own record\n",
+                             from.string().c_str(), suite_file.c_str(), why.c_str());
+                return 2;
+            }
+            const std::vector<std::string> a = condition_lines(conditions_text(def, file_block) + roster_text(def));
+            const std::vector<std::string> b = condition_lines(conditions_text(local, lb) + roster_text(local));
+            for (std::size_t i = 0; i < std::max(a.size(), b.size()); ++i) {
+                const std::string x = i < a.size() ? a[i] : "(nothing)";
+                const std::string y = i < b.size() ? b[i] : "(nothing)";
+                if (x != y) {
+                    std::fprintf(stderr,
+                                 "%s: %s has changed since the run (%s in the run, %s now): not the same suite. The "
+                                 "run's own record is enough to reproduce it: move %s aside.\n",
+                                 from.string().c_str(), suite_file.c_str(), x.c_str(), y.c_str(), suite_file.c_str());
+                    return 2;
+                }
+            }
+        }
+#else
+        std::fprintf(stderr, "%s: the run is on a suite file (%s), which only suite_lab runs\n", from.string().c_str(),
+                     suite_name.c_str());
+        return 2;
+#endif
     } else if (!find_suite(suite_name, def)) {
         std::fprintf(stderr, "%s: suite '%s' is not in this build (%s)\n", from.string().c_str(),
                      suite_name.c_str(), kSuiteNames);
         return 2;
     }
     const std::string block_name = cfg_value(cfg, "block.name");
-    const SeedBlock* block = find_block(block_name);
+    const SeedBlock* block = from_file ? &file_block : find_block(block_name);
     if (block == nullptr) {
         std::fprintf(stderr, "%s: block '%s' is not in this build\n", from.string().c_str(), block_name.c_str());
         return 2;
@@ -414,8 +500,14 @@ int reproduce_one(const fs::path& from, const fs::path& out) {
         }
     }
     const std::string commit_then = cfg_value(cfg, "build.commit");
+#if defined(PX_ARENA_USER_STRATEGIES)
+    if (from_file) {
+        const int admitted = admit_or_refuse(def, *block);
+        if (admitted != 0) return admitted;
+    }
+#endif
     FamilyResult f;
-    const int code = run_suite(def, *block, names, out, f, market_file);
+    const int code = run_suite(def, *block, names, out, f, market_file, suite_file);
     if (code == 2) return 2;
 
     std::printf("\nreproduce %s into %s\n", from.generic_string().c_str(), out.generic_string().c_str());
@@ -451,6 +543,8 @@ int main(int argc, char** argv) {
     std::string out_arg;
     std::string reproduce_arg;
     std::string market_arg;
+    std::string suite_file_arg;
+    bool have_block = false;
     for (int i = 1; i < argc; ++i) {
         const std::string_view a = argv[i];
         if (a == "--help" || a == "-h") {
@@ -461,6 +555,14 @@ int main(int argc, char** argv) {
             have_candidates = true;
         } else if (a.starts_with("--block=")) {
             block_name = std::string(a.substr(8));
+            have_block = true;
+        } else if (a.starts_with("--suite-file=")) {
+            suite_file_arg = std::string(a.substr(13));
+#if !defined(PX_ARENA_USER_STRATEGIES)
+            std::fprintf(stderr, "--suite-file: a suite file is read by suite_lab only, never by the evidence programs "
+                                 "(make compare CANDIDATES=... SUITE_FILE=...)\n");
+            return 2;
+#endif
         } else if (a.starts_with("--suite=")) {
             suite_name = std::string(a.substr(8));
         } else if (a.starts_with("--out=")) {
@@ -482,7 +584,8 @@ int main(int argc, char** argv) {
     }
     if (!reproduce_arg.empty()) {
         // Everything comes from the run's own suite.cfg; nothing else may be given.
-        if (have_candidates || block_name != "standard" || suite_name != "standard" || !market_arg.empty()) {
+        if (have_candidates || block_name != "standard" || suite_name != "standard" || !market_arg.empty() ||
+            !suite_file_arg.empty()) {
             std::fprintf(stderr, "--reproduce takes its candidates, block, suite and market from the run; give only --out\n");
             return 2;
         }
@@ -511,14 +614,40 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "say which strategies to run: --candidates=A[,B,...]\n");
         return 2;
     }
-    const SeedBlock* block = find_block(block_name);
+    SeedBlock file_block{"file", 0, 0};
+    const SeedBlock* block = suite_file_arg.empty() ? find_block(block_name) : &file_block;
     if (block == nullptr) {
         std::fprintf(stderr, "unknown block '%s': standard, smoke or holdout\n", block_name.c_str());
         return 2;
     }
     std::vector<SuiteDef> suites;
     std::string market_file;
-    if (!market_arg.empty()) {
+    if (!suite_file_arg.empty()) {
+        // A suite of one's own, from a file: its own block, market and fingerprint.
+        if (!market_arg.empty()) {
+            std::fprintf(stderr, "--suite-file with --market: a suite file on a calibrated market is not built yet; "
+                                 "give one or the other\n");
+            return 2;
+        }
+        if (suite_name != "standard") {
+            std::fprintf(stderr, "--suite-file is a suite of its own: give --suite-file or --suite, not both\n");
+            return 2;
+        }
+        if (have_block) {
+            std::fprintf(stderr, "--suite-file sets its own seed block: --block cannot be given beside it\n");
+            return 2;
+        }
+#if defined(PX_ARENA_USER_STRATEGIES)
+        std::string why;
+        SuiteDef d = standard_suite();
+        if (!load_suite_file(suite_file_arg, d, file_block, true, why)) {
+            std::fprintf(stderr, "--suite-file=%s: %s\n", suite_file_arg.c_str(), why.c_str());
+            return 2;
+        }
+        suites.push_back(d);
+        suite_name = d.name;
+#endif
+    } else if (!market_arg.empty()) {
         // A calibrated market is a suite of its own, never a variant of a family.
         if (suite_name != "standard") {
             std::fprintf(stderr, "--market is a suite of its own: give --market or --suite, not both\n");
@@ -578,8 +707,14 @@ int main(int argc, char** argv) {
     }
 
     if (suites.size() == 1) {
+#if defined(PX_ARENA_USER_STRATEGIES)
+        if (!suite_file_arg.empty()) {
+            const int admitted = admit_or_refuse(suites.front(), *block);
+            if (admitted != 0) return admitted;
+        }
+#endif
         FamilyResult f;
-        return run_suite(suites.front(), *block, names, dir, f, market_file);
+        return run_suite(suites.front(), *block, names, dir, f, market_file, suite_file_arg);
     }
 
     // --suite=all or sensitivity: one directory per suite under `dir`, then one table across them.
