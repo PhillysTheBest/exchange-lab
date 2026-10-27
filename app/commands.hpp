@@ -37,7 +37,7 @@ inline constexpr CommandInfo kCommands[] = {
      "Runs make strategy STRATEGY=PATH: checks the name, copies the header into\n"
      "arena/strategies/user/ and rebuilds the lab programs, the only ones that can see it.\n"
      "  /add examples/strategies/imbalance.hpp"},
-    {"/compare", "NAME[,NAME...] [smoke|holdout] [wide|busy|all|sensitivity|market=M]",
+    {"/compare", "NAME[,NAME...] [smoke|holdout] [wide|busy|all|sensitivity|market=M|suite=S]",
      "score strategies in the standard seat against an empty one, then show the report",
      "Runs suite_lab. Every candidate sits in the same seat of the same market on the same\n"
      "64 seeds (smoke: 4), beside a placebo arm whose seat never acts. holdout is 64 other\n"
@@ -45,10 +45,13 @@ inline constexpr CommandInfo kCommands[] = {
      "scenario families; all runs every family, side by side, never pooled. sensitivity runs\n"
      "the fixed grid (seat delay, liquidity, line-up) and says whether each result holds.\n"
      "market= runs on a market made by /calibrate instead: a family of its own.\n"
+     "suite= runs a suite of your own from suites/S.cfg (or a path): its own line-up, session,\n"
+     "seat delay, parameters and seeds, admitted only if its placebo is a market.\n"
      "A strategy of your own takes settings on its name: imbalance+ratio=5 runs it with\n"
      "ratio 5, and imbalance+ratio=5,imbalance compares the two, paired.\n"
      "  /compare imbalance smoke\n"
      "  /compare imbalance+ratio=5,imbalance\n"
+     "  /compare imbalance suite=examples/suites/slow_seat.cfg\n"
      "  /compare imbalance,maker\n"
      "  /compare imbalance all\n"
      "  /compare imbalance sensitivity\n"
@@ -260,7 +263,7 @@ struct Plan {
     }
 
     if (cmd == "/compare") {
-        std::string candidates, block, suite, market;
+        std::string candidates, block, suite, market, suite_file;
         for (const std::string& a : args) {
             if (a == "smoke" || a == "holdout") {
                 if (!block.empty() && block != a) {
@@ -280,6 +283,14 @@ struct Plan {
                     p.error = "say which market: market=NAME; /calibrate makes one";
                     return p;
                 }
+            } else if (starts_with(a, "suite=")) {
+                // A name is suites/NAME.cfg; anything with a / or ending .cfg is a path.
+                const std::string s = a.substr(6);
+                if (s.empty()) {
+                    p.error = "say which suite file: suite=NAME (suites/NAME.cfg) or suite=path/to/file.cfg";
+                    return p;
+                }
+                suite_file = s.find('/') != std::string::npos || s.ends_with(".cfg") ? s : "suites/" + s + ".cfg";
             } else if (a.find('=') != std::string::npos && a.find('+') > a.find('=')) {
                 // A '=' before any '+' is a setting of the command; after one, of a strategy.
                 p.error = "unknown setting " + a + "; /help compare";
@@ -297,11 +308,20 @@ struct Plan {
             p.error = "a calibrated market is a family of its own: give market= or " + suite + ", not both";
             return p;
         }
+        if (!suite_file.empty() && !market.empty()) {
+            p.error = "suite= with market=: a suite file on a calibrated market is not built yet; give one or the other";
+            return p;
+        }
+        if (!suite_file.empty() && (!suite.empty() || !block.empty())) {
+            p.error = "a suite file sets its own market and seeds: give suite= without " + (suite.empty() ? block : suite);
+            return p;
+        }
         p.build = make_target(env, program_path(env, "suite_lab"));
         p.run = {program_path(env, "suite_lab"), "--candidates=" + candidates};
         if (!block.empty()) p.run.push_back("--block=" + block);
         if (!suite.empty()) p.run.push_back("--suite=" + suite);
         if (!market.empty()) p.run.push_back("--market=" + market);
+        if (!suite_file.empty()) p.run.push_back("--suite-file=" + suite_file);
         p.program = Program::Suite;
         return p;
     }
