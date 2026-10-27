@@ -14,7 +14,8 @@ replays it — and `app/`, the terminal app in front of all of it. README.md is 
 page; `docs/APP.md` is the app's design, `docs/DATA.md` the market data's,
 `docs/ENGINE.md` the engine's design and measurements, `docs/ARENA.md` the arena's design,
 its reasoning and the viewer, `docs/RESULTS.md` the arena's published results,
-`docs/LEARN.md` the students' path and `GLOSSARY.md` the terms; this file covers how to
+`docs/LEARN.md` the students' path, `docs/CODING-AGENT.md` how to use a coding agent beside it
+(and why no model runs inside a session) and `GLOSSARY.md` the terms; this file covers how to
 work in the repo.
 
 **Who it is for (decided 2026-10-17).** exchange-lab is a research and learning tool for
@@ -97,7 +98,8 @@ mingw32-make controls   # the evaluator's own controls on the standard block (do
 mingw32-make reproduce RUN=runs/x   # re-run a run from its suite.cfg, compare every file (docs/REPRODUCE.md)
 mingw32-make test-app   # the app driven through its commands (writes runs/maker-smoke)
 mingw32-make data FILE=path [OPTS='name=x']   # bring a market data file in as data/NAME.tape (docs/DATA.md)
-mingw32-make calibrate TAPE=name   # data/NAME.tape -> markets/NAME.cfg; then compare/sweep_lab/arena_lab take a market
+mingw32-make calibrate TAPE=name [HOLDBACK=30]   # data/NAME.tape -> markets/NAME.cfg; then compare/sweep_lab/arena_lab take a market
+mingw32-make facts TAPE=name       # its stylised facts beside the simulated market's: a diagnostic, never a gate
 mingw32-make compare CANDIDATES=a MARKET=name  # the standard experiment on a calibrated market (suite_lab only)
 mingw32-make replay TAPE=name [STRATEGY=s]   # an L3 tape through the engine: the control, or one strategy in it
 mingw32-make test-data  # ingest on the samples, the known-answer control, a calibrated market end to end (~90 s)
@@ -217,7 +219,10 @@ the line editor. A new command is a row in `kCommands` and a branch in `plan_for
 **Strategies** are plain structs in `arena/strategies/`, compiled in and never loaded at runtime.
 Adding one is a header plus one line in `add_named_strategy()` and its name in `kStrategyNames`,
 which `test_arena` holds together so the two cannot drift. `arena/strategies/fader.hpp` is the
-worked example, written against `arena/strategy.hpp` alone. `--strategies=maker,rival,noise:3`
+worked example, written against `arena/strategy.hpp` alone. `zi` (`arena/strategies/zi.hpp`) is the
+zero-intelligence floor, never in a default line-up. `examples/strategies/frozen.hpp` is generated
+by `examples/frozen/train.py` (standard-library Python, least squares, + − × ÷ only); regenerate it
+rather than editing it, and check with `python3 examples/frozen/train.py --check data/known.tape`. `--strategies=maker,rival,noise:3`
 composes a line-up by name; without it the registry's default line-up is used, which is
 what every published number came from. The strategy lab below turns those two steps
 into one make target for a strategy of your own; it does not change what a strategy is.
@@ -258,6 +263,7 @@ make compare CANDIDATES=imbalance BLOCK=smoke              # 4 seeds: does it ru
 make compare CANDIDATES=imbalance                          # the standard block, 64 seeds -> runs/imbalance-standard/
 make compare CANDIDATES=imbalance,maker                    # two strategies, identical conditions, one command
 make compare CANDIDATES=imbalance,maker SUITE=all          # every scenario family, side by side, never pooled
+make compare CANDIDATES=imbalance SUITE=sensitivity        # the fixed grid: does the result hold when one thing changes?
 make reproduce RUN=runs/imbalance-vs-maker-standard        # re-run it from its own record, compare every file
 make controls                                              # the evaluator's own controls
 build/release/suite --candidates=maker,momentum            # built-ins only, from the binary that cannot see installed code
@@ -268,7 +274,11 @@ make test-lab                                              # the whole path, che
 
 - **The convention** is in `examples/strategies/imbalance.hpp`: `<name>.hpp` defines
   struct `<Name>` (CamelCase of the file name) in `px::arena::strategies`, with the
-  five members `arena/strategy.hpp` lists and no floating point. The name must not
+  five members `arena/strategy.hpp` lists and no floating point, and optionally a sixth,
+  `settings()`, naming the integer fields a run may set (`imbalance+ratio=5`; `docs/RUNNER.md`,
+  "A strategy's own settings"). Settings are lab-only, recorded as `setting.*` condition lines
+  and never fingerprinted; built-in strategies get no `settings()`, their fields stay
+  `set_roster_param()` names. The name must not
   collide with a built-in; the Makefile reads the built-in list from
   `kStrategyNames` so the two cannot drift.
 - **An installed strategy cannot reach the published evidence, by construction.**
@@ -289,12 +299,26 @@ make test-lab                                              # the whole path, che
 - **`make compare` is how a strategy is scored** (`docs/RUNNER.md` is the design). Every
   candidate sits in one seat (index 6, owner 7, appended after the default line-up
   `maker,rival,informed,noise:2,momentum`, never informed) on a named seed block
-  (`standard` is 42..105, `smoke` is 42..45), beside a placebo arm with an inert strategy
+  (`standard` is 42..105, `smoke` is 42..45, `holdout` is 1,000,000..1,000,063 and
+  confirmatory: tune on standard, report once on holdout), beside a placebo arm with an inert strategy
   in the seat. Every candidate session is replayed; every placebo session is checked
   against the market with no seat. No condition can be set on the command line: a
-  different set of conditions is a new suite in `arena/suite.hpp`, and ad-hoc
-  exploration stays with `sweep_lab`. Exit 0 complete, 1 a replay differed, 2 usage,
+  different set of conditions is a new suite, in `arena/suite.hpp` or in a suite file, and
+  ad-hoc exploration stays with `sweep_lab`. Exit 0 complete, 1 a replay differed, 2 usage,
   3 the reference market is not admissible on this build.
+- **A suite file is a suite of one's own** (`arena/suite_file.hpp`; `docs/RUNNER.md`, "A suite of
+  your own"): `suites/NAME.cfg`, integer `key=value`, setting a name, a version, the opposing
+  line-up, `suite.session_ns`, `seat.reaction_ns`, the seed block and `set.NAME=VALUE` reference
+  parameters. The seat, placebo, health gate, step ceiling, `session.*`, `fair.*` and `market.*`
+  are fixed and refused, as are unknown or repeated keys, the reserved names in
+  `kReservedSuiteNames` (every built-in suite, block and sensitivity condition, and `file`), a
+  calibrated market's name, and seeds overlapping `holdout`. Admission runs the placebo on every
+  seed first and exits 3 naming the failures. The whole file joins the conditions as `suitefile.*`
+  lines with `suitefile.digest`, so every line is fingerprinted and an edited record is refused;
+  `reproduce` rebuilds the suite from the record alone, re-admits it, and refuses if
+  `run.suite_file` still exists and differs. `suite_lab --suite-file=`, `make compare SUITE_FILE=`,
+  `/compare x suite=NAME`; `suite` refuses it, and so does `suite_lab` beside `--market`, `--suite`
+  or `--block`. No built-in suite carries a `suitefile.` line, so no pin moves.
 - **Run directories go to `runs/`, which is git-ignored and is never `results/`.** Each
   holds `suite.cfg`, `sessions.csv`, `participants.csv`, `comparison.csv`,
   `evaluation.csv`, `attribution.csv`, `report.txt` and `outcome.cfg`, written last and
@@ -327,7 +351,8 @@ make test-lab                                              # the whole path, che
   strategy that reads its own `reaction_ns` member sees what it declared; the delay it
   actually has is `now_ns - as_of_ns` in its `MarketView`.
 - **The suite fingerprints are pinned** (`kPinnedSmokeFingerprint` in `test_arena`,
-  `d461c30ab2446acf`, and one per family). A change to a reference strategy, a default, the session or the
+  `d461c30ab2446acf`, one per family, `kPinnedHoldoutFingerprint`, `6e1fe05931a6f560`, and
+  one per sensitivity condition in `kPinnedSensitivityFingerprints`). A change to a reference strategy, a default, the session or the
   engine moves it and needs a suite version bump in `standard_suite()`, not a silent
   re-pin: "standard v1" names one set of conditions, and two runs are comparable only if
   their fingerprints are equal.
@@ -456,14 +481,20 @@ loose from the fundamental is not a market and nothing read off one counts.
   it, and the failed calibration is published in `results/arena-*/stale.*`.
 - **Never commit a tape, a source data file or a market file.** `data/` and `markets/` are
   git-ignored; paid data usually may not be redistributed. A new importer comes with a
-  sample in `examples/data/` that is made up by hand (so it carries no licence) and a test in
-  `test_data`, and its version string moves when what it writes changes (a tape records
-  `importer=databento 2`). Importers are integer, like a session: no `double` anywhere.
+  sample in `examples/data/` that is made up by hand (so it carries no vendor's licence, only
+  the project's Apache 2.0) and a test in `test_data`, and its version string moves when what
+  it writes changes (a tape records `importer=databento 2`). Importers are integer, like a session: no `double` anywhere.
 - **No calibrated result without the known-answer control.** `calibrate` runs it on the build
   first and refuses if it does not hold; a trades-only tape is refused because it does not.
   `calibrate --robustness` recovers 13 of 15 known-answer runs within one grid step; do not
-  describe calibration as exact. `replay`'s control has two planted defects in `test_data`;
-  keep that pairing when changing it.
+  describe calibration as exact, and do not describe a calibrated market's parameters as the
+  only ones that fit: `calibrate` lists the others the tape cannot tell apart (`identified.*`).
+  `replay`'s control has two planted defects in `test_data`; keep that pairing when changing it.
+- **The stylised facts are a diagnostic, never a gate** (`stylised_facts()` in
+  `marketdata/stats.hpp`, `/facts`). Nothing is fitted to them and nothing passes or fails on
+  them; do not combine them into a realism score. They sample each tape in intervals of its
+  own mean time between prints, never on a clock. `tape_stats()` takes a window only for
+  `holdback=`; its unbounded default is the statistic it always was, which `test_data` holds.
 
 ## Conventions
 

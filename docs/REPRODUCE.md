@@ -52,11 +52,20 @@ Each file is marked identical or DIFFERENT, then the whole run is `REPRODUCED` (
    - a candidate cannot be built here;
    - an installed strategy's checksum differs from the one recorded;
    - the run was on a calibrated market whose file, `run.market_file`, has been calibrated
-     again since; or
+     again since;
+   - the run was on a suite file, `run.suite_file`, that is still at its path and now says
+     something else: `suites/slow_seat.cfg has changed since the run (seat.reaction_ns=100000 in
+     the run, seat.reaction_ns=50000 now): not the same suite`. Move the file aside and the run
+     reproduces from its own record;
+   - a file suite's record has been edited, so its lines no longer match `suitefile.digest`; or
    - a single condition line differs. The refusal names the first difference, for example
-     `maker.quote_qty=40 in the run, maker.quote_qty=50 here`.
+     `maker.quote_qty=40 in the run, maker.quote_qty=50 here`. A candidate's settings are
+     rebuilt from `run.candidates`, so an edited setting line is refused this way:
+     `setting.imbalance+ratio_5.ratio=6 in the run, setting.imbalance+ratio_5.ratio=5 here`;
+     and a strategy that no longer takes a recorded setting cannot be built here.
 2. **Re-runs the suite** into the output directory exactly as `/compare` would, with its own
-   replay and placebo checks.
+   replay and placebo checks. A suite file is admitted again first: its placebo must pass the
+   health gate on every seed, or the reproduction exits 3.
 3. **Compares every file the run wrote**, byte for byte. `suite.cfg` is compared on its
    condition lines only, because its `run.*` and `build.*` lines may differ by design.
 
@@ -68,13 +77,15 @@ catches that, and comparing the derived files catches a change in the report's a
 
 ## What a run records
 
-Every `suite.cfg` holds four kinds of line:
+Every `suite.cfg` holds these kinds of line:
 
 | Kind | Lines | Part of the fingerprint? |
 |---|---|---|
 | The conditions | the suite, its version, the line-up, the session length, the seat, the health gate, the block, every session setting and every reference participant's parameter, under the names `--set=` takes | yes, with every placebo session hash |
 | What ran | `run.*`: the binary, the installed strategies it could see, each candidate's origin, declared delay and timer | no |
 | Which version of an installed strategy | `run.candidate.<name>.digest`: the `cksum` CRC of its header, computed by `/add` (`make strategy`). A built-in has no digest; its version is the commit | no |
+| A candidate's own settings | `setting.<id>.<key>=<value>`, one per setting given on its name (`imbalance+ratio=5`); `<id>` is the label with each `=` written as `_`. Only when a candidate has settings | no: they are conditions of the run, compared line by line, but they belong to the candidate, not to the market it faced |
+| A suite file's definition | `suitefile.format`, `suitefile.set.*`, `suitefile.digest`; only on a run from a suite file, with its path in `run.suite_file` | yes |
 | Which build | `build.commit` (12 characters of `git rev-parse`), `build.dirty`, `build.compiler`, `build.platform`, `build.flags` | no |
 
 A run on a calibrated market (`/compare NAME market=M`) also records `calibration.*` lines:
@@ -84,6 +95,17 @@ fingerprint, and the parameters it set are among the participants' lines. That i
 re-run it: `/reproduce` rebuilds the market from the run's own `suite.cfg`, **without the tape
 or the market file**, so a run made from paid data can be reproduced by someone who does not
 have the data ([`DATA.md`](DATA.md)).
+
+A run on a suite of your own (`/compare NAME suite=S`, [`RUNNER.md`](RUNNER.md#a-suite-of-your-own))
+records the file's path as `run.suite_file`, which is not a condition, and the whole file among
+the conditions: `suite.*`, `seat.reaction_ns` and `block.*` as for any suite, then
+`suitefile.format`, one `suitefile.set.NAME=VALUE` per reference parameter the file set, and
+`suitefile.digest`, an FNV-1a of every field of the file. `/reproduce` rebuilds the suite from
+those lines, **without the file**. The digest is what makes an edited record fail: without it,
+a record whose `seat.reaction_ns` was changed would rebuild a suite that agreed with itself and
+be re-run, not refused. With it the refusal names the digest: `the conditions differ on this
+build: suitefile.digest=74eaf2ad14f42663 in the run, suitefile.digest=0f19266b822758b1 here`
+(`slow_seat`'s record with its seat delay edited to 90,000).
 
 The `build.*` lines come from `$(BUILD)/generated/px_build_info.hpp`, which the Makefile
 regenerates on every build but rewrites only when it changes, so it costs no rebuild. They are
@@ -107,11 +129,16 @@ exactly what a reproduction on another machine asks.
 - `arena/suite.hpp`: `BuildInfo`, `CandidateInfo::digest`, the `build.*` lines in
   `suite_cfg_text`, `condition_lines` and `cfg_value`.
 - `arena/suite.cpp`: `this_build`, `digest_of`, `reproduce_one`, and `--reproduce` in `main`.
+- `arena/suite_file.hpp`: `suite_definition` (the `suitefile.*` lines) and
+  `suite_file_from_record`.
 - `Makefile`: `$(BUILD_INFO)`, the digest function in the generated manifest, and
   `make reproduce RUN=...`.
 - Tests: `test-cli` checks that the build is recorded, a run reproduces, changed conditions
   are refused and write nothing, a changed raw file does not reproduce, `--reproduce` takes
   nothing but `--out` and refuses a directory with no run, and a run of every family
   reproduces family by family. `test-lab` checks that an installed strategy is recorded by
-  checksum, reproduces, is refused by `suite`, and is refused when its checksum changes.
+  checksum, reproduces, is refused by `suite`, and is refused when its checksum changes, and
+  that a run with a setting reproduces and is refused once its setting line is edited, and
+  that a run from a suite file is refused while the file differs, reproduces once it is
+  deleted, and is refused once a condition line of its record is edited.
   `tests/test_arena.cpp` has `test_suite_cfg_reading`.

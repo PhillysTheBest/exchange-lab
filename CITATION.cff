@@ -1,0 +1,30 @@
+# Cite the tagged release a result was produced with, never main: two runs are
+# comparable only if their suite fingerprints match, and a fingerprint names the
+# conditions of one release. CHANGELOG.md lists what each release moved.
+cff-version: 1.2.0
+message: >-
+  If you use exchange-lab in research or teaching, please cite the tagged release you
+  used, and report the suite fingerprint printed in each run's outcome.cfg.
+title: "exchange-lab: a deterministic market simulator on a price-time-priority matching engine"
+abstract: >-
+  A price-time-priority exchange matching engine in C++20 and a seeded simulated market
+  of strategies trading inside it, for teaching and researching market microstructure:
+  paired experiments on fixed seed blocks, an evaluator with tested controls, and
+  byte-for-byte reproduction of every run. The market is invented, so its results are
+  statements about the simulation, not predictions about a real venue.
+type: software
+authors:
+  - given-names: Philbert
+    family-names: Poku
+version: 1.0.0
+date-released: 2026-10-26
+license: Apache-2.0
+repository-code: "https://github.com/PhillysTheBest/exchange-lab"
+url: "https://github.com/PhillysTheBest/exchange-lab/releases/tag/v1.0.0"
+keywords:
+  - market microstructure
+  - matching engine
+  - limit order book
+  - agent-based simulation
+  - reproducibility
+  - C++20

@@ -1,7 +1,8 @@
 # Sample market data
 
 Every file here is synthetic: made up by hand for the tests, from no real market, so it
-carries no licence and can be committed. Real data never goes in the repository; a file
+carries no vendor's licence and can be committed. Like the rest of the repository it is
+under the Apache License 2.0 (`LICENSE`). Real data never goes in the repository; a file
 you bring stays where you keep it, and its tape goes in `data/`, which git ignores
 (`docs/DATA.md`).
 

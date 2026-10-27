@@ -100,6 +100,29 @@ void test_argument_vectors() {
     PX_CHECK(!plan("/compare").error.empty());
     PX_CHECK(!plan("/compare smoke").error.empty());
     PX_CHECK(!plan("/compare maker wide busy").error.empty());
+    p = plan("/compare imbalance holdout");
+    PX_CHECK((p.run == std::vector<std::string>{"build/release/suite_lab", "--candidates=imbalance", "--block=holdout"}));
+    PX_CHECK(!plan("/compare maker smoke holdout").error.empty());
+    PX_CHECK((plan("/compare imbalance+ratio=5,imbalance").run ==
+              std::vector<std::string>{"build/release/suite_lab", "--candidates=imbalance+ratio=5,imbalance"}));
+    PX_CHECK((plan("/compare imbalance+ratio=5 imbalance smoke").run ==
+              std::vector<std::string>{"build/release/suite_lab", "--candidates=imbalance+ratio=5,imbalance",
+                                       "--block=smoke"}));
+    PX_CHECK(!plan("/compare imbalance ratio=5").error.empty());
+    PX_CHECK((plan("/sweep --strategies=maker,imbalance --param=imbalance.ratio --values=3,5").run ==
+              std::vector<std::string>{"build/release/sweep_lab", "--strategies=maker,imbalance",
+                                       "--param=imbalance.ratio", "--values=3,5"}));
+    PX_CHECK((plan("/compare imbalance suite=slow_seat").run ==
+              std::vector<std::string>{"build/release/suite_lab", "--candidates=imbalance",
+                                       "--suite-file=suites/slow_seat.cfg"}));
+    PX_CHECK((plan("/compare imbalance suite=examples/suites/slow_seat.cfg").run.back() ==
+              "--suite-file=examples/suites/slow_seat.cfg"));
+    PX_CHECK(plan("/compare imbalance suite=x market=y").error.find("not built yet") != std::string::npos);
+    PX_CHECK(!plan("/compare imbalance suite=x smoke").error.empty() && !plan("/compare imbalance suite=x wide").error.empty());
+    PX_CHECK(!plan("/compare imbalance suite=").error.empty());
+    PX_CHECK((plan("/compare imbalance sensitivity").run ==
+              std::vector<std::string>{"build/release/suite_lab", "--candidates=imbalance", "--suite=sensitivity"}));
+    PX_CHECK(!plan("/compare maker all sensitivity").error.empty());
 
     p = plan("/add examples/strategies/imbalance.hpp");
     PX_CHECK(p.program == Program::Make && p.run.empty());
@@ -152,6 +175,12 @@ void test_argument_vectors() {
               std::vector<std::string>{"build/release/calibrate", "--known=known"}));
     PX_CHECK((plan("/calibrate --control").run == std::vector<std::string>{"build/release/calibrate", "--control"}));
     PX_CHECK(!plan("/calibrate").error.empty() && !plan("/calibrate a b").error.empty());
+    PX_CHECK((plan("/calibrate demo holdback=30").run ==
+              std::vector<std::string>{"build/release/calibrate", "demo", "holdback=30"}));
+    p = plan("/facts demo");
+    PX_CHECK(p.program == Program::Calibrate && p.build.back() == "build/release/calibrate" &&
+             (p.run == std::vector<std::string>{"build/release/calibrate", "--facts=demo"}));
+    PX_CHECK(!plan("/facts").error.empty() && !plan("/facts a b").error.empty() && !plan("/facts x=1").error.empty());
     PX_CHECK((plan("/compare imbalance smoke market=demo").run ==
               std::vector<std::string>{"build/release/suite_lab", "--candidates=imbalance", "--block=smoke",
                                        "--market=demo"}));
@@ -199,6 +228,7 @@ void test_strategy_notes_match_the_registry() {
 void test_exit_meanings() {
     PX_CHECK(exit_meaning(Program::Suite, 0).empty());
     PX_CHECK(exit_meaning(Program::Suite, 3).find("not admissible") != std::string::npos);
+    PX_CHECK(exit_meaning(Program::Reproduce, 3).find("not admissible") != std::string::npos);
     PX_CHECK(exit_meaning(Program::Reproduce, 1).find("NOT REPRODUCED") != std::string::npos);
     PX_CHECK(exit_meaning(Program::Controls, 1).find("control") != std::string::npos);
     PX_CHECK(exit_meaning(Program::Calibrate, 1).find("nothing was written") != std::string::npos);

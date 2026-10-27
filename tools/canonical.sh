@@ -66,3 +66,9 @@ for f in comparison.csv evaluation.csv attribution.csv report.txt; do
     lf "$D/run/$f"
     echo "derived.run.$f $(crc "$D/run/$f")"
 done
+
+# Two candidates, so the report carries the Holm correction: p-values from
+# + - * / and sqrt only (arena/suite_report.hpp), derived like the lines above.
+./$R/suite$EXE --candidates=maker,momentum --block=smoke --out="$D/holm" > /dev/null 2>&1
+lf "$D/holm/report.txt"
+echo "derived.holm.report.txt $(crc "$D/holm/report.txt")"

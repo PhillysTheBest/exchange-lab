@@ -37,15 +37,24 @@ inline constexpr CommandInfo kCommands[] = {
      "Runs make strategy STRATEGY=PATH: checks the name, copies the header into\n"
      "arena/strategies/user/ and rebuilds the lab programs, the only ones that can see it.\n"
      "  /add examples/strategies/imbalance.hpp"},
-    {"/compare", "NAME[,NAME...] [smoke] [wide|busy|all|market=M]",
+    {"/compare", "NAME[,NAME...] [smoke|holdout] [wide|busy|all|sensitivity|market=M|suite=S]",
      "score strategies in the standard seat against an empty one, then show the report",
      "Runs suite_lab. Every candidate sits in the same seat of the same market on the same\n"
-     "64 seeds (smoke: 4), beside a placebo arm whose seat never acts. wide and busy are\n"
-     "scenario families; all runs every family, side by side, never pooled. market= runs\n"
-     "on a market made by /calibrate instead: a family of its own.\n"
+     "64 seeds (smoke: 4), beside a placebo arm whose seat never acts. holdout is 64 other\n"
+     "seeds: tune on the standard block, then confirm once on holdout. wide and busy are\n"
+     "scenario families; all runs every family, side by side, never pooled. sensitivity runs\n"
+     "the fixed grid (seat delay, liquidity, line-up) and says whether each result holds.\n"
+     "market= runs on a market made by /calibrate instead: a family of its own.\n"
+     "suite= runs a suite of your own from suites/S.cfg (or a path): its own line-up, session,\n"
+     "seat delay, parameters and seeds, admitted only if its placebo is a market.\n"
+     "A strategy of your own takes settings on its name: imbalance+ratio=5 runs it with\n"
+     "ratio 5, and imbalance+ratio=5,imbalance compares the two, paired.\n"
      "  /compare imbalance smoke\n"
+     "  /compare imbalance+ratio=5,imbalance\n"
+     "  /compare imbalance suite=examples/suites/slow_seat.cfg\n"
      "  /compare imbalance,maker\n"
      "  /compare imbalance all\n"
+     "  /compare imbalance sensitivity\n"
      "  /compare imbalance market=demo"},
     {"/runs", "", "the run directories in runs/, newest first", ""},
     {"/report", "[RUN]", "show a run's report; the newest run by default", "/report imbalance-standard"},
@@ -64,9 +73,11 @@ inline constexpr CommandInfo kCommands[] = {
      "  /watch script=tools/arena_script_demo.txt"},
     {"/sweep", "[FLAGS...] [market=M]", "explore: run one market many times, changing one thing",
      "Runs sweep_lab with the flags as given; /sweep --help lists them. market= starts from\n"
-     "a market made by /calibrate.\n"
+     "a market made by /calibrate. --param=NAME.KEY sweeps a setting of a strategy of your\n"
+     "own named in --strategies=, on the same seeds at every value.\n"
      "  /sweep --seeds=8 --values=1000,1000000\n"
-     "  /sweep --null --seeds=8"},
+     "  /sweep --null --seeds=8\n"
+     "  /sweep --strategies=maker,rival,informed,noise:2,momentum,imbalance --param=imbalance.ratio --values=3,5,8 --seeds=8"},
     {"/data", "[add FILE [SETTINGS] | show NAME | remove NAME]",
      "bring a market data file in as a tape, and see what it holds",
      "Runs ingest. A file you already have is read from disk, never fetched, and written to\n"
@@ -77,15 +88,24 @@ inline constexpr CommandInfo kCommands[] = {
      "  /data add examples/data/trades.csv name=demo-trades\n"
      "  /data add quotes.csv columns=time,bid,bid_qty,ask,ask_qty\n"
      "  /data show demo-2012-06-21"},
-    {"/calibrate", "NAME", "set the market to resemble a tape, and check that it is still a market",
+    {"/calibrate", "NAME [holdback=PCT]", "set the market to resemble a tape, and check that it is still a market",
      "Runs calibrate. It first runs the known-answer control, then moves the market's spread,\n"
-     "order size and pace until its statistics match the tape's, then runs the health gate on\n"
-     "64 seeds, and only then writes markets/NAME.cfg for /compare, /watch and /sweep market=NAME.\n"
+     "order size and pace until its statistics match the tape's, says which other settings the\n"
+     "tape cannot tell apart, runs the health gate on 64 seeds, prints the stylised facts it did\n"
+     "not fit, and only then writes markets/NAME.cfg for /compare, /watch and /sweep market=NAME.\n"
+     "holdback=30 fits the first 70% of the tape and checks the fit on the rest.\n"
      "A trades-only tape is refused: the control does not hold from trades alone.\n"
      "--known=NAME writes a tape whose answer is known, to try the whole path on.\n"
      "  /calibrate --known=known\n"
      "  /calibrate known\n"
+     "  /calibrate known holdback=30\n"
      "  /calibrate --control"},
+    {"/facts", "NAME", "a tape's stylised facts beside the simulated market's: a diagnostic, not a test",
+     "Runs calibrate --facts=NAME. Return and |return| autocorrelation, tails, volume against\n"
+     "volatility, the spread and depth distributions and order flow, for the tape, the standard\n"
+     "market and, if markets/NAME.cfg exists, the market calibrated to it. Each is read in\n"
+     "intervals of 10 of its own mean times between prints. Nothing here is fitted or judged.\n"
+     "  /facts known"},
     {"/replay", "NAME [STRATEGY] [reaction=T] [from=T] [for=T]",
      "play an order-by-order tape back through the engine, with one strategy trading in it",
      "Runs replay. With no strategy it runs the control: the replayed book must be the tape's\n"
@@ -120,6 +140,7 @@ inline constexpr StrategyNote kStrategyNotes[] = {
     {"fader", "leans against the recent move; the worked example in arena/strategies/fader.hpp"},
     {"placebo", "never acts: the empty seat every candidate is compared against"},
     {"roundtrip", "buys then sells at market on a timer: the positive control"},
+    {"zi", "random limit orders around the market, no view at all: the zero-intelligence floor"},
 };
 
 // Splits a typed line into words. Double or single quotes keep spaces inside a
@@ -242,13 +263,17 @@ struct Plan {
     }
 
     if (cmd == "/compare") {
-        std::string candidates, block, suite, market;
+        std::string candidates, block, suite, market, suite_file;
         for (const std::string& a : args) {
-            if (a == "smoke") {
-                block = "smoke";
-            } else if (a == "wide" || a == "busy" || a == "all") {
+            if (a == "smoke" || a == "holdout") {
+                if (!block.empty() && block != a) {
+                    p.error = "say one block: smoke or holdout (the standard block is the default)";
+                    return p;
+                }
+                block = a;
+            } else if (a == "wide" || a == "busy" || a == "all" || a == "sensitivity") {
                 if (!suite.empty()) {
-                    p.error = "say one family: wide, busy or all";
+                    p.error = "say one family: wide, busy, all or sensitivity";
                     return p;
                 }
                 suite = a;
@@ -258,7 +283,16 @@ struct Plan {
                     p.error = "say which market: market=NAME; /calibrate makes one";
                     return p;
                 }
-            } else if (a.find('=') != std::string::npos) {
+            } else if (starts_with(a, "suite=")) {
+                // A name is suites/NAME.cfg; anything with a / or ending .cfg is a path.
+                const std::string s = a.substr(6);
+                if (s.empty()) {
+                    p.error = "say which suite file: suite=NAME (suites/NAME.cfg) or suite=path/to/file.cfg";
+                    return p;
+                }
+                suite_file = s.find('/') != std::string::npos || s.ends_with(".cfg") ? s : "suites/" + s + ".cfg";
+            } else if (a.find('=') != std::string::npos && a.find('+') > a.find('=')) {
+                // A '=' before any '+' is a setting of the command; after one, of a strategy.
                 p.error = "unknown setting " + a + "; /help compare";
                 return p;
             } else {
@@ -274,11 +308,20 @@ struct Plan {
             p.error = "a calibrated market is a family of its own: give market= or " + suite + ", not both";
             return p;
         }
+        if (!suite_file.empty() && !market.empty()) {
+            p.error = "suite= with market=: a suite file on a calibrated market is not built yet; give one or the other";
+            return p;
+        }
+        if (!suite_file.empty() && (!suite.empty() || !block.empty())) {
+            p.error = "a suite file sets its own market and seeds: give suite= without " + (suite.empty() ? block : suite);
+            return p;
+        }
         p.build = make_target(env, program_path(env, "suite_lab"));
         p.run = {program_path(env, "suite_lab"), "--candidates=" + candidates};
         if (!block.empty()) p.run.push_back("--block=" + block);
         if (!suite.empty()) p.run.push_back("--suite=" + suite);
         if (!market.empty()) p.run.push_back("--market=" + market);
+        if (!suite_file.empty()) p.run.push_back("--suite-file=" + suite_file);
         p.program = Program::Suite;
         return p;
     }
@@ -374,9 +417,10 @@ struct Plan {
     }
 
     if (cmd == "/calibrate") {
-        // A tape's name, or the program's own flags as given: --known=, --control, --robustness.
+        // A tape's name, or the program's own flags as given: --known=, --control,
+        // --robustness, and settings such as holdback=30.
         std::size_t names = 0;
-        for (const std::string& a : args) names += starts_with(a, "-") ? 0 : 1;
+        for (const std::string& a : args) names += starts_with(a, "-") || a.find('=') != std::string::npos ? 0 : 1;
         if (args.empty() || names > 1) {
             p.error = "say which tape: /calibrate NAME; /data lists them";
             return p;
@@ -384,6 +428,17 @@ struct Plan {
         p.build = make_target(env, program_path(env, "calibrate"));
         p.run = {program_path(env, "calibrate")};
         p.run.insert(p.run.end(), args.begin(), args.end());
+        p.program = Program::Calibrate;
+        return p;
+    }
+
+    if (cmd == "/facts") {
+        if (args.size() != 1 || starts_with(args[0], "-") || args[0].find('=') != std::string::npos) {
+            p.error = "say which tape: /facts NAME; /data lists them";
+            return p;
+        }
+        p.build = make_target(env, program_path(env, "calibrate"));
+        p.run = {program_path(env, "calibrate"), "--facts=" + args[0]};
         p.program = Program::Calibrate;
         return p;
     }
@@ -449,11 +504,12 @@ struct Plan {
     case Program::Suite:
         if (status == 1) return "a replayed session differed: this run is not reproducible";
         if (status == 2) return "the command was refused; the message above says why";
-        if (status == 3) return "the reference market is not admissible on this build, so nothing was compared";
+        if (status == 3) return "the market is not admissible on this build (the message above says why), so nothing was compared";
         break;
     case Program::Reproduce:
         if (status == 1) return "NOT REPRODUCED: a file came out different";
         if (status == 2) return "refused before running; the message above says why";
+        if (status == 3) return "the market is not admissible on this build (the message above says why), so nothing was compared";
         break;
     case Program::Controls:
         if (status == 1) return "a control did not hold: do not trust the evaluator on this build";

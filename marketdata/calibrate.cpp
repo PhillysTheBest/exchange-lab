@@ -5,6 +5,8 @@
 //   calibrate --known=NAME   write the control's known-answer tape as data/NAME.tape
 //   calibrate --control      the known-answer control and its two planted defects
 //   calibrate --robustness   the control on five known markets and three sets of seeds
+//   calibrate --facts=NAME   the tape's stylised facts beside the simulated market's
+//   calibrate NAME holdback=30   calibrate on the first 70% of the tape, check on the rest
 //
 // The design and what it found are in docs/DATA.md. Everything here is a
 // simulation: the sessions are invented, and no number is a real market's.
@@ -15,6 +17,7 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -38,9 +41,13 @@ constexpr const char* kHelp =
     "                           every parameter within one grid step; two planted defects must\n"
     "                           make it fail\n"
     "  calibrate --robustness   the same on five known markets and three sets of seeds\n"
+    "  calibrate --facts=NAME   the stylised facts of data/NAME.tape beside the simulated market's\n"
+    "                           (and NAME's calibrated market, if markets/NAME.cfg exists): a\n"
+    "                           diagnostic, never a pass or a fail\n"
     "\n"
     "Settings: data=DIR (default data) and markets=DIR (default markets), written\n"
-    "key=value or --key=value.\n"
+    "key=value or --key=value. holdback=PCT (10 to 50) calibrates NAME on the first part of\n"
+    "its tape and reports the fit on the last PCT% of its events, which calibration never saw.\n"
     "\n"
     "Simulated, not measured: nothing here is a real market's number.\n";
 
@@ -235,7 +242,130 @@ int cmd_known(const std::string& name, const std::string& data_dir) {
     return 0;
 }
 
-int cmd_calibrate(const std::string& name, const std::string& data_dir, const std::string& markets_dir) {
+// ---- stylised facts: printed, never judged ------------------------------------
+
+std::string thousandths_signed(std::int64_t v) {
+    if (v == kNotMeasured) return "-";
+    const std::int64_t a = v < 0 ? -v : v;
+    std::string frac = std::to_string(a % 1000);
+    while (frac.size() < 3) frac = "0" + frac;
+    return std::string(v < 0 ? "-" : "+") + std::to_string(a / 1000) + "." + frac;
+}
+std::string whole_or_dash(std::int64_t v) { return v == kNotMeasured ? "-" : std::to_string(v); }
+std::string hundredths_or_dash(std::int64_t v) { return v == kNotMeasured ? "-" : hundredths(v); }
+std::string three(std::int64_t a, std::int64_t b, std::int64_t c) {
+    if (a == kNotMeasured || b == kNotMeasured || c == kNotMeasured) return "-";
+    return std::to_string(a) + " / " + std::to_string(b) + " / " + std::to_string(c);
+}
+
+struct FactsColumn {
+    std::string title;
+    StylisedFacts f;
+};
+
+void print_facts(const std::vector<FactsColumn>& cols) {
+    using Row = std::pair<const char*, std::function<std::string(const StylisedFacts&)>>;
+    const std::vector<Row> rows = {
+        {"interval, ns (10 mean times between prints)", [](const StylisedFacts& f) { return std::to_string(f.interval_ns); }},
+        {"intervals with a return", [](const StylisedFacts& f) { return std::to_string(f.returns); }},
+        {"return autocorrelation, lag 1", [](const StylisedFacts& f) { return thousandths_signed(f.ret_ac1_pml); }},
+        {"|return| autocorrelation, lag 1", [](const StylisedFacts& f) { return thousandths_signed(f.abs_ac1_pml); }},
+        {"|return| autocorrelation, lag 10", [](const StylisedFacts& f) { return thousandths_signed(f.abs_ac10_pml); }},
+        {"  not told apart from 0 inside +-",
+         [](const StylisedFacts& f) { return f.null_band_pml == kNotMeasured ? std::string("-") : thousandths_signed(f.null_band_pml).substr(1); }},
+        {"returns beyond 3 s.d., per 10,000 (normal: 27)", [](const StylisedFacts& f) { return whole_or_dash(f.tail3_x10k); }},
+        {"intervals with no move, per 1,000", [](const StylisedFacts& f) { return whole_or_dash(f.zero_returns_pml); }},
+        {"volume against |return|, correlation", [](const StylisedFacts& f) { return thousandths_signed(f.volvol_pml); }},
+        {"spread, ticks: 10th / 50th / 90th percentile", [](const StylisedFacts& f) { return three(f.spread_p10, f.spread_p50, f.spread_p90); }},
+        {"time at a one-tick spread, per 1,000", [](const StylisedFacts& f) { return whole_or_dash(f.one_tick_pml); }},
+        {"touch depth: 10th / 50th / 90th percentile", [](const StylisedFacts& f) { return three(f.depth_p10, f.depth_p50, f.depth_p90); }},
+        {"orders added per print", [](const StylisedFacts& f) { return hundredths_or_dash(f.adds_per_print_x100); }},
+        {"cancels per print", [](const StylisedFacts& f) { return hundredths_or_dash(f.cancels_per_print_x100); }},
+        {"cancels per order added, per 1,000", [](const StylisedFacts& f) { return whole_or_dash(f.cancels_per_add_pml); }},
+    };
+    std::string head = "   " + pad("statistic", 46);
+    for (const FactsColumn& c : cols) head += "  " + pad(c.title, 16);
+    std::printf("%s\n", head.c_str());
+    for (const Row& r : rows) {
+        std::string line = "   " + pad(r.first, 46);
+        for (const FactsColumn& c : cols) line += "  " + pad(r.second(c.f), 16);
+        std::printf("%s\n", line.c_str());
+    }
+}
+
+void print_facts_notes() {
+    std::printf(
+        "   What they say, and what they do not (docs/DATA.md, \"Stylised facts\"):\n"
+        "   - return autocorrelation: outside +- the band, one interval's move predicts the next's. Bid-ask\n"
+        "     bounce makes it negative on a tape read from prints; slow quotes make it positive. Not why.\n"
+        "   - |return| autocorrelation: volatility clustering, positive and slow to decay in real markets.\n"
+        "     The fundamental here jumps at a constant rate, so the simulation has little to cluster.\n"
+        "   - beyond 3 s.d.: a normal gives 27 per 10,000; more is a fatter tail at this interval. Moves are\n"
+        "     whole ticks, so it is coarse, and it estimates no tail exponent.\n"
+        "   - volume against |return|: at a fixed number of prints an interval it mostly reads how print\n"
+        "     sizes vary; it says nothing about which drives which.\n"
+        "   - spread, depth and order flow: the shape behind the means calibration fits. An exchange's\n"
+        "     messages depend on order types the arena does not have.\n");
+}
+
+[[nodiscard]] bool load_tape(const std::string& name, const std::string& data_dir, Tape& tape, std::string& text,
+                             std::string& why) {
+    const std::string tape_path = data_dir + "/" + name + ".tape";
+    if (!read_file(tape_path, text)) {
+        why = "no tape " + name + " in " + data_dir + "/; /data lists the tapes";
+        return false;
+    }
+    if (!parse_tape(text, tape, why)) {
+        why = tape_path + ": " + why;
+        return false;
+    }
+    return true;
+}
+
+// A simulated market's facts on calibration's seeds, read at `depth`.
+[[nodiscard]] bool market_facts(const arena::suite::SuiteDef& def, Depth depth, StylisedFacts& out, std::string& why) {
+    Tape t;
+    if (!simulate(def, kCalibrationSeeds, std::size(kCalibrationSeeds), t, why)) return false;
+    out = stylised_facts(t, depth);
+    return true;
+}
+
+int cmd_facts(const std::string& name, const std::string& data_dir, const std::string& markets_dir) {
+    std::string why, text;
+    if (!valid_name(name)) return usage("'" + name + "' is not a tape name; the list command of ingest shows them");
+    Tape tape;
+    if (!load_tape(name, data_dir, tape, text, why)) return refuse(why);
+    std::vector<FactsColumn> cols;
+    cols.push_back({"tape " + name, stylised_facts(tape, tape.h.depth)});
+    StylisedFacts f;
+    if (!market_facts(arena::suite::standard_suite(), tape.h.depth, f, why)) return refuse(why);
+    cols.push_back({"standard market", f});
+    std::string cal_note = "no market " + name + " in " + markets_dir + "/ (calibrate " + name + " makes one)";
+    MarketFile m;
+    arena::suite::SuiteDef def;
+    if (std::filesystem::exists(markets_dir + "/" + name + ".cfg")) {
+        if (!read_market(name, markets_dir, m, why) || !market_suite(m, def, why)) return refuse(why);
+        if (!market_facts(def, tape.h.depth, f, why)) return refuse(why);
+        cols.push_back({"market " + name, f});
+        cal_note = "market " + name + ": calibrated to this tape on three statistics, none of these";
+    }
+    std::printf("stylised facts of %s (%s, %zu events) beside the simulated market\n", name.c_str(),
+                depth_words(tape.h.depth), tape.ev.size());
+    std::printf("A diagnostic: none of these was fitted, and none is a pass or a fail. Each tape is read in\n"
+                "intervals of %lld of its own mean times between prints, so a real day and a 25 ms session are\n"
+                "compared at the same number of prints an interval, not on the same clock. The simulated\n"
+                "columns are %zu sessions of %lld ms on seeds %s, read %s like the tape.\n\n",
+                static_cast<long long>(kFactPrints), std::size(kCalibrationSeeds),
+                static_cast<long long>(arena::suite::standard_suite().session_ns / 1'000'000),
+                seeds_text(kCalibrationSeeds, std::size(kCalibrationSeeds)).c_str(), depth_words(tape.h.depth));
+    print_facts(cols);
+    std::printf("   %s\n\n", cal_note.c_str());
+    print_facts_notes();
+    return 0;
+}
+
+int cmd_calibrate(const std::string& name, const std::string& data_dir, const std::string& markets_dir,
+                  std::int64_t holdback_pct) {
     std::string why;
     if (!valid_name(name)) return usage("'" + name + "' is not a tape name; the list command of ingest shows them");
     if (!market_name_ok(name, why)) return usage(why);
@@ -245,12 +375,27 @@ int cmd_calibrate(const std::string& name, const std::string& data_dir, const st
     Tape tape;
     if (!parse_tape(text, tape, why)) return refuse(tape_path + ": " + why);
     const std::string tape_cksum = cksum_of(text);
-    const TapeStats st = tape_stats(tape);
+    // With part of the tape held back, calibration sees only the moments before
+    // the cut; the book is still built from the whole tape, so the held-back part
+    // starts from the book as it really stood.
+    std::int64_t cut_ns = kTapeEnd;
+    if (holdback_pct > 0 && !tape.ev.empty()) {
+        const std::size_t at = tape.ev.size() * static_cast<std::size_t>(100 - holdback_pct) / 100;
+        cut_ns = tape.ev[at < tape.ev.size() ? at : tape.ev.size() - 1].t;
+    }
+    const TapeStats st = tape_stats(tape, tape.h.depth, kTapeStart, cut_ns);
+    const TapeStats held = holdback_pct > 0 ? tape_stats(tape, tape.h.depth, cut_ns, kTapeEnd) : TapeStats{};
 
     std::printf("calibrate %s: %s, %s, %zu events\n", name.c_str(), tape_path.c_str(), depth_words(tape.h.depth),
                 tape.ev.size());
     std::printf("Simulated, not measured. The market stays invented: it is set to resemble the tape in\n"
-                "three statistics, and in nothing else.\n\n");
+                "three statistics, and in nothing else.\n");
+    if (holdback_pct > 0)
+        std::printf("Holding back the last %lld%% of its events (%llu, from t = %lld ns): calibration sees only the\n"
+                    "first %llu, and the fit is then checked on the part it never saw.\n",
+                    static_cast<long long>(holdback_pct), static_cast<unsigned long long>(held.events),
+                    static_cast<long long>(cut_ns), static_cast<unsigned long long>(st.events));
+    std::printf("\n");
 
     // Refusals that need no simulation first.
     if (tape.h.depth == Depth::Trades)
@@ -261,7 +406,11 @@ int cmd_calibrate(const std::string& name, const std::string& data_dir, const st
         return refuse("too few prints to calibrate from: " + std::to_string(st.prints) + " prints give " +
                       std::to_string(st.move_windows) + " windows of " + std::to_string(kMoveWindow) +
                       " in a row, and calibration needs " + std::to_string(10 * kMoveWindow) +
-                      ". Bring a longer file");
+                      (holdback_pct > 0 ? ". Hold back less, or bring a longer file" : ". Bring a longer file"));
+    if (holdback_pct > 0 && !held.enough_prints())
+        return refuse("too few prints in the held-back part to check against: " + std::to_string(held.prints) +
+                      " prints give " + std::to_string(held.move_windows) + " windows, and a check needs " +
+                      std::to_string(10 * kMoveWindow) + ". Hold back more, or bring a longer file");
 
     const arena::suite::SuiteDef base = arena::suite::standard_suite();
     MarketCache cache;
@@ -305,7 +454,63 @@ int cmd_calibrate(const std::string& name, const std::string& data_dir, const st
     }
     if (unreachable)
         std::printf("   unreachable: no value on the grid comes closer; this market cannot look more like the tape there.\n");
-    std::printf("   %d parameter sets simulated\n\n", cache.simulated());
+    std::printf("   %d parameter sets simulated\n", cache.simulated());
+
+    // Which other parameter sets the tape cannot tell from this one.
+    Identification id;
+    if (!identification(base, c, tape.h.depth, cache, id, why)) return refuse(why);
+    std::string se_text;
+    for (const Fit& f : c.fits) {
+        if (!f.used) continue;
+        se_text += (se_text.empty() ? "" : ", ") + std::string(knob_name(f.knob)) + " " +
+                   std::to_string(id.se[static_cast<std::size_t>(f.knob)]);
+    }
+    std::string alike_text;
+    for (const MarketParams& p : id.alike) alike_text += (alike_text.empty() ? "" : ", ") + params_text(p);
+    if (id.alike.empty())
+        std::printf("   identified: none of the %zu other parameter sets the search ran on all %zu seeds comes within\n"
+                    "   2 s.e. of this one's statistics (s.e. %s). That is not proof that none would.\n\n",
+                    id.tried, std::size(kCalibrationSeeds), se_text.c_str());
+    else
+        std::printf("   NOT UNIQUELY IDENTIFIED: %zu of the %zu other parameter sets the search ran on all %zu seeds\n"
+                    "   give statistics within 2 s.e. of this one's (s.e. %s): %s.\n"
+                    "   The tape cannot tell them apart. The one written is the closest, not the only one that fits.\n\n",
+                    id.alike.size(), id.tried, std::size(kCalibrationSeeds), se_text.c_str(), alike_text.c_str());
+
+    // The part calibration never saw.
+    std::string more;
+    if (holdback_pct > 0) {
+        std::printf("2b. The held-back part, which calibration never saw: the market's statistics against it, and\n"
+                    "    the tape's own two parts against each other, as a yardstick for how much a tape moves.\n");
+        std::printf("   %s  %s  %s  %s  %s  %s\n", pad("statistic", 52).c_str(), pad("first", 8).c_str(),
+                    pad("held", 8).c_str(), pad("market", 8).c_str(), pad("market-held", 12).c_str(), "first-held");
+        more += "# The held-back part: the tape's last events, never seen by the search.\n";
+        more += "holdback.pct=" + std::to_string(holdback_pct) + "\n";
+        more += "holdback.from_ns=" + std::to_string(cut_ns) + "\n";
+        more += "holdback.events=" + std::to_string(held.events) + "\n";
+        for (const Fit& f : c.fits) {
+            const std::string label = std::string(knob_name(f.knob)) + ": " + knob_stat(f.knob);
+            const std::int64_t h = knob_stat(held, f.knob);
+            const std::string k = std::string("holdback.") + knob_name(f.knob);
+            if (!f.used) {
+                std::printf("   %s  %s\n", pad(label, 52).c_str(), "-: not measurable on this tape");
+                continue;
+            }
+            const std::int64_t mh = ratio_distance(f.achieved, h), fh = ratio_distance(f.target, h);
+            std::printf("   %s  %s  %s  %s  %s  %s\n", pad(label, 52).c_str(), pad(std::to_string(f.target), 8).c_str(),
+                        pad(std::to_string(h), 8).c_str(), pad(std::to_string(f.achieved), 8).c_str(),
+                        pad(apart_text(mh), 12).c_str(), apart_text(fh).c_str());
+            more += k + ".tape=" + std::to_string(h) + "\n";
+            more += k + ".apart=" + std::to_string(mh) + "\n";
+            more += k + ".first_apart=" + std::to_string(fh) + "\n";
+        }
+        std::printf("   A market as far from the held-back part as the tape's first part is fits as well as the\n"
+                    "   tape agrees with itself; nothing here says it fits better.\n\n");
+    }
+    more += "# Parameter sets the tape cannot tell from this one: within 2 s.e. on every matched statistic.\n";
+    more += "identified.se=" + (se_text.empty() ? std::string("-") : se_text) + "\n";
+    more += "identified.tried=" + std::to_string(id.tried) + "\n";
+    more += "identified.alike=" + (alike_text.empty() ? std::string("-") : alike_text) + "\n";
 
     // 3. The health gate, on the block strategies are scored on.
     const arena::suite::SuiteDef market = market_with(base, c.params);
@@ -330,8 +535,29 @@ int cmd_calibrate(const std::string& name, const std::string& data_dir, const st
                       "). Nothing was written");
     }
 
+    // 4. What was not fitted.
+    std::printf("4. Statistics that were not fitted: the stylised facts of the tape beside the calibrated market's,\n"
+                "   read the same way. A diagnostic; nothing below decides whether the market is written.\n");
+    std::fflush(stdout);
+    StylisedFacts mf;
+    if (!market_facts(market, tape.h.depth, mf, why)) return refuse(why);
+    std::vector<FactsColumn> cols;
+    if (holdback_pct > 0) {
+        cols.push_back({"tape, first part", stylised_facts(tape, tape.h.depth, kTapeStart, cut_ns)});
+        cols.push_back({"tape, held back", stylised_facts(tape, tape.h.depth, cut_ns, kTapeEnd)});
+    } else {
+        cols.push_back({"tape", stylised_facts(tape, tape.h.depth)});
+    }
+    cols.push_back({"market " + name, mf});
+    print_facts(cols);
+    std::printf("\n");
+
+    const std::string holdback_condition =
+        holdback_pct > 0 ? "last " + std::to_string(holdback_pct) + "% of events, from t=" + std::to_string(cut_ns)
+                         : std::string();
     const std::string out = markets_dir + "/" + name + ".cfg";
-    if (!write_whole(out, market_file_text(name, tape, tape_cksum, c, control, health), why)) return refuse(why);
+    if (!write_whole(out, market_file_text(name, tape, tape_cksum, c, control, health, holdback_condition, more), why))
+        return refuse(why);
     const std::string what = c.params == reference_params()
                                  ? std::string("every parameter unchanged")
                                  : "spread / size / pace " + knobs_text(c.params) + " (standard: " +
@@ -354,7 +580,7 @@ int main(int argc, char** argv) {
     }
     if (args.size() == 1 && args[0] == "--control") return cmd_control();
     if (args.size() == 1 && args[0] == "--robustness") return cmd_robustness();
-    std::string data_dir = "data", markets_dir = "markets", known;
+    std::string data_dir = "data", markets_dir = "markets", known, facts, holdback;
     std::vector<std::string> names;
     for (const std::string& raw : args) {
         std::string a = raw;
@@ -369,6 +595,8 @@ int main(int argc, char** argv) {
         if (k == "data") data_dir = v;
         else if (k == "markets") markets_dir = v;
         else if (k == "known") known = v;
+        else if (k == "facts") facts = v;
+        else if (k == "holdback") holdback = v;
         else return usage("unknown setting " + k + "=");
     }
     for (std::string* d : {&data_dir, &markets_dir}) {
@@ -376,9 +604,19 @@ int main(int argc, char** argv) {
         while (d->size() > 1 && d->back() == '/') d->pop_back();
     }
     if (!known.empty()) {
-        if (!names.empty()) return usage("--known=NAME writes a tape; calibrate it afterwards");
+        if (!names.empty() || !facts.empty() || !holdback.empty())
+            return usage("--known=NAME writes a tape; calibrate it afterwards");
         return cmd_known(known, data_dir);
     }
+    if (!facts.empty()) {
+        if (!names.empty() || !holdback.empty()) return usage("--facts=NAME takes one tape and no other setting but data= and markets=");
+        return cmd_facts(facts, data_dir, markets_dir);
+    }
+    std::int64_t pct = 0;
+    if (!holdback.empty()) {
+        if (!parse_int(holdback, pct) || pct < 10 || pct > 50)
+            return usage("holdback=" + holdback + ": a whole percentage from 10 to 50");
+    }
     if (names.size() != 1) return usage(names.empty() ? "say which tape: calibrate NAME" : "say one tape");
-    return cmd_calibrate(names[0], data_dir, markets_dir);
+    return cmd_calibrate(names[0], data_dir, markets_dir, pct);
 }

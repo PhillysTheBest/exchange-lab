@@ -123,7 +123,7 @@ test: $(TEST_BINS)
 # a shell command of its own: MSYS2's make cuts a command off at 8,191 bytes, and
 # what is cut off silently never runs (docs/PLATFORMS.md).
 .PHONY: test-cli
-test-cli: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(REL)/controls$(EXE)
+test-cli: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(REL)/controls$(EXE) $(REL)/arena$(EXE)
 	@set -e; \
 	fail() { echo "FAIL: $$1"; exit 1; }; \
 	echo "== sweep command line"; \
@@ -176,6 +176,7 @@ test-cli: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(REL)/controls$(EXE)
 	for f in $$files; do [ -f $$D/suite-a/$$f ] || fail "a run should write $$f"; done; \
 	head -n1 $$D/suite-a/sessions.csv | grep -q '^suite,version,block,seed,arm,origin,' || fail "sessions.csv header"; \
 	head -n1 $$D/suite-a/participants.csv | grep -q '^suite,version,block,seed,arm,index,' || fail "participants.csv header"; \
+	grep -q '^  Holm across the value comparisons above: 3 tests' $$D/suite-a/report.txt || fail "two candidates: Holm across 3 value tests"; \
 	grep -qx 'status=complete' $$D/suite-a/outcome.cfg || fail "outcome.cfg should say status=complete"; \
 	head -n1 $$D/suite-a/evaluation.csv | grep -q '^kind,baseline,arm,metric,' || fail "evaluation.csv header"; \
 	grep -q '^paired,maker,momentum,spread_earned,' $$D/suite-a/evaluation.csv || fail "evaluation.csv should pair the candidates"; \
@@ -208,10 +209,38 @@ test-cli: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(REL)/controls$(EXE)
 	[ -n "$$bare" ] && [ "$$bare" = "$$seated" ] || fail "an appended placebo should not move the sweep's hash"; \
 	$$S --candidates=momentum --out=$$D/suite-std > /dev/null 2>&1 || fail "the standard block should run (exit 3: reference not admissible)"; \
 	grep -qx 'reference_admissible=1' $$D/suite-std/outcome.cfg || fail "the reference should be admissible"; \
+	$$S --block=holdout --candidates=momentum --out=$$D/suite-hold > /dev/null 2>&1 || fail "the holdout block should run"; \
+	$$S --block=smoke --suite=sensitivity --candidates=maker --out=$$D/sens > /dev/null 2>&1 || fail "the sensitivity grid should run"; \
+	[ "$$(ls $$D/sens/*/outcome.cfg | wc -l | tr -d ' ')" = 7 ] && grep -q '^  maker vs placebo$$' $$D/sens/sensitivity.txt \
+	    || fail "sensitivity: seven conditions, one directory each, and a table"; \
+	$$S --reproduce=$$D/sens --out=$$D/re-sens > /dev/null 2>&1 || fail "a sensitivity run should reproduce condition by condition"; \
+	grep -qx 'fingerprint=6e1fe05931a6f560' $$D/suite-hold/outcome.cfg || fail "the holdout fingerprint is pinned"; \
+	grep -q '^  holdout block: confirmatory' $$D/suite-hold/report.txt || fail "a holdout report should say it is confirmatory"; \
 	! grep -nwE 'double|float' arena/suite.hpp || fail "arena/suite.hpp must stay integer-only"; \
+	! cat arena/strategies/*.hpp | grep -v '^ *//' | grep -nwE 'double|float' || fail "a built-in strategy must stay integer-only"; \
 	rm -rf $$D; \
 	echo "  placebo arm at seed 42: $$ref, the sweep's market"; \
-	echo "34/34 suite command-line checks passed"
+	echo "42/42 suite command-line checks passed"
+	@set -e; \
+	fail() { echo "FAIL: $$1"; exit 1; }; \
+	exits() { want=$$1; shift; rc=0; "$$@" > /dev/null 2>&1 || rc=$$?; [ $$rc -eq $$want ]; }; \
+	S=./$(REL)/suite$(EXE); D=$(BUILD)/cli-settings; rm -rf $$D; mkdir -p $$D; \
+	echo "== the evidence programs refuse a strategy's setting"; \
+	rc=0; $$S --block=smoke --candidates=zi+band_ticks=4 --out=$$D/x > $$D/err 2>&1 || rc=$$?; \
+	[ $$rc -eq 2 ] && grep -q "'zi+band_ticks=4': settings are taken by the lab programs only" $$D/err \
+	    || fail "the evidence suite must refuse a setting, naming it"; \
+	exits 2 ./$(REL)/sweep$(EXE) --strategies=maker,rival,informed,noise:2,zi+band_ticks=4 --values=1000 --seeds=1 \
+	    || fail "the evidence sweep must refuse a setting in a line-up"; \
+	exits 2 ./$(REL)/sweep$(EXE) --strategies=maker,zi --param=zi.band_ticks --values=1,2 --seeds=1 \
+	    || fail "the evidence sweep must refuse a swept setting"; \
+	exits 2 ./$(REL)/arena$(EXE) --strategies=maker,zi+band_ticks=4 --still=1000000 || fail "the evidence viewer must refuse a setting"; \
+	! grep -q 'settings on its name' $$D/err && ! $$S --help | grep -q 'settings on its name\|--suite-file' \
+	    || fail "the evidence suite should not advertise settings or suite files"; \
+	rc=0; $$S --suite-file=examples/suites/slow_seat.cfg --candidates=maker --out=$$D/x > $$D/err 2>&1 || rc=$$?; \
+	[ $$rc -eq 2 ] && grep -q 'a suite file is read by suite_lab only' $$D/err && [ ! -d $$D/x ] \
+	    || fail "the evidence suite must refuse a suite file and write nothing"; \
+	rm -rf $$D; \
+	echo "6/6 evidence-refusal checks passed"
 	@set -e; \
 	fail() { echo "FAIL: $$1"; exit 1; }; \
 	exits() { want=$$1; shift; rc=0; "$$@" > /dev/null 2>&1 || rc=$$?; [ $$rc -eq $$want ]; }; \
@@ -317,12 +346,12 @@ lab: $(LAB_BINS) $(REPLAY_BIN)
 
 # The standard experiment (docs/RUNNER.md): every candidate in the same seat of
 # the same market on the same named block of seeds, written to runs/.
-#   make compare CANDIDATES=mine,other [BLOCK=smoke] [SUITE=wide|busy|all | MARKET=name] [OUT=dir]
+#   make compare CANDIDATES=mine,other [BLOCK=smoke] [SUITE=wide|busy|all | MARKET=name | SUITE_FILE=path] [OUT=dir]
 # BLOCK rather than SEEDS, because bench/run_arena_evidence.sh reads a numeric
 # SEEDS from the environment and an exported one would leak in here.
 compare: $(REL)/suite_lab$(EXE)
 	@[ -n '$(CANDIDATES)' ] || { echo "make compare: say which strategies: make compare CANDIDATES=a[,b,...]" >&2; exit 2; }
-	./$(REL)/suite_lab$(EXE) --candidates=$(CANDIDATES) $(if $(BLOCK),--block=$(BLOCK)) $(if $(SUITE),--suite=$(SUITE)) $(if $(MARKET),--market=$(MARKET)) $(if $(OUT),--out=$(OUT))
+	./$(REL)/suite_lab$(EXE) --candidates=$(CANDIDATES) $(if $(BLOCK),--block=$(BLOCK)) $(if $(SUITE),--suite=$(SUITE)) $(if $(MARKET),--market=$(MARKET)) $(if $(SUITE_FILE),--suite-file=$(SUITE_FILE)) $(if $(OUT),--out=$(OUT))
 
 # Re-run a run directory from its own suite.cfg and compare every file (docs/REPRODUCE.md).
 reproduce: $(REL)/suite_lab$(EXE)
@@ -444,7 +473,7 @@ test-app: $(APP_BIN) $(LAB_BINS) $(REL)/controls$(EXE) $(REPL_BIN) $(INGEST_BIN)
 	$$A -c '/data remove app-test-l3' > /dev/null; \
 	$$A -c '/data remove app-test-trades' > /dev/null && [ ! -e data/app-test-trades.tape ] \
 	    || fail "/data remove should remove it"; ok; \
-	[ "$$($$A -c /learn | grep -c '^  [0-9]\.')" -eq 9 ] || fail "/learn should list nine exercises"; ok; \
+	[ "$$($$A -c /learn | grep -c '^  [0-9][0-9]*\.')" -eq 11 ] || fail "/learn should list eleven exercises"; ok; \
 	$$A -c '/learn 1' | grep -q '^1\. ' || fail "/learn 1 should show the first"; ok; \
 	rc=0; (cd $$D && $(CURDIR)/$(APP_BIN) -c /help > /dev/null 2>&1) || rc=$$?; \
 	[ $$rc -eq 2 ] || fail "outside the repository root it should refuse"; ok; \
@@ -462,7 +491,7 @@ test-app: $(APP_BIN) $(LAB_BINS) $(REL)/controls$(EXE) $(REPL_BIN) $(INGEST_BIN)
 # of the market, so an importer cannot reach a session, a hash or a published
 # number. data/ and markets/ are git-ignored: a tape made from data you paid for
 # stays yours. Only the lab programs read a market (--market=NAME).
-.PHONY: data calibrate replay test-data
+.PHONY: data calibrate facts replay test-data
 
 $(INGEST_BIN): $(ROBJ)/marketdata/ingest.o
 	$(call announce,linking,$@)
@@ -480,7 +509,12 @@ data: $(INGEST_BIN)
 
 calibrate: $(CALIBRATE_BIN)
 	@[ -n '$(TAPE)' ] || { echo "make calibrate: say which tape: make calibrate TAPE=name (make data lists them)" >&2; exit 2; }
-	./$(CALIBRATE_BIN) '$(TAPE)'
+	./$(CALIBRATE_BIN) '$(TAPE)' $(if $(HOLDBACK),holdback=$(HOLDBACK))
+
+# A tape's stylised facts beside the simulated market's: a diagnostic, never a gate.
+facts: $(CALIBRATE_BIN)
+	@[ -n '$(TAPE)' ] || { echo "make facts: say which tape: make facts TAPE=name (make data lists them)" >&2; exit 2; }
+	./$(CALIBRATE_BIN) --facts='$(TAPE)'
 
 # An order-by-order tape played back through the engine; history cannot react.
 #   make replay TAPE=name [STRATEGY=name] [OPTS='from=1h for=10m reaction=50us']
@@ -629,6 +663,7 @@ test-data: $(INGEST_BIN) $(CALIBRATE_BIN) $(REPLAY_BIN) $(LAB_BINS) $(REL)/suite
 	$$C known data=$$D/data markets=$$D/markets > $$D/out || { cat $$D/out; fail "the known tape should calibrate"; }; okm; \
 	grep -q '^status=complete$$' $$M && grep -q '^health.passed=64$$' $$M && grep -q '^control.held=1$$' $$M \
 	    || fail "the market should be complete, admissible and say why"; okm; \
+	! grep -q '^calibration.holdback=' $$M || fail "with nothing held back, no holdback line among its conditions"; okm; \
 	grep -q '^set.maker.half_spread_ticks=3$$' $$M && grep -Eq '^set.noise.qty=(30|40|50)$$' $$M \
 	    && grep -Eq '^set.noise.timer_ns=(15000|20000|30000)$$' $$M || fail "it should recover the known market"; okm; \
 	sed -n 's/^set\./  /p' $$M; \
@@ -662,6 +697,32 @@ test-data: $(INGEST_BIN) $(CALIBRATE_BIN) $(REPLAY_BIN) $(LAB_BINS) $(REL)/suite
 	echo "  fingerprint $$(fp $$D/run) on the market, $$(fp $$D/standard) on standard"; \
 	rm -rf $$D; \
 	echo "$$k/$$k market checks passed"
+	@set -e; \
+	fail() { echo "FAIL: $$1"; exit 1; }; \
+	exits() { want=$$1; shift; rc=0; "$$@" > /dev/null 2>&1 || rc=$$?; [ $$rc -eq $$want ]; }; \
+	C=./$(CALIBRATE_BIN); D=$(BUILD)/facts-test; rm -rf $$D; mkdir -p $$D; f=0; okf() { f=$$((f+1)); }; \
+	echo "== stylised facts, and a calibration checked on the part of its tape it never saw"; \
+	$$C --known=known data=$$D/data > /dev/null; M=$$D/markets/known.cfg; \
+	exits 1 $$C --facts=nosuch data=$$D/data || fail "facts: a missing tape should exit 1"; okf; \
+	exits 2 $$C known holdback=60 data=$$D/data || fail "a holdback past 50% should exit 2"; okf; \
+	exits 2 $$C known holdback=x data=$$D/data || fail "a holdback that is not a number should exit 2"; okf; \
+	exits 2 $$C --facts=known holdback=30 data=$$D/data || fail "facts takes no holdback"; okf; \
+	$$C --facts=known data=$$D/data markets=$$D/markets > $$D/out || fail "facts should run on the known tape"; \
+	grep -q '^   return autocorrelation, lag 1 ' $$D/out && grep -q 'standard market' $$D/out \
+	    && grep -q 'no market known' $$D/out || fail "it should show the tape beside the standard market"; okf; \
+	$$C known holdback=30 data=$$D/data markets=$$D/markets > $$D/out \
+	    || { cat $$D/out; fail "the known tape should calibrate with 30% held back"; }; okf; \
+	grep -q '^2b. The held-back part' $$D/out && grep -q '^4. Statistics that were not fitted' $$D/out \
+	    || fail "it should check the held-back part and print what was not fitted"; okf; \
+	grep -Eq '^   (identified|NOT UNIQUELY IDENTIFIED)' $$D/out || fail "it should say how well the parameters are identified"; okf; \
+	grep -q '^calibration.holdback=last 30% of events, from t=' $$M && grep -q '^holdback.pct=30$$' $$M \
+	    && grep -q '^identified.tried=' $$M || fail "the market should record the holdback among its conditions"; okf; \
+	$$C --facts=known data=$$D/data markets=$$D/markets | grep -q 'market known' || fail "facts should show the calibrated market"; okf; \
+	./$(REL)/suite_lab --market=$$M --candidates=maker --block=smoke --out=$$D/run > /dev/null 2>&1 \
+	    && grep -q '^calibration.holdback=' $$D/run/suite.cfg || fail "a run on it should record the holdback"; okf; \
+	sed -n '/^2b\./,/^   A market/p' $$D/out | sed -n '3,5p'; \
+	rm -rf $$D; \
+	echo "$$f/$$f facts and holdback checks passed"
 
 $(LOBJ)/%.o: %.cpp $(MANIFEST)
 	$(call announce,compiling,$<)
@@ -727,6 +788,86 @@ test-lab: $(REL)/sweep$(EXE) $(REL)/suite$(EXE) $(INGEST_BIN)
 	echo "  fingerprint $$(fp $$D/suite), identical in suite and suite_lab"; \
 	rm -rf $$D; \
 	echo "9/9 suite checks passed"
+	@set -e; \
+	fail() { echo "FAIL: $$1"; exit 1; }; \
+	echo "== a frozen model (examples/strategies/frozen.hpp)"; \
+	F=examples/strategies/frozen.hpp; D=$(BUILD)/lab-frozen; rm -rf $$D; \
+	! grep -v '^ *//' $$F | grep -nwE 'double|float' || fail "the frozen model must be integer-only"; \
+	! grep -n '#include' $$F | grep -v 'arena/strategy.hpp' || fail "it may include arena/strategy.hpp and nothing else"; \
+	$(MAKE) --no-print-directory strategy STRATEGY=$$F > /dev/null || fail "it should install and build"; \
+	./$(REL)/suite_lab$(EXE) --block=smoke --candidates=frozen --out=$$D > /dev/null 2>&1 || fail "suite_lab should run it"; \
+	grep -q '^arm.frozen.inert_seeds=0$$' $$D/outcome.cfg || fail "it should trade on every seed"; \
+	[ "$$(sed -n 's/^run.candidate.frozen.digest=//p' $$D/suite.cfg)" = "$$(cksum < $$F | cut -d' ' -f1)" ] \
+	    || fail "the run should record the header's cksum"; \
+	rm -rf $$D; \
+	echo "5/5 frozen-model checks passed"
+	@set -e; \
+	fail() { echo "FAIL: $$1"; exit 1; }; \
+	exits() { want=$$1; shift; rc=0; "$$@" > /dev/null 2>&1 || rc=$$?; [ $$rc -eq $$want ]; }; \
+	echo "== a strategy's own settings (name+key=value)"; \
+	$(MAKE) --no-print-directory strategy STRATEGY=examples/strategies/imbalance.hpp > /dev/null || fail "imbalance should install"; \
+	S=./$(REL)/suite_lab$(EXE); W=./$(REL)/sweep_lab$(EXE); D=$(BUILD)/lab-settings; rm -rf $$D; mkdir -p $$D; n=0; ok() { n=$$((n+1)); }; \
+	L=maker,rival,informed,noise:2,momentum; \
+	refused() { rc=0; $$S --block=smoke --candidates=$$1 --out=$$D/x > $$D/err 2>&1 || rc=$$?; [ $$rc -eq 2 ] && grep -q -- "$$2" $$D/err; }; \
+	refused imbalance+ratoi=5 "no setting 'ratoi'; its settings: ratio qty max_position" || fail "an unknown key should be refused, named"; ok; \
+	refused imbalance+ratio=five "'ratio=five'" || fail "a value that is not a whole number should be refused"; ok; \
+	refused imbalance+ratio=0 "outside 1..100" || fail "a value outside the range should be refused"; ok; \
+	refused frozen+ratio=5 "frozen has no settings member" || fail "a strategy without the member should refuse a setting"; ok; \
+	refused zi+band_ticks=4 "zi is built in" || fail "a built-in should refuse a setting"; ok; \
+	refused imbalance+qty=5+ratio=5,imbalance+ratio=5+qty=5 "named twice" || fail "one setting in two orders is one candidate"; ok; \
+	$$S --block=smoke --candidates=imbalance+ratio=5,imbalance --out=$$D/run > /dev/null 2>&1 || fail "suite_lab should run a setting"; ok; \
+	grep -qx 'setting.imbalance+ratio_5.ratio=5' $$D/run/suite.cfg && grep -qx 'run.candidates=imbalance+ratio=5,imbalance' $$D/run/suite.cfg \
+	    || fail "the setting should be recorded as a condition, under the candidate's label"; ok; \
+	grep -qx 'fingerprint=d461c30ab2446acf' $$D/run/outcome.cfg || fail "a setting must not move the market's fingerprint"; ok; \
+	grep -q '^  imbalance vs imbalance+ratio=5 ' $$D/run/report.txt && ! grep -q '^  imbalance vs imbalance+ratio=5 .*identical' $$D/run/report.txt \
+	    || fail "the setting should change what the strategy does"; ok; \
+	$$S --reproduce=$$D/run --out=$$D/re > /dev/null 2>&1 || fail "a run with a setting should reproduce"; ok; \
+	sed 's/^setting.imbalance+ratio_5.ratio=5$$/setting.imbalance+ratio_5.ratio=6/' $$D/run/suite.cfg > $$D/cfg; cp $$D/cfg $$D/run/suite.cfg; \
+	rc=0; $$S --reproduce=$$D/run --out=$$D/re2 > $$D/err 2>&1 || rc=$$?; \
+	[ $$rc -eq 2 ] && grep -q 'ratio=6 in the run' $$D/err || fail "a changed setting should be refused by reproduce"; ok; \
+	h1=$$($$W --strategies=$$L,imbalance --values=10000 --seeds=1 --requests=20000 --quiet | sed -n 's/.*per point: //p'); \
+	h2=$$($$W --strategies=$$L,imbalance --set=imbalance.ratio=3 --values=10000 --seeds=1 --requests=20000 --quiet | sed -n 's/.*per point: //p'); \
+	[ -n "$$h1" ] && [ "$$h1" = "$$h2" ] || fail "setting a strategy to its own default should change nothing"; ok; \
+	$$W --strategies=$$L,imbalance --param=imbalance.ratio --values=3,5 --seeds=2 --requests=20000 --quiet > $$D/sw \
+	    && grep -q "^imbalance's value, paired against imbalance.ratio = 3" $$D/sw || fail "sweep_lab should sweep a setting, paired"; ok; \
+	exits 2 $$W --strategies=$$L,imbalance+ratio=5 --param=imbalance.ratio --values=3,5 --seeds=1 || fail "a setting given twice should be refused"; ok; \
+	rm -rf $$D; \
+	echo "$$n/$$n strategy-settings checks passed"
+	@set -e; \
+	fail() { echo "FAIL: $$1"; exit 1; }; \
+	exits() { want=$$1; shift; rc=0; "$$@" > /dev/null 2>&1 || rc=$$?; [ $$rc -eq $$want ]; }; \
+	echo "== a suite of one's own (examples/suites/slow_seat.cfg)"; \
+	S=./$(REL)/suite_lab$(EXE); E=examples/suites/slow_seat.cfg; D=$(BUILD)/lab-suite; rm -rf $$D; mkdir -p $$D; n=0; ok() { n=$$((n+1)); }; \
+	cp $$E $$D/mine.cfg; \
+	$$S --suite-file=$$D/mine.cfg --candidates=maker --out=$$D/run > /dev/null 2>&1 || fail "suite_lab should run the example suite"; ok; \
+	grep -qx 'suite.name=slow_seat' $$D/run/suite.cfg && grep -qx 'seat.reaction_ns=100000' $$D/run/suite.cfg \
+	    && grep -qx 'block.name=file' $$D/run/suite.cfg && grep -q '^suitefile.digest=' $$D/run/suite.cfg \
+	    && grep -qx "run.suite_file=$$D/mine.cfg" $$D/run/suite.cfg || fail "the run should record the whole suite"; ok; \
+	fp=$$(sed -n 's/^fingerprint=//p' $$D/run/outcome.cfg); [ -n "$$fp" ] && [ "$$fp" != d461c30ab2446acf ] \
+	    || fail "a suite file is a suite of its own, with its own fingerprint"; ok; \
+	sed 's/^suite.version=1$$/suite.version=2/' $$E > $$D/mine.cfg; \
+	rc=0; $$S --reproduce=$$D/run --out=$$D/re0 > $$D/err 2>&1 || rc=$$?; \
+	[ $$rc -eq 2 ] && grep -q 'has changed since the run' $$D/err || fail "a changed suite file should be refused"; ok; \
+	rm $$D/mine.cfg; \
+	$$S --reproduce=$$D/run --out=$$D/re 2>/dev/null | grep -q '^  REPRODUCED' || fail "it should reproduce with the file deleted"; ok; \
+	sed 's/^seat.reaction_ns=100000$$/seat.reaction_ns=90000/' $$D/run/suite.cfg > $$D/cfg; cp $$D/cfg $$D/run/suite.cfg; \
+	rc=0; $$S --reproduce=$$D/run --out=$$D/re2 > $$D/err 2>&1 || rc=$$?; \
+	[ $$rc -eq 2 ] && grep -q 'suitefile.digest=' $$D/err || fail "a record with an edited condition should be refused"; ok; \
+	sed 's/^suite.lineup=.*/suite.lineup=maker,rival,informed,noise:3,momentum/; s/^block.first_seed=.*/block.first_seed=78/; s/^block.seeds=.*/block.seeds=3/; s/^suite.name=.*/suite.name=crowded/' \
+	    $$E > $$D/bad.cfg; \
+	rc=0; $$S --suite-file=$$D/bad.cfg --candidates=maker --out=$$D/bad > $$D/err 2>&1 || rc=$$?; \
+	[ $$rc -eq 3 ] && grep -q 'not admitted: its placebo fails the health gate on 1 of 3 seeds: 79 (gap)' $$D/err && [ ! -d $$D/bad ] \
+	    || fail "a suite whose placebo is not a market should be refused, exit 3, naming the seed, writing nothing"; ok; \
+	sed 's/^suite.name=.*/suite.name=busy/' $$E > $$D/res.cfg; \
+	exits 2 $$S --suite-file=$$D/res.cfg --candidates=maker --out=$$D/x || fail "a reserved name should be refused"; ok; \
+	sed 's/^seat.reaction_ns=.*/seat.reaction_ns=100000/; $$a health.max_mean_gap_ticks=40' $$E > $$D/fix.cfg; \
+	exits 2 $$S --suite-file=$$D/fix.cfg --candidates=maker --out=$$D/x || fail "a fixed key should be refused"; ok; \
+	exits 2 $$S --suite-file=$$E --market=known --candidates=maker --out=$$D/x || fail "a suite file with a market should be refused"; ok; \
+	exits 2 $$S --suite-file=$$E --block=smoke --candidates=maker --out=$$D/x || fail "a suite file with --block should be refused"; ok; \
+	$(MAKE) --no-print-directory compare CANDIDATES=maker SUITE_FILE=$$E OUT=$$D/mk > /dev/null 2>&1 \
+	    && grep -qx 'suite.name=slow_seat' $$D/mk/suite.cfg || fail "make compare SUITE_FILE= should run it"; ok; \
+	rm -rf $$D; \
+	echo "$$n/$$n suite-file checks passed"
 
 # The outputs that must be identical on every platform, compared line by line with
 # the record committed from Linux (docs/PLATFORMS.md). The first

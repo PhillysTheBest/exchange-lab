@@ -33,6 +33,7 @@
 #pragma once
 
 #include "arena/strategy.hpp"
+#include "arena/strategy_settings.hpp"
 #include "arena/strategies/fader.hpp"
 #include "arena/strategies/informed.hpp"
 #include "arena/strategies/market_maker.hpp"
@@ -40,6 +41,7 @@
 #include "arena/strategies/noise.hpp"
 #include "arena/strategies/placebo.hpp"
 #include "arena/strategies/roundtrip.hpp"
+#include "arena/strategies/zi.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -382,6 +384,13 @@ namespace px::arena {
         // docs/CONTROLS.md). Never in a default line-up.
         r.strategies.push_back(make_strategy(strategies::Roundtrip{}));
         r.informed.push_back(false);
+    } else if (name == "zi") {
+        // The zero-intelligence floor (arena/strategies/zi.hpp). Never in a
+        // default line-up. It quotes around the market, so it takes the anchor.
+        strategies::Zi zi;
+        zi.anchor = cfg.anchor;
+        r.strategies.push_back(make_strategy(zi));
+        r.informed.push_back(false);
     } else {
 #if defined(PX_ARENA_USER_STRATEGIES)
         return add_user_strategy(name, r);
@@ -392,7 +401,57 @@ namespace px::arena {
     return true;
 }
 
-inline constexpr const char* kStrategyNames = "maker rival informed noise momentum fader placebo roundtrip";
+inline constexpr const char* kStrategyNames = "maker rival informed noise momentum fader placebo roundtrip zi";
+
+// Settings (name+key=value) are user input, so only the lab programs take them:
+// the evidence programs and every test are built without PX_ARENA_USER_STRATEGIES
+// and refuse one, naming it, rather than run a market nobody can pin.
+#if defined(PX_ARENA_USER_STRATEGIES)
+inline constexpr bool kTakesSettings = true;
+#else
+inline constexpr bool kTakesSettings = false;
+#endif
+
+[[nodiscard]] inline bool builtin_strategy_name(std::string_view name) noexcept {
+    std::string_view rest = kStrategyNames;
+    while (!rest.empty()) {
+        const std::size_t sp = rest.find(' ');
+        if (rest.substr(0, sp) == name) return true;
+        if (sp == std::string_view::npos) break;
+        rest = rest.substr(sp + 1);
+    }
+    return false;
+}
+
+// One strategy by its spec (a name, or name+key=value...), with its settings
+// applied and shown under its label. `known` is false only for an unknown name.
+[[nodiscard]] inline bool add_strategy_spec(const StrategySpec& spec, const RosterConfig& cfg, Roster& r,
+                                            std::string& why, bool takes_settings = kTakesSettings) {
+    if (spec.settings.empty()) {
+        if (add_named_strategy(spec.name, cfg, r)) return true;
+        why.clear();
+        return false;
+    }
+    if (!takes_settings) {
+        why = "'" + spec.label() + "': settings are taken by the lab programs only (suite_lab, sweep_lab, arena_lab), "
+              "never by the evidence programs";
+        return false;
+    }
+    if (builtin_strategy_name(spec.name)) {
+        why = "'" + spec.label() + "': " + spec.name + " is built in, and a built-in strategy's fields are --set= names "
+              "(sweep_lab --help lists them), not settings";
+        return false;
+    }
+    Roster one;
+    if (!add_named_strategy(spec.name, cfg, one) || one.strategies.size() != 1) {
+        why.clear();
+        return false;
+    }
+    if (!apply_settings(*one.strategies.front(), spec, why)) return false;
+    r.strategies.push_back(std::make_unique<LabelledHandle>(std::move(one.strategies.front()), spec.label()));
+    r.informed.push_back(one.informed.front());
+    return true;
+}
 
 // Builds a roster from a spec like "maker,rival,informed,noise:2,momentum":
 // comma-separated names, each optionally followed by :count to repeat it. On a
@@ -409,7 +468,9 @@ inline constexpr const char* kStrategyNames = "maker rival informed noise moment
         if (token.empty()) continue;
 
         int count = 1;
-        const std::size_t colon = token.find(':');
+        // The count is read from the right, before any setting, so name+key=value:2
+        // repeats a set strategy; a token without '+' is read exactly as it always was.
+        const std::size_t colon = token.find('+') == std::string_view::npos ? token.find(':') : token.rfind(':');
         if (colon != std::string_view::npos) {
             const std::string_view digits = token.substr(colon + 1);
             token = token.substr(0, colon);
@@ -430,9 +491,12 @@ inline constexpr const char* kStrategyNames = "maker rival informed noise moment
             error = "a count of zero: leave the name out instead";
             return false;
         }
+        StrategySpec spec;
+        if (!parse_strategy_spec(token, spec, error)) return false;
         for (int i = 0; i < count; ++i) {
-            if (!add_named_strategy(token, cfg, r)) {
-                error = "unknown participant '" + std::string(token) + "'; known: " + kStrategyNames;
+            if (!add_strategy_spec(spec, cfg, r, error)) {
+                if (!error.empty()) return false;
+                error = "unknown participant '" + spec.name + "'; known: " + kStrategyNames;
 #if defined(PX_ARENA_USER_STRATEGIES)
                 error += std::string("; installed: ") + kUserStrategyNames;
 #endif

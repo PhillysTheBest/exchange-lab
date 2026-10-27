@@ -223,6 +223,17 @@ public:
     }
     [[nodiscard]] int simulated() const noexcept { return simulated_; }
 
+    // Every parameter set run on `seeds` seeds so far, with its statistics at `depth`.
+    [[nodiscard]] std::vector<std::pair<MarketParams, TapeStats>> evaluated(std::size_t seeds, Depth depth) const {
+        std::vector<std::pair<MarketParams, TapeStats>> out;
+        for (const auto& [key, by_depth] : tapes_) {
+            if (std::get<3>(key) != seeds) continue;
+            out.emplace_back(MarketParams{std::get<0>(key), std::get<1>(key), std::get<2>(key)},
+                             by_depth.at(static_cast<int>(depth)));
+        }
+        return out;
+    }
+
 private:
     std::map<std::tuple<std::int64_t, std::int64_t, std::int64_t, std::size_t>, std::map<int, TapeStats>> tapes_;
     int simulated_ = 0;
@@ -376,6 +387,61 @@ inline constexpr std::size_t kDescentStarts = 3;
     return true;
 }
 
+// ---- how well the parameters are identified -----------------------------------
+//
+// The calibrated point is the closest the search found, not necessarily the only
+// one that fits: eight 25 ms sessions measure each statistic with noise, and two
+// parameter sets whose statistics differ by less than that noise cannot be told
+// apart by the tape. So the best point's sessions are measured one seed at a
+// time, each used statistic's standard error across the seeds is taken, and
+// every other parameter set the search ran on all eight seeds whose statistics
+// all lie within two standard errors of the best's is listed beside it.
+struct Identification {
+    std::int64_t se[3] = {-1, -1, -1};   // per knob, in the statistic's units; -1: not used
+    std::size_t tried = 0;               // other parameter sets run on all eight seeds
+    std::vector<MarketParams> alike;     // those within 2 s.e. on every used statistic
+};
+
+[[nodiscard]] inline bool identification(const arena::suite::SuiteDef& base, const Calibration& c, Depth depth,
+                                         const MarketCache& cache, Identification& out, std::string& why) {
+    out = Identification{};
+    constexpr std::size_t n = std::size(kCalibrationSeeds);
+    std::vector<std::int64_t> per_seed[3];
+    for (std::size_t k = 0; k < n; ++k) {
+        Tape t;
+        if (!simulate(market_with(base, c.params), &kCalibrationSeeds[k], 1, t, why)) return false;
+        const TapeStats st = tape_stats(t, depth);
+        for (const Knob kn : kKnobs) per_seed[static_cast<std::size_t>(kn)].push_back(knob_stat(st, kn));
+    }
+    for (const Knob kn : kKnobs) {
+        const auto i = static_cast<std::size_t>(kn);
+        if (!c.fits[i].used) continue;
+        // s.e. of the mean of n seeds: sqrt(sum (n x - S)^2 / (n^2 (n - 1) n)).
+        WideSum sum = 0, ss = 0;
+        for (const std::int64_t x : per_seed[i]) sum += x;
+        for (const std::int64_t x : per_seed[i]) {
+            const WideSum d = static_cast<WideSum>(n) * x - sum;
+            ss += d * d;
+        }
+        const WideSum scale = static_cast<WideSum>(n * n * (n - 1) * n);
+        out.se[i] = static_cast<std::int64_t>(detail::isqrt(static_cast<WideUSum>(ss / scale)));
+    }
+    for (const auto& [p, st] : cache.evaluated(n, depth)) {
+        if (p == c.params) continue;
+        ++out.tried;
+        bool alike = true;
+        for (const Knob kn : kKnobs) {
+            const auto i = static_cast<std::size_t>(kn);
+            if (!c.fits[i].used) continue;
+            const std::int64_t d = knob_stat(st, kn) - c.fits[i].achieved;
+            if ((d < 0 ? -d : d) > 2 * out.se[i]) alike = false;
+        }
+        if (alike) out.alike.push_back(p);
+    }
+    std::sort(out.alike.begin(), out.alike.end(), [](const MarketParams& a, const MarketParams& b) { return a.key() < b.key(); });
+    return true;
+}
+
 // ---- the known-answer control ------------------------------------------------
 
 // The parameters the control's tape is made with: none of them the reference
@@ -498,7 +564,8 @@ struct HealthResult {
 // reader insists on before the market may be used.
 [[nodiscard]] inline std::string market_file_text(const std::string& name, const Tape& tape,
                                                   const std::string& tape_cksum, const Calibration& c,
-                                                  const ControlResult& control, const HealthResult& health) {
+                                                  const ControlResult& control, const HealthResult& health,
+                                                  std::string_view holdback = {}, std::string_view more = {}) {
     std::string s;
     auto kv = [&s](std::string_view k, std::string_view v) {
         s += k;
@@ -518,6 +585,9 @@ struct HealthResult {
     kv("calibration.source_cksum", tape.h.source_cksum.empty() ? "-" : tape.h.source_cksum);
     kv("calibration.depth", depth_name(tape.h.depth));
     kv("calibration.matched", matched_text(c));
+    // Only when part of the tape was held back, so a market calibrated on all of
+    // its tape is written exactly as it always was.
+    if (!holdback.empty()) kv("calibration.holdback", holdback);
     s += "# What it sets. Every other parameter is the standard market's.\n";
     kv("set.maker.half_spread_ticks", std::to_string(c.params.half_spread_ticks));
     kv("set.rival.half_spread_ticks", std::to_string(c.params.half_spread_ticks));
@@ -562,6 +632,7 @@ struct HealthResult {
     kv("health.failing", failing.empty() ? "-" : failing);
     kv("health.worst_mean_gap_x100", std::to_string(health.worst_gap_x100));
     kv("health.worst_seed", std::to_string(health.worst_seed));
+    s += more;
     kv("status", "complete");
     return s;
 }
