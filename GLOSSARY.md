@@ -171,6 +171,8 @@ Terms are grouped and sorted alphabetically within each group.
 
 **Admissible** — An arm whose sessions all pass the health gate; failing seeds are never dropped.
 
+**Admission (of a suite file)** — The check a suite file must pass before any candidate runs: its placebo arm, on every seed of its block, must pass the health gate. Otherwise `suite_lab` writes nothing and exits 3, naming the failing seeds; `/reproduce` admits again. A calibrated market is admitted the same way. *Where:* `docs/RUNNER.md`.
+
 **Arm** — One occupant of the seat run on every seed of a block.
 
 **Book-to-fundamental gap (market health)** — The mean |mid − V| in ticks, printed first: a book loose from the fundamental is not a market.
@@ -231,7 +233,9 @@ Terms are grouped and sorted alphabetically within each group.
 
 **Standard error (paired)** — The standard deviation of per-seed differences over √n; every arena result carries it.
 
-**Suite** — A named, versioned set of conditions defined in code; a different set is a new suite, never a flag.
+**Suite** — A named, versioned set of conditions, defined in code or in a suite file; a different set is a new suite, never a flag.
+
+**Suite file** — A suite of your own written down as `suites/NAME.cfg`: a name, a version, the opposing line-up, the session length, the seat's delay, a seed block and reference parameters. The seat, the placebo, the health gate and the step ceiling stay fixed. Its whole definition is among the run's conditions with a digest, so it has a fingerprint of its own and reproduces without the file; read by `suite_lab` only, after admission. *Where:* `docs/RUNNER.md`, `examples/suites/slow_seat.cfg`.
 
 **Sweep** — One parameter varied over several values on shared seeds.
 

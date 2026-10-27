@@ -228,6 +228,7 @@ void test_strategy_notes_match_the_registry() {
 void test_exit_meanings() {
     PX_CHECK(exit_meaning(Program::Suite, 0).empty());
     PX_CHECK(exit_meaning(Program::Suite, 3).find("not admissible") != std::string::npos);
+    PX_CHECK(exit_meaning(Program::Reproduce, 3).find("not admissible") != std::string::npos);
     PX_CHECK(exit_meaning(Program::Reproduce, 1).find("NOT REPRODUCED") != std::string::npos);
     PX_CHECK(exit_meaning(Program::Controls, 1).find("control") != std::string::npos);
     PX_CHECK(exit_meaning(Program::Calibrate, 1).find("nothing was written") != std::string::npos);

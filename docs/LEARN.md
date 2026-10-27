@@ -1,9 +1,10 @@
 # Learning with exchange-lab
 
-A guided path through exchange-lab in ten short exercises, each building on the last. It
+A guided path through exchange-lab in eleven short exercises, each building on the last. It
 starts with one order book, goes on to a strategy of your own, scored, controlled and
-reproduced, brings in a file of market data, and ends with an advanced exercise: one study
-run the way a paper should run it. It is written for students meeting market microstructure for the first time,
+reproduced, brings in a file of market data, runs one study the way a paper should run it,
+and ends by changing a strategy's settings and the market itself without weakening the
+experiment. It is written for students meeting market microstructure for the first time,
 and for researchers who want the tour before the design documents.
 [`GLOSSARY.md`](../GLOSSARY.md) defines every term used here.
 
@@ -378,6 +379,87 @@ answer still not identify it? **Read next:** [The seeds](RUNNER.md#the-seeds),
 [The floor: `zi`](RUNNER.md#the-floor-zi) and [Sensitivity](RUNNER.md#sensitivity) in
 `docs/RUNNER.md`; [Many comparisons](REPORT.md#many-comparisons) in `docs/REPORT.md`;
 [Stylised facts](DATA.md#stylised-facts-what-was-not-fitted) in `docs/DATA.md`.
+
+## 11. Change a setting, then the market
+
+**Goal:** ask a new question without weakening the experiment: change a number in your
+strategy from the command line, then write down a market of your own as a suite file, score
+against it, and reproduce it. Do exercises 4, 5 and 8 first: this one uses `imbalance`.
+
+**1. A setting on the strategy's name.** `imbalance` names the fields a run may set in its
+`settings()` member, so exercise 10's `picky` needs no second file:
+
+```
+> /compare imbalance+ratio=5,imbalance
+> /sweep --strategies=maker,rival,informed,noise:2,momentum,imbalance --param=imbalance.ratio --values=3,5,8 --seeds=8
+```
+
+**2. A suite of your own.** Copy the worked example, the standard market with the seat at
+100 µs instead of 10 µs, and score against it:
+
+```bash
+mkdir -p suites
+cp examples/suites/slow_seat.cfg suites/slow_seat.cfg
+```
+
+```
+> /compare imbalance suite=slow_seat
+```
+
+**3. Reproduce it, without the file.** Change the file, try to reproduce, then move the file
+away and try again:
+
+```bash
+sed 's/^seat.reaction_ns=100000$/seat.reaction_ns=50000/' examples/suites/slow_seat.cfg > suites/slow_seat.cfg
+```
+
+```
+> /reproduce imbalance-slow_seat-file
+```
+
+```bash
+mv suites/slow_seat.cfg ~/slow_seat.cfg
+```
+
+```
+> /reproduce imbalance-slow_seat-file
+```
+
+**4. A suite that is not a market.** A third noise trader, at the standard delay:
+
+```bash
+sed 's/^suite.name=slow_seat$/suite.name=crowded/; s/noise:2/noise:3/; s/^seat.reaction_ns=100000$/seat.reaction_ns=10000/' examples/suites/slow_seat.cfg > suites/crowded.cfg
+```
+
+```
+> /compare imbalance suite=crowded
+```
+
+**Look for.** Step 1: `imbalance+ratio=5 vs placebo` is −15.87 ± 3.00 and `imbalance vs
+imbalance+ratio=5` −19.05 ± 1.88, exercise 10's `picky` numbers to the digit, because it is the
+same strategy. The fingerprint is standard's, `9e8d07b24ee5d562`: a setting belongs to the
+candidate, not to the market. The sweep ends with a table for `imbalance` itself: ratios 5 and 8
+gain +401.45 and +676.58 on ratio 3, mostly by trading less (4,424 orders, then 1,642, then 88).
+Its health table puts the book about 5 ticks from the fundamental, because a sweep session runs
+200,000 requests, not the suite's 25 ms. Step 2: the report opens `suite slow_seat v1, block
+file`, admits the suite on 64 seeds, and gives `imbalance vs placebo` −7.60 ± 1.94 on 56 fills,
+against −34.92 on 310 at 10 µs. The fingerprint is `eabf7a1767548125`, not standard's. Step 3:
+the first `/reproduce` is refused before running (exit 2): `suites/slow_seat.cfg has changed
+since the run (seat.reaction_ns=100000 in the run, seat.reaction_ns=50000 now): not the same
+suite`. With the file gone, the run is rebuilt from its own `suite.cfg`, admitted again, and
+every file is `identical`: `REPRODUCED`. Step 4 writes nothing and exits 3: `suite crowded is
+not admitted: its placebo fails the health gate on 3 of 64 seeds: 79 (gap), 94 (gap), 105
+(gap)`.
+
+**Think about.** Why does a setting leave the fingerprint alone when a suite file moves it?
+At 100 µs `imbalance` loses about a fifth as much: divide `spread earned` by `fills` in both reports.
+Is the slower seat better per trade, or does it just trade less? The sweep said the same about
+`ratio` on a market 5 ticks loose. Which of its numbers would you report, and which would you
+re-run as a suite? `crowded` fails on 3 of 64 seeds. Why not drop those three and keep the
+other 61? If you had written `slow_seat.cfg` after seeing the sweep, what would a run on it
+prove? **Read next:** [A strategy's own settings](RUNNER.md#a-strategys-own-settings) and
+[A suite of your own](RUNNER.md#a-suite-of-your-own) in `docs/RUNNER.md`, including when a
+`/sweep` is enough; [`docs/REPRODUCE.md`](REPRODUCE.md).
 
 ## Where to go from here
 

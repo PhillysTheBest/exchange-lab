@@ -32,7 +32,8 @@ build/release/suite --candidates=maker,momentum            # built-ins only; can
 ```
 
 `make compare` takes `CANDIDATES` (required; empty exits 2), `BLOCK` (`standard`, `smoke` or `holdout`),
-`SUITE` (`standard`, `wide`, `busy` or `all`) and `OUT`. It is `BLOCK`, not `SEEDS`, because
+`SUITE` (`standard`, `wide`, `busy`, `all` or `sensitivity`), `MARKET` (a calibrated market),
+`SUITE_FILE` (a suite of your own, [below](#a-suite-of-your-own)) and `OUT`. It is `BLOCK`, not `SEEDS`, because
 `bench/run_arena_evidence.sh` reads a numeric `SEEDS` from the environment.
 
 The flags of `suite` and `suite_lab`:
@@ -44,11 +45,13 @@ The flags of `suite` and `suite_lab`:
 | `--suite=NAME` | `standard` (the default), `wide`, `busy`, or `all`: one directory each |
 | `--out=DIR` | default `runs/<a>[-vs-<b>...]-<block>/`; a previous run there is replaced |
 | `--reproduce=DIR` | re-run DIR from its `suite.cfg` and compare every file ([`REPRODUCE.md`](REPRODUCE.md)) |
+| `--suite-file=PATH` | `suite_lab` only: a suite of your own ([below](#a-suite-of-your-own)); not with `--suite`, `--block` or `--market` |
 | `--help` | lists the built-in names and, in `suite_lab`, the installed ones |
 
 **No condition can be set on the command line.** There is no `--set`, `--param`, `--seeds`,
 `--requests` or `--strategies`, and an unknown flag exits 2. A different set of conditions is a
-new suite in code; exploration stays with `/sweep` and `sweep_lab`.
+new suite: in code, or written down in a suite file that `suite_lab` reads
+([A suite of your own](#a-suite-of-your-own)). Exploration stays with `/sweep` and `sweep_lab`.
 
 | Exit | Meaning |
 |---|---|
@@ -211,7 +214,8 @@ caused by the candidate's orders.**
 ### The fingerprint
 
 FNV-1a 64 over `suite.cfg`'s condition lines (keys starting `suite.`, `seat.`, `health.`,
-`block.`, `market.`, `session.`, `fair.`) plus `seed=<s> placebo=<hash>` for each seed.
+`block.`, `market.`, `session.`, `fair.`, and on a calibrated market or a suite file
+`calibration.` and `suitefile.`) plus `seed=<s> placebo=<hash>` for each seed.
 Reference parameters enter through the placebo hashes, so an unrelated new `RosterConfig`
 field does not move it.
 
@@ -298,6 +302,118 @@ On the standard block, `imbalance+ratio=5` is −15.87 ± 3.00 against the place
 number as the copied header of [`LEARN.md`](LEARN.md)'s exercise 10, because it is the same
 strategy; `imbalance vs imbalance+ratio=5` is −19.05 ± 1.88. Setting `ratio=3`, the default,
 gives the session hash of no setting at all.
+
+## A suite of your own
+
+The standard suite is fixed in code so that "standard v1" always names one set of conditions.
+A researcher whose question needs a different market writes those conditions down in a file,
+and the file becomes a suite of its own: its own name, version, fingerprint, placebo arm and
+seed block. `examples/suites/slow_seat.cfg` is the standard market with the seat at 100 µs
+instead of 10 µs:
+
+```
+suitefile.format=1
+suite.name=slow_seat
+suite.version=1
+suite.lineup=maker,rival,informed,noise:2,momentum
+suite.session_ns=25000000
+seat.reaction_ns=100000
+block.first_seed=42
+block.seeds=64
+```
+
+```
+> /compare imbalance suite=examples/suites/slow_seat.cfg
+> /compare imbalance suite=slow_seat              # a bare name is suites/slow_seat.cfg
+```
+
+`make compare CANDIDATES=imbalance SUITE_FILE=examples/suites/slow_seat.cfg` and
+`suite_lab --suite-file=PATH` do the same. The run goes to `runs/imbalance-slow_seat-file/`:
+the block of a file suite is called `file`.
+
+**The format.** Integer text, one `key=value` a line, `#` starting a comment line, as in
+`markets/NAME.cfg`. A comment cannot follow a value on the same line: `seat.reaction_ns=100000  # 100 us`
+is refused as not a whole number. The file sets:
+
+| Key | Takes |
+|---|---|
+| `suitefile.format` | `1` |
+| `suite.name` | lower-case letters, digits, `-`, `_` and `.`, starting with a letter or digit |
+| `suite.version` | 1 or more; raise it whenever the file changes, as `standard_suite()` would |
+| `suite.lineup` | the opposing line-up, a `--strategies=` spec: built-ins, installed strategies and their settings |
+| `suite.session_ns` | 1 ms to 1 s of simulated time |
+| `seat.reaction_ns` | 1 ns to 10 ms |
+| `block.first_seed`, `block.seeds` | the seeds, 2 to 1024 of them |
+| `set.NAME=VALUE` | any number of reference parameters, under the names `--set=` takes (`set.maker.half_spread_ticks=2`) |
+
+Every key except `set.` lines is required, and none may be given twice.
+
+**What a file cannot set**, because the evaluator's guarantees rest on it: the seat (appended
+last, never informed), the placebo arm, the health gate (`health.*`) and the step ceiling
+(`suite.step_ceiling`), which are the same in every suite; and `session.*`, `fair.*` and
+`market.*`, so the fundamental and the markout stay the standard market's for now. A file that
+names one is refused, and so is any key the reader does not know, naming the line: a typo is a
+message, never a silently standard condition. The name may not be one the project already
+uses (`standard`, `wide`, `busy`, `smoke`, `holdout`, `all`, `sensitivity`, a sensitivity
+condition's name, `file`) or that of a calibrated market in `markets/`, and the seeds may not
+overlap the `holdout` block, which a suite file may not spend. All of these exit 2 before
+anything runs.
+
+**Admission.** Before any candidate runs, the placebo arm runs on every seed of the block and
+must pass the health gate on each, as a calibrated market must. Otherwise `suite_lab` writes
+nothing and exits 3, naming the seeds. `slow_seat` with a third noise trader and the standard
+10 µs seat gives:
+
+```
+suite crowded is not admitted: its placebo fails the health gate on 3 of 64 seeds: 79 (gap), 94 (gap), 105 (gap). A market whose book comes loose from the fundamental is not a market
+```
+
+The same three seeds made the sensitivity grid drop that line-up ([Sensitivity](#sensitivity)).
+Dropping the failing seeds instead would select calm paths, which is why a suite is admitted
+whole or not at all.
+
+**The fingerprint and the digest.** The conditions already hold the name, version, line-up,
+session length, seat delay and block. Reference parameters reach the fingerprint only through
+the placebo's session hashes, which a parameter of a participant not in the line-up never
+moves. So a file suite also writes its whole definition among its conditions, as
+`suitefile.format=1`, one `suitefile.set.NAME=VALUE` per `set.` line, sorted, and
+`suitefile.digest`, an FNV-1a of every field of the file. Two files that differ anywhere differ
+in fingerprint, version included; `slow_seat`'s, on its 64 seeds, is `eabf7a1767548125`. No
+built-in suite carries a `suitefile.` line, so no pinned fingerprint moved when suite files
+arrived.
+
+**Reproduction.** `suite.cfg` records the file's path as `run.suite_file`, and every line of the
+file is among its conditions, so `/reproduce` rebuilds the suite from the run's own record and
+needs no file. If the file is still at its path and now says something else, the reproduction
+is refused, as for a market calibrated again; move the file aside to reproduce from the record.
+A reproduction admits the suite again before running it ([`REPRODUCE.md`](REPRODUCE.md)).
+
+**Only in the lab.** `suite`, the evidence program, refuses `--suite-file` (exit 2), and
+neither `suite` nor `--help` of an evidence build mentions it. A suite file beside `--market`
+is refused too: a suite file on a calibrated market is not built yet.
+
+**What 100 µs does.** On `slow_seat`, `imbalance vs placebo` is −7.60 ± 1.94 and `maker vs
+placebo` is +62.03 ± 7.38, against −34.92 for `imbalance` with the standard 10 µs seat
+(runner). Two suites, two fingerprints: report them side by side, never pooled, and read each
+one's health line first.
+
+### A suite file or `/sweep`?
+
+Both change a condition. They answer different questions.
+
+- **`/sweep` is enough** to ask how one number moves as one parameter moves: a delay, a spread,
+  a setting, across a few values on a few seeds, to see where something interesting is. It
+  writes no run directory, has no placebo arm or health gate per value, and is exploration,
+  not a result.
+- **Write a suite file** when the answer will be reported: a different market, line-up, session
+  length or seed block that you mean to score strategies against and cite. It gets a name and
+  a version you can write in a paper, a fingerprint that says when two runs faced the same
+  thing, a placebo arm, admission, a run directory and `/reproduce`.
+
+A suite file is not a way round the holdout. Choosing its conditions after reading standard
+results is tuning, and the file's seeds are as public as standard's. A suite file whose
+conditions came from a sweep is a hypothesis; a run on it is the test only if the file was
+written before the run.
 
 ## The floor: `zi`
 
@@ -432,7 +548,12 @@ from the fundamental), so it is not in the grid. Removing the rival replaced it.
 - **"The range straddles zero" alone as the test:** far more conservative than a paired
   standard error. Both are reported.
 - **Replaying only the first seed per arm:** misses state carried across later seeds.
-- **`--set`, `--param` or a free seed list:** the conditions would be whatever was typed.
+- **`--set`, `--param` or a free seed list:** the conditions would be whatever was typed. A
+  suite file says the same things, but once, in a file whose every line is a condition.
+- **A file suite fingerprinted by its condition lines alone:** `reproduce` rebuilds a file
+  suite from the run's own record, so an edited record agreed with itself and was re-run
+  instead of refused. `suitefile.digest` covers the whole definition; edit a line and the
+  record no longer matches its digest.
 - **Hashing all of `suite.cfg`:** an unrelated `RosterConfig` field would force a version bump.
 - **A Python runner:** ruled out by the project's constraints.
 - **A wrong premise, corrected:** the first plan assumed that adding a participant
@@ -446,8 +567,12 @@ Not built: showing a scored arm in the viewer. A holdout block was on this list;
 - `arena/suite.hpp`: header-only and integer-only. Blocks, the gate, `SuiteDef`,
   `SeatOverride`, `run_arm`, the records, the writers and the fingerprint.
 - `arena/suite_report.hpp`: the only floating point, reading only a `RunRecord`.
+- `arena/suite_file.hpp`: the suite-file reader, its `suitefile.*` lines and digest, and
+  admission.
+- `examples/suites/slow_seat.cfg`: the worked example.
 - `arena/suite.cpp`: compiled into `suite` without `PX_ARENA_USER_STRATEGIES` and into
   `suite_lab` with it.
 - `arena/strategies/placebo.hpp`: the empty seat. The engine was not touched.
-- Tests: `tests/test_arena.cpp` (`test_placebo_is_inert`, `test_suite_*`), `make test-cli`
-  and `make test-lab`.
+- Tests: `tests/test_arena.cpp` (`test_placebo_is_inert`, `test_suite_*`, and
+  `test_suite_file`, whose checks each have a planted defect), `make test-cli` and
+  `make test-lab` (its suite-file checks).

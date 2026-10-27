@@ -25,7 +25,7 @@ build/release/exchange-lab    # run it from the repository root
 You get a prompt. Try these four commands:
 
 ```
-> /learn 1                                  # the first of ten guided exercises
+> /learn 1                                  # the first of eleven guided exercises
 > /add examples/strategies/imbalance.hpp    # install a strategy: one C++ header
 > /compare imbalance smoke                  # score it on 4 seeds against an empty seat
 > /watch imbalance                          # watch it trade live; q comes back
@@ -50,7 +50,7 @@ project is built to show.
 | `/learn [N]` | the guided exercises, from one order book to a strategy of your own |
 | `/strategies` | the built-in strategies, and the ones you installed |
 | `/add PATH` | install a strategy of your own |
-| `/compare NAME[,NAME...] [smoke\|holdout] [wide\|busy\|all\|sensitivity\|market=M]` | score strategies in the same seat of the same market, and print the report; tune on the standard block, confirm once on `holdout` |
+| `/compare NAME[,NAME...] [smoke\|holdout] [wide\|busy\|all\|sensitivity\|market=M\|suite=S]` | score strategies in the same seat of the same market, and print the report; tune on the standard block, confirm once on `holdout`; `suite=S` runs a suite of your own, written in a file |
 | `/runs`, `/report [RUN]` | list your runs; show one's report |
 | `/reproduce [RUN]` | re-run a run from its own record and compare every file |
 | `/watch [NAME,...] [seed=N]` | watch the market trade live, full screen |
@@ -115,8 +115,8 @@ replay of history. What it adds:
 - `/watch` to see a whole market: two makers, an informed trader, noise traders and momentum.
 - `/add` and `/compare` to write a strategy and learn where its profit really comes from:
   spread earned, the price move after each fill, carry to the close, and who paid for it.
-- `/learn` takes you through all of it in ten exercises, the last a whole study from hypothesis
-  to holdout; every command in them was run as
+- `/learn` takes you through all of it in eleven exercises: the tenth is a whole study from
+  hypothesis to holdout, the eleventh a strategy's settings and a suite of your own; every command in them was run as
   written. [`GLOSSARY.md`](GLOSSARY.md) defines every term.
 
 ## For researchers
@@ -131,6 +131,11 @@ replay of history. What it adds:
   baseline a candidate has to beat, not just the empty seat. Tune on the standard seeds,
   confirm once on the `holdout` block, which no example touches, and ask whether the result
   survives a fixed grid of changed conditions (`/compare NAME sensitivity`).
+- **Conditions of your own, kept as strict.** A strategy's settings go on its name
+  (`imbalance+ratio=5`) and are recorded with the run. A different market, line-up, session
+  length or seed block is a suite file: it has its own fingerprint, is admitted only if its
+  placebo passes the health gate, and reproduces from the run's record without the file
+  ([`docs/RUNNER.md`](docs/RUNNER.md#a-suite-of-your-own)).
 - **Known limits.** One instrument, one informed trader, no second venue, no quote fade, and
   a thin book. Results are statements about this instrument, not about trading.
   [`docs/RUNNER.md`](docs/RUNNER.md#known-weaknesses) lists the runner's own weaknesses.

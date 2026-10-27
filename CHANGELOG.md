@@ -6,6 +6,78 @@ formats**, and names every **fingerprint or hash that moved**. Two runs are comp
 their suite fingerprints match, so a reader of a result needs to know which release made it.
 Cite a tagged release, never `main` ([`CITATION.cff`](CITATION.cff)).
 
+## Unreleased
+
+Experiments a researcher can customise without weakening them: a strategy's own settings, and
+a suite defined in a file. Both are taken by the lab programs only, and with neither given
+every output is byte for byte what v1.0.0 wrote.
+
+### Fingerprints and hashes
+
+**Nothing moved.** The engine determinism hash, the session and frame hashes, every pinned
+suite fingerprint (`standard`, `wide`, `busy`, holdout and the sensitivity conditions) and the
+26 lines of `tests/canonical.txt` are unchanged. The new condition lines are `setting.*`
+(conditions of the run, compared by `reproduce`, **not** fingerprinted, because a setting
+belongs to the candidate and not to the market) and `suitefile.*` (fingerprinted, written only
+by a suite file, so no built-in suite carries one). A setting at its default value gives the
+session hash of no setting. `examples/suites/slow_seat.cfg` has the fingerprint
+`eabf7a1767548125` on its 64 seeds; it is an example, not pinned.
+
+### Engine
+
+No change.
+
+### Strategies
+
+- **A strategy's own settings.** A strategy of your own may have an optional sixth member,
+  `settings(F&&)`, which names the integer fields a run may set, each with its range; the
+  harness, not the strategy, checks every value. `examples/strategies/imbalance.hpp` names
+  `ratio`, `qty` and `max_position`. A strategy without it compiles and runs as before. Built-in
+  strategies have none; their fields stay `--set=` names. No reference strategy changed.
+
+### Scenario definitions
+
+- **Suite files** (`suites/NAME.cfg`, `arena/suite_file.hpp`): a suite of one's own, with a
+  name, version, opposing line-up, session length, seat delay, seed block and reference
+  parameters. The seat, placebo arm, health gate and step ceiling are fixed, as are `session.*`,
+  `fair.*` and `market.*`; unknown and repeated keys are refused. Names reserve every built-in
+  suite, block and sensitivity condition, `file`, and any calibrated market's name; seeds may
+  not overlap `holdout`. A file suite is admitted only if its placebo passes the health gate on
+  every seed of its block, or `suite_lab` exits 3 naming the seeds and writes nothing.
+- **Example:** `examples/suites/slow_seat.cfg`, the standard market with the seat at 100 µs.
+
+### Report calculations
+
+No change. A setting's label (`imbalance+ratio=5`) is an arm's name in the report like any other.
+
+### Output formats
+
+- **Settings on a name:** `imbalance+ratio=5`, keys sorted into one label
+  (`imbalance+qty=20+ratio=5`), in `/compare`, `make compare CANDIDATES=`, `suite_lab
+  --candidates=`, `sweep_lab --strategies=`, and `--param=NAME.KEY` / `--set=NAME.KEY=V` in a
+  sweep, which then adds a paired table for that participant. `suite`, `sweep` and `arena`
+  refuse a setting (exit 2).
+- `suite.cfg`: one `setting.<id>.<key>=<value>` line per setting, `<id>` the label with `=`
+  written as `_`, which also names `run.candidate.<id>.*` and the run directory
+  (`runs/imbalance+ratio_5-vs-imbalance-standard/`).
+- `suite.cfg` of a file suite: `suitefile.format`, `suitefile.set.*`, `suitefile.digest`
+  (conditions) and `run.suite_file` (not a condition); `block.name=file`.
+- `reproduce` rebuilds settings from `run.candidates` and a file suite from the run's own record,
+  without the file; it re-admits a file suite, refuses an edited setting or record line, and
+  refuses while `run.suite_file` still exists and differs.
+- New: `suite_lab --suite-file=PATH`, `make compare SUITE_FILE=`, `/compare NAME suite=S`
+  (`suites/S.cfg`, or a path). Refused by `suite`, and beside `--market`, `--suite` or `--block`.
+  `suites/` is git-ignored, like an installed strategy.
+- The app explains exit 3 as "the market is not admissible on this build", not "the reference
+  market", since a suite file can be the market, and explains it after `/reproduce` too.
+
+### Documentation and project files
+
+- `docs/RUNNER.md`: "A strategy's own settings" and "A suite of your own", with when to write a
+  suite file and when `/sweep` is enough. `docs/REPRODUCE.md`: what both record and refuse.
+  `GLOSSARY.md`: strategy setting, suite file, admission of a suite file.
+- Exercise 11 in `docs/LEARN.md`: a setting and a suite file, scored and reproduced.
+
 ## v1.0.0 (2026-10-26)
 
 The first tagged release. It starts from `main` at the merge of pull requests #2 and #1

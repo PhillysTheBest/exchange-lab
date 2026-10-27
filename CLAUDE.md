@@ -303,9 +303,22 @@ make test-lab                                              # the whole path, che
   confirmatory: tune on standard, report once on holdout), beside a placebo arm with an inert strategy
   in the seat. Every candidate session is replayed; every placebo session is checked
   against the market with no seat. No condition can be set on the command line: a
-  different set of conditions is a new suite in `arena/suite.hpp`, and ad-hoc
-  exploration stays with `sweep_lab`. Exit 0 complete, 1 a replay differed, 2 usage,
+  different set of conditions is a new suite, in `arena/suite.hpp` or in a suite file, and
+  ad-hoc exploration stays with `sweep_lab`. Exit 0 complete, 1 a replay differed, 2 usage,
   3 the reference market is not admissible on this build.
+- **A suite file is a suite of one's own** (`arena/suite_file.hpp`; `docs/RUNNER.md`, "A suite of
+  your own"): `suites/NAME.cfg`, integer `key=value`, setting a name, a version, the opposing
+  line-up, `suite.session_ns`, `seat.reaction_ns`, the seed block and `set.NAME=VALUE` reference
+  parameters. The seat, placebo, health gate, step ceiling, `session.*`, `fair.*` and `market.*`
+  are fixed and refused, as are unknown or repeated keys, the reserved names in
+  `kReservedSuiteNames` (every built-in suite, block and sensitivity condition, and `file`), a
+  calibrated market's name, and seeds overlapping `holdout`. Admission runs the placebo on every
+  seed first and exits 3 naming the failures. The whole file joins the conditions as `suitefile.*`
+  lines with `suitefile.digest`, so every line is fingerprinted and an edited record is refused;
+  `reproduce` rebuilds the suite from the record alone, re-admits it, and refuses if
+  `run.suite_file` still exists and differs. `suite_lab --suite-file=`, `make compare SUITE_FILE=`,
+  `/compare x suite=NAME`; `suite` refuses it, and so does `suite_lab` beside `--market`, `--suite`
+  or `--block`. No built-in suite carries a `suitefile.` line, so no pin moves.
 - **Run directories go to `runs/`, which is git-ignored and is never `results/`.** Each
   holds `suite.cfg`, `sessions.csv`, `participants.csv`, `comparison.csv`,
   `evaluation.csv`, `attribution.csv`, `report.txt` and `outcome.cfg`, written last and

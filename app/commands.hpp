@@ -504,11 +504,12 @@ struct Plan {
     case Program::Suite:
         if (status == 1) return "a replayed session differed: this run is not reproducible";
         if (status == 2) return "the command was refused; the message above says why";
-        if (status == 3) return "the reference market is not admissible on this build, so nothing was compared";
+        if (status == 3) return "the market is not admissible on this build (the message above says why), so nothing was compared";
         break;
     case Program::Reproduce:
         if (status == 1) return "NOT REPRODUCED: a file came out different";
         if (status == 2) return "refused before running; the message above says why";
+        if (status == 3) return "the market is not admissible on this build (the message above says why), so nothing was compared";
         break;
     case Program::Controls:
         if (status == 1) return "a control did not hold: do not trust the evaluator on this build";
