@@ -90,7 +90,8 @@ struct RunInfo {
 bool run_complete(const fs::path& dir) { return cfg_value(dir / "outcome.cfg", "status") == "complete"; }
 
 // Newest first. A SUITE=all run is a directory of families with families.txt
-// beside them; it is complete when every family is.
+// beside them, and a SUITE=sensitivity run one of conditions with
+// sensitivity.txt; either is complete when every suite in it is.
 std::vector<RunInfo> list_runs() {
     std::vector<RunInfo> runs;
     std::error_code ec;
@@ -100,10 +101,11 @@ std::vector<RunInfo> list_runs() {
         RunInfo r;
         r.name = e.path().filename().string();
         fs::path cfg = e.path() / "suite.cfg";
-        if (fs::exists(e.path() / "families.txt")) {
-            r.when = fs::last_write_time(e.path() / "families.txt", ec);
+        const bool grid = fs::exists(e.path() / "sensitivity.txt");
+        if (grid || fs::exists(e.path() / "families.txt")) {
+            r.when = fs::last_write_time(e.path() / (grid ? "sensitivity.txt" : "families.txt"), ec);
             r.complete = true;
-            r.suite = "all";
+            r.suite = grid ? "sensitivity" : "all";
             for (const fs::directory_entry& f : fs::directory_iterator(e.path(), ec)) {
                 if (!f.is_directory()) continue;
                 r.complete = r.complete && run_complete(f.path());
@@ -259,10 +261,10 @@ int cmd_runs() {
         s.resize(std::max(n, s.size()), ' ');
         return s;
     };
-    say(dim(pad("run", width) + "  " + pad("status", 10) + "  " + pad("suite", 8) + "  " + pad("block", 8) +
+    say(dim(pad("run", width) + "  " + pad("status", 10) + "  " + pad("suite", 11) + "  " + pad("block", 8) +
             "  candidates"));
     for (const RunInfo& r : runs)
-        say(pad(r.name, width) + "  " + pad(r.complete ? "complete" : "incomplete", 10) + "  " + pad(r.suite, 8) +
+        say(pad(r.name, width) + "  " + pad(r.complete ? "complete" : "incomplete", 10) + "  " + pad(r.suite, 11) +
             "  " + pad(r.block, 8) + "  " + r.candidates);
     say(dim("Newest first. /report NAME shows one; /reproduce NAME re-runs it."));
     return 0;
@@ -276,6 +278,11 @@ int cmd_report(const std::vector<std::string>& args) {
     if (fs::exists(run + "/families.txt")) {
         std::fputs(read_file(run + "/families.txt").c_str(), stdout);
         say(dim("Each family has a full report of its own: /report " + run + "/standard, /wide, /busy"));
+        return 0;
+    }
+    if (fs::exists(run + "/sensitivity.txt")) {
+        std::fputs(read_file(run + "/sensitivity.txt").c_str(), stdout);
+        say(dim("Each condition has a full report of its own: /report " + run + "/standard, /thin, /no-rival, ..."));
         return 0;
     }
     if (!fs::exists(run + "/report.txt")) return refuse(run + " has no report: the run did not finish");
@@ -409,9 +416,10 @@ std::vector<std::string> complete(const std::string& line, std::size_t& start) {
     }
     if (cmd == "/calibrate") {
         std::vector<std::string> options = names_in("data", ".tape");
-        options.insert(options.end(), {"--known=", "--control", "--robustness"});
+        options.insert(options.end(), {"--known=", "--control", "--robustness", "holdback="});
         return keep_prefixed(options, word);
     }
+    if (cmd == "/facts") return keep_prefixed(names_in("data", ".tape"), word);
     if (cmd == "/replay") {
         // The tape, then a strategy, then the settings.
         std::size_t names = 0;
@@ -432,7 +440,7 @@ std::vector<std::string> complete(const std::string& line, std::size_t& start) {
             return keep_prefixed(strategy_names(), word.substr(comma + 1));
         }
         std::vector<std::string> options = strategy_names();
-        if (cmd == "/compare") options.insert(options.end(), {"smoke", "wide", "busy", "all", "market="});
+        if (cmd == "/compare") options.insert(options.end(), {"smoke", "holdout", "wide", "busy", "all", "sensitivity", "market=", "suite="});
         else options.insert(options.end(), {"seed=", "still=", "script=", "lineup=", "market="});
         return keep_prefixed(options, word);
     }

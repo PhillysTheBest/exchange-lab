@@ -11,7 +11,11 @@
 //   * it defines struct <Name> (the file name in CamelCase, so imbalance.hpp
 //     defines Imbalance) in namespace px::arena::strategies;
 //   * that struct provides the five members arena/strategy.hpp lists, and
-//     nothing in it may use floating point (see arena/clock.hpp for why).
+//     nothing in it may use floating point (see arena/clock.hpp for why);
+//   * it may add a sixth, settings(), naming the integer fields a run may set
+//     and the range each accepts. Then `imbalance+ratio=5` in a lab program sets
+//     ratio for that run, and `--param=imbalance.ratio --values=3,5,8` sweeps
+//     it; without it, every setting is refused.
 // It includes arena/strategy.hpp and nothing else from the project: the engine,
 // the session and the scheduler are out of reach by construction.
 //
@@ -34,6 +38,14 @@ struct Imbalance {
     std::uint64_t ratio = 3; // how lopsided the touch must be to act on
     Qty qty = 10;
     std::int64_t max_position = 200;
+
+    // The optional sixth member: name, field, and the inclusive range a run may set.
+    template <class F>
+    void settings(F&& f) {
+        f("ratio", ratio, 1, 100);
+        f("qty", qty, 1, 10'000);
+        f("max_position", max_position, 1, 100'000);
+    }
 
     void reset(std::uint64_t) {}
 

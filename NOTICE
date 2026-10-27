@@ -1,0 +1,7 @@
+exchange-lab
+Copyright 2026 Philbert Poku
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+The licence covers the whole repository: source code, documentation, the committed
+evidence in results/, and the sample data files in examples/data/, which were made up
+by hand and are not extracts of any vendor's data.

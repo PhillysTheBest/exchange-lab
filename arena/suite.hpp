@@ -36,6 +36,7 @@
 #include "arena/strategies/registry.hpp"
 #include "arena/strategy.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <memory>
@@ -54,13 +55,18 @@ struct SeedBlock {
     const char* name;
     std::uint64_t first;
     std::uint32_t count;
+    bool confirmatory = false; // reported once, after tuning on standard; never pooled
 };
 
 // `smoke` is a prefix of `standard`, so smoke numbers are a subset of standard
 // ones. It shows that a strategy runs and trades; it cannot separate anything.
+// `holdout` shares no seed with either and is used by no example: tune on
+// standard, then report once on holdout. Its seeds are far from standard's so
+// that no one reaches them by extending a range (docs/RUNNER.md, "The seeds").
 inline constexpr SeedBlock kSeedBlocks[] = {
     {"standard", 42, 64},
     {"smoke", 42, 4},
+    {"holdout", 1'000'000, 64, true},
 };
 
 [[nodiscard]] inline const SeedBlock* find_block(std::string_view name) noexcept {
@@ -131,6 +137,10 @@ struct SuiteDef {
     // calibration.* lines, which say which tape, as conditions. Empty for every
     // built-in suite, so their conditions and fingerprints do not move.
     std::string calibration = "";
+    // A suite read from a file (arena/suite_file.hpp): its whole definition as
+    // suitefile.* lines, so every line of the file is fingerprinted. Empty for
+    // every built-in suite, likewise.
+    std::string definition = "";
 };
 
 // The one definition. A change to any of it, or to a reference strategy, a
@@ -182,10 +192,71 @@ struct SuiteDef {
 // has come loose is not a market, so it is not shipped; docs/REPORT.md.
 inline constexpr const char* kSuiteNames = "standard wide busy";
 
+// ---- the sensitivity protocol -------------------------------------------------
+//
+// A fixed grid, so that "does it survive a change?" has one answer per strategy
+// rather than whatever somebody tried. Each condition changes one thing about
+// standard along one of three axes: the seat's reaction delay, how much
+// uninformed flow there is (liquidity), and who else is in the market. Each is
+// a suite of its own, with its own name, fingerprint, placebo and health gate,
+// like a scenario family, and like a family it is never pooled. `busy` is the
+// family of that name, reused. docs/RUNNER.md, "Sensitivity", has the grid's
+// reasoning and what it found.
+[[nodiscard]] inline SuiteDef delay5_suite() {
+    SuiteDef d = standard_suite();
+    d.name = "delay-5us";
+    d.seat_reaction_ns = 5'000;
+    d.change = "seat reaction 5,000 ns";
+    return d;
+}
+
+[[nodiscard]] inline SuiteDef delay20_suite() {
+    SuiteDef d = standard_suite();
+    d.name = "delay-20us";
+    d.seat_reaction_ns = 20'000;
+    d.change = "seat reaction 20,000 ns";
+    return d;
+}
+
+[[nodiscard]] inline SuiteDef thin_suite() {
+    SuiteDef d = standard_suite();
+    d.name = "thin";
+    d.roster.noise_timer_ns = 20'000;
+    d.change = "noise.timer_ns=20000";
+    return d;
+}
+
+[[nodiscard]] inline SuiteDef no_momentum_suite() {
+    SuiteDef d = standard_suite();
+    d.name = "no-momentum";
+    d.lineup = "maker,rival,informed,noise:2";
+    d.change = "line-up maker,rival,informed,noise:2";
+    return d;
+}
+
+// No rival maker: the swept maker's competitor gone, which docs/ARENA.md found is
+// where a maker's money goes. A third noise trader was tried first and is not
+// here: its placebo failed the health gate on 3 of 64 standard seeds (79, 94,
+// 105: the book came loose), so it is not a market.
+[[nodiscard]] inline SuiteDef no_rival_suite() {
+    SuiteDef d = standard_suite();
+    d.name = "no-rival";
+    d.lineup = "maker,informed,noise:2,momentum";
+    d.change = "line-up maker,informed,noise:2,momentum";
+    return d;
+}
+
+inline constexpr const char* kSensitivityNames = "standard delay-5us delay-20us thin busy no-momentum no-rival";
+
 [[nodiscard]] inline bool find_suite(std::string_view name, SuiteDef& out) {
     if (name == "standard") out = standard_suite();
     else if (name == "wide") out = wide_suite();
     else if (name == "busy") out = busy_suite();
+    else if (name == "delay-5us") out = delay5_suite();
+    else if (name == "delay-20us") out = delay20_suite();
+    else if (name == "thin") out = thin_suite();
+    else if (name == "no-momentum") out = no_momentum_suite();
+    else if (name == "no-rival") out = no_rival_suite();
     else return false;
     return true;
 }
@@ -271,7 +342,38 @@ inline constexpr std::size_t kMaxCandidates = 8;
     return s;
 }
 
-// Refuses a candidate list before anything runs, naming the cause.
+// A candidate token's canonical label (name+key=value, keys sorted), or false
+// with `why` naming the token.
+[[nodiscard]] inline bool candidate_label(std::string_view token, std::string& label, std::string& why) {
+    StrategySpec spec;
+    if (!parse_strategy_spec(token, spec, why)) return false;
+    label = spec.label();
+    return true;
+}
+
+// The base strategy of a candidate label: what it was built from.
+[[nodiscard]] inline std::string candidate_base(std::string_view label) {
+    return std::string(label.substr(0, label.find('+')));
+}
+
+// A candidate label as it appears in a suite.cfg key or a directory name.
+[[nodiscard]] inline std::string candidate_id(std::string_view label) {
+    std::string s(label);
+    std::replace(s.begin(), s.end(), '=', '_');
+    return s;
+}
+
+// Refuses a candidate list before anything runs, naming the cause. Every name
+// is rewritten to its canonical label, which every later step uses.
+[[nodiscard]] inline bool canonical_candidates(std::vector<std::string>& names, std::string& why) {
+    for (std::string& n : names) {
+        std::string label;
+        if (!candidate_label(n, label, why)) return false;
+        n = label;
+    }
+    return true;
+}
+
 [[nodiscard]] inline bool check_candidates(const std::vector<std::string>& names, std::string& why) {
     if (names.empty()) {
         why = "name at least one candidate";
@@ -282,7 +384,9 @@ inline constexpr std::size_t kMaxCandidates = 8;
         return false;
     }
     for (std::size_t i = 0; i < names.size(); ++i) {
-        const std::string& n = names[i];
+        StrategySpec spec;
+        if (!parse_strategy_spec(names[i], spec, why)) return false;
+        const std::string& n = spec.name;
         if (n.empty()) {
             why = "an empty candidate name";
             return false;
@@ -296,14 +400,15 @@ inline constexpr std::size_t kMaxCandidates = 8;
             return false;
         }
         for (std::size_t j = 0; j < i; ++j) {
-            if (names[j] == n) {
-                why = "'" + n + "' is named twice";
+            std::string a, b, ignore;
+            if (candidate_label(names[j], a, ignore) && candidate_label(names[i], b, ignore) && a == b) {
+                why = "'" + b + "' is named twice";
                 return false;
             }
         }
         Roster scratch;
-        if (!add_named_strategy(n, RosterConfig{}, scratch)) {
-            why = "unknown strategy '" + n + "'; " + known_candidates_text();
+        if (!add_strategy_spec(spec, RosterConfig{}, scratch, why)) {
+            if (why.empty()) why = "unknown strategy '" + n + "'; " + known_candidates_text();
             return false;
         }
     }
@@ -343,12 +448,14 @@ inline constexpr std::size_t kMaxCandidates = 8;
                                            Origin& origin, std::string& why) {
     origin = Origin::Reference;
     if (candidate.empty()) return build_arm_roster(def, std::unique_ptr<StrategyHandle>{}, out, why);
+    StrategySpec spec;
+    if (!parse_strategy_spec(candidate, spec, why)) return false;
     Roster one;
-    if (!add_named_strategy(candidate, suite_roster_config(def), one) || one.strategies.size() != 1) {
-        why = "unknown strategy '" + std::string(candidate) + "'; " + known_candidates_text();
+    if (!add_strategy_spec(spec, suite_roster_config(def), one, why) || one.strategies.size() != 1) {
+        if (why.empty()) why = "unknown strategy '" + spec.name + "'; " + known_candidates_text();
         return false;
     }
-    if (candidate != "placebo") origin = is_builtin(candidate) ? Origin::Builtin : Origin::Installed;
+    if (spec.name != "placebo") origin = is_builtin(spec.name) ? Origin::Builtin : Origin::Installed;
     return build_arm_roster(def, std::move(one.strategies.front()), out, why);
 }
 
@@ -587,6 +694,7 @@ struct RunInfo {
     std::vector<CandidateInfo> candidates;
     BuildInfo build;             // empty commit: not recorded (tests)
     std::string market_file;     // the markets/NAME.cfg a calibrated suite was read from, or empty
+    std::string suite_file;      // the suite file a file suite was read from, or empty
 };
 
 // Exactly what the three raw files hold, so a report is a function of this
@@ -843,6 +951,7 @@ inline void append_participant_rows(std::string& s, const std::vector<Participan
         if (Session::get_param(sc, k, v)) append_kv(s, k, v);
     }
     s += def.calibration;
+    s += def.definition;
     return s;
 }
 
@@ -864,6 +973,20 @@ inline void append_participant_rows(std::string& s, const std::vector<Participan
     s += conditions_text(def, block);
     s += "# Every reference participant's parameters, under the names --set= takes.\n";
     s += roster_text(def);
+    // A candidate's own settings (name+key=value): conditions of the run, which
+    // reproduce compares, but not fingerprinted, because they belong to the
+    // candidate and not to the market it faced. Written only when there are any.
+    std::string settings;
+    for (const CandidateInfo& c : info.candidates) {
+        StrategySpec spec;
+        std::string ignore;
+        if (!parse_strategy_spec(c.name, spec, ignore)) continue;
+        for (const auto& [k, v] : spec.settings) append_kv(settings, "setting." + spec.id() + "." + k, v);
+    }
+    if (!settings.empty()) {
+        s += "# Each candidate's own settings. Conditions, compared by reproduce; not fingerprinted.\n";
+        s += settings;
+    }
     s += "# What this invocation ran. Not conditions.\n";
     append_kv(s, "run.binary", info.binary);
     append_kv(s, "run.user_strategies", info.user_strategies);
@@ -874,13 +997,14 @@ inline void append_participant_rows(std::string& s, const std::vector<Participan
     }
     append_kv(s, "run.candidates", names);
     for (const CandidateInfo& c : info.candidates) {
-        const std::string k = "run.candidate." + c.name;
+        const std::string k = "run.candidate." + candidate_id(c.name);
         append_kv(s, k + ".origin", origin_name(c.origin));
         append_kv(s, k + ".declared_reaction_ns", c.declared_reaction_ns);
         append_kv(s, k + ".timer_ns", c.timer_ns);
         if (!c.digest.empty()) append_kv(s, k + ".digest", c.digest);
     }
     if (!info.market_file.empty()) append_kv(s, "run.market_file", info.market_file);
+    if (!info.suite_file.empty()) append_kv(s, "run.suite_file", info.suite_file);
     if (!info.build.commit.empty()) {
         s += "# Which build ran it. Not conditions: `suite --reproduce` re-runs on any build.\n";
         append_kv(s, "build.commit", info.build.commit);

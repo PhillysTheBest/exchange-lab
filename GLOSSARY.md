@@ -69,7 +69,11 @@ Terms are grouped and sorted alphabetically within each group.
 
 **Candidate** — A strategy being scored by `/compare`, in the seat on every seed of a block.
 
+**Coding agent** — An AI tool that writes code and runs commands, used beside exchange-lab to write a strategy or read a report. It may write a strategy; no model may run inside a session. *Where:* `docs/CODING-AGENT.md`.
+
 **Fader** — The worked example of a strategy: it fades prints that stray far from a slow average. *Where:* `arena/strategies/fader.hpp`.
+
+**Frozen model** — A model trained outside the project whose weights are rounded to integers and written into a strategy header, so it runs as a pure integer function of the market view and replays like any strategy. *Where:* `examples/strategies/frozen.hpp`, `examples/frozen/README.md`.
 
 **Glosten–Milgrom setting** — The model the arena borrows: a dealer earns the spread from uninformed flow, pays it to an informed trader, and infers value from order flow.
 
@@ -101,7 +105,11 @@ Terms are grouped and sorted alphabetically within each group.
 
 **Strategy** — A plain C++ struct that receives a `MarketView` and returns an `ActionBatch`, compiled in and never loaded at runtime. *Where:* `arena/strategy.hpp`.
 
+**Strategy setting** — An integer field of a strategy of your own that a run may set on its name, `imbalance+ratio=5`, because the strategy lists it in its optional `settings()` member with the range it accepts. Recorded as a condition of the run, never fingerprinted; taken by the lab programs only. A built-in strategy's fields are `--set=` names instead. *Where:* `docs/RUNNER.md`.
+
 **Uninformed flow** — Trading by participants that cannot see the fundamental: the makers' income.
+
+**Zero intelligence (`zi`)** — The floor a candidate has to clear, after Gode and Sunder: random limit orders drawn uniformly around the mid, one at a time, within a position budget, with no view at all. It loses about 92 a session on the standard block, mostly in spread. *Where:* `arena/strategies/zi.hpp`, `docs/RUNNER.md`.
 
 ## Inside a session
 
@@ -163,6 +171,8 @@ Terms are grouped and sorted alphabetically within each group.
 
 **Admissible** — An arm whose sessions all pass the health gate; failing seeds are never dropped.
 
+**Admission (of a suite file)** — The check a suite file must pass before any candidate runs: its placebo arm, on every seed of its block, must pass the health gate. Otherwise `suite_lab` writes nothing and exits 3, naming the failing seeds; `/reproduce` admits again. A calibrated market is admitted the same way. *Where:* `docs/RUNNER.md`.
+
 **Arm** — One occupant of the seat run on every seed of a block.
 
 **Book-to-fundamental gap (market health)** — The mean |mid − V| in ticks, printed first: a book loose from the fundamental is not a market.
@@ -175,11 +185,15 @@ Terms are grouped and sorted alphabetically within each group.
 
 **Health gate** — The suite's per-session test: book close to V and two-sided, no BookFull, ended on time, replay matched.
 
+**Holdout block** — `holdout`, seeds 1,000,000..1,000,063: a confirmatory block shared with no other and used by no example. Tune on `standard`, then report once on `holdout`, beside the standard run and never pooled with it. *Where:* `docs/RUNNER.md`.
+
+**Holm correction** — A step-down adjustment of p-values that keeps the chance of any false separation among a run's value comparisons at 5%. Printed beside the raw intervals when a run has more than one value comparison, and across every cell of `families.txt`; the metric rows are not corrected. *Where:* `docs/REPORT.md`.
+
 **Inert** — A seat that sent no orders; its arm must equal the placebo arm.
 
 **Interval (95%)** — The paired mean ± t × standard error.
 
-**Many comparisons** — The report prints how many separations chance alone would produce.
+**Many comparisons** — The report prints how many separations chance alone would produce, and a Holm correction across the value comparisons.
 
 **No-seat check** — Each placebo session must hash the same as the line-up without a seat.
 
@@ -211,13 +225,17 @@ Terms are grouped and sorted alphabetically within each group.
 
 **Seat** — The slot a candidate occupies, appended after the line-up and never informed. Its real delay is `now_ns − as_of_ns`, whatever the strategy declares.
 
-**Seed block** — A named set of seeds: `standard` is 42..105; `smoke`, 42..45, shows a strategy runs.
+**Seed block** — A named set of seeds: `standard` is 42..105; `smoke`, 42..45, shows a strategy runs; `holdout` is the confirmatory block.
+
+**Sensitivity protocol** — `/compare NAME sensitivity`: the run repeated under a fixed grid of conditions (the seat's delay, the amount of noise flow, the line-up), each a suite of its own, never pooled. A result holds if it separates with standard's sign in every admissible condition. *Where:* `docs/RUNNER.md`.
 
 **Smallest resolvable effect (`resolvable`)** — About 2.8 × the paired standard error.
 
 **Standard error (paired)** — The standard deviation of per-seed differences over √n; every arena result carries it.
 
-**Suite** — A named, versioned set of conditions defined in code; a different set is a new suite, never a flag.
+**Suite** — A named, versioned set of conditions, defined in code or in a suite file; a different set is a new suite, never a flag.
+
+**Suite file** — A suite of your own written down as `suites/NAME.cfg`: a name, a version, the opposing line-up, the session length, the seat's delay, a seed block and reference parameters. The seat, the placebo, the health gate and the step ceiling stay fixed. Its whole definition is among the run's conditions with a digest, so it has a fingerprint of its own and reproduces without the file; read by `suite_lab` only, after admission. *Where:* `docs/RUNNER.md`, `examples/suites/slow_seat.cfg`.
 
 **Sweep** — One parameter varied over several values on shared seeds.
 
@@ -233,7 +251,11 @@ Terms are grouped and sorted alphabetically within each group.
 
 **Depth (of a tape)** — How much a data file holds: order by order (L3, every order), price levels (L2, the size at each price) or trades only. Calibration needs L2 or L3; replay needs L3.
 
+**Held-back part (`holdback=`)** — The last part of a tape, by events, that `/calibrate NAME holdback=PCT` keeps from the search and then measures, beside how much the tape's own two parts differ. *Where:* `docs/DATA.md`.
+
 **History cannot react** — The label replay leads with: a recorded order arrives when it did, whatever the strategy does, so what a strategy earns in a replay is the most the recorded flow could have given it, not what would have happened.
+
+**Identification** — Whether one parameter set alone fits a tape. `/calibrate` lists every other set the search ran whose matched statistics are within two standard errors of the chosen one's; any listed means the tape cannot tell them apart.
 
 **Importer** — The code that reads one outside format (LOBSTER, Databento, Tardis, Binance, Coinbase, Kraken, ITCH, any CSV) into a tape. Written from each format's published documentation and tested on hand-made samples in `examples/data/`.
 
@@ -244,6 +266,8 @@ Terms are grouped and sorted alphabetically within each group.
 **Prints per move** — How many prints it takes the mid to move one tick: 20 over the mean squared change of the mid, in ticks, across every run of 20 prints. Calibration's measure of pace.
 
 **Replay (of a tape)** — `/replay NAME`: an order-by-order tape played back through the matching engine, with one strategy trading in it. With no strategy it is a control: the replayed book must equal the tape's own after every event. *Where:* `docs/DATA.md`, "Replay".
+
+**Stylised facts** — The statistics a market model is usually checked against (return and |return| autocorrelation, fat tails, volume against volatility, spread and depth distributions, order flow), printed by `/facts` and `/calibrate` beside the simulated market's, read in intervals of 10 of each tape's own mean times between prints. A diagnostic: never fitted, never a pass or a fail. *Where:* `docs/DATA.md`.
 
 **Tape** — The one internal format every data file is converted to, in `data/NAME.tape`: integer columns of time, event (add, cancel, trade, level, reset), order id, side, price in ticks and quantity, behind a header with the source's `cksum`. Never committed. *Where:* `docs/DATA.md`.
 

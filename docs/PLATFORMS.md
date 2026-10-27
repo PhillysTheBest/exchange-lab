@@ -40,13 +40,17 @@ engine determinism hash, the session and frame hashes, the sweep's seed-42 hashe
 three suite fingerprints, the `cksum` of a smoke run's `sessions.csv` and
 `participants.csv`, and of every tape the samples and the known-answer control produce.
 The four run files that hold derived statistics come last, labelled `derived.*`, so a
-difference in arithmetic is told apart from a difference in the market. It then diffs
+difference in arithmetic is told apart from a difference in the market, followed by
+`derived.holm.report.txt`: a two-candidate smoke report, the only one that carries the Holm
+correction's p-values. It then diffs
 the result with `tests/canonical.txt`, recorded on Linux x86-64 with GCC 13. The first line
 that differs names what diverged first.
 
 **Result.** All 25 lines are identical on all five CI targets, the derived lines
 included, and under every compiler configuration tried locally: GCC and clang, libstdc++
-and libc++, and each floating-point contraction setting below.
+and libc++, and each floating-point contraction setting below. The 26th line,
+`derived.holm.report.txt`, was added for v1.0.0 and is identical on Linux (GCC 13.3) and
+Windows (MSYS2 GCC 13.2) locally; CI checks it on the other three targets.
 
 ## What each platform-specific piece is for
 

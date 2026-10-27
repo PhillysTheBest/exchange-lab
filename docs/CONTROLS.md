@@ -139,7 +139,8 @@ which no test produced before.
 
 ## Not built
 
-- **A zero-intelligence baseline.** `roundtrip` is the dumbest possible strategy, but a
-  random limit-order strategy would be a better floor to publish beside real candidates.
-- **A holdout block** of seeds used by no test or example, for reporting after tuning on
-  `standard`. It is one row in `kSeedBlocks`, left until people tune against the report.
+- ~~A zero-intelligence baseline~~ is built: `zi`, a floor to publish beside real candidates
+  rather than a control ([`RUNNER.md`](RUNNER.md#the-floor-zi)). It has no planted defect
+  because it asserts nothing about the evaluator; `test_zi_floor` checks the strategy itself.
+- ~~A holdout block~~ is built: `holdout`, 1,000,000..1,000,063, confirmatory and never
+  pooled with `standard` ([`RUNNER.md`](RUNNER.md), "The seeds").

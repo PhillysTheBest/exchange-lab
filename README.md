@@ -25,7 +25,7 @@ build/release/exchange-lab    # run it from the repository root
 You get a prompt. Try these four commands:
 
 ```
-> /learn 1                                  # the first of nine guided exercises
+> /learn 1                                  # the first of eleven guided exercises
 > /add examples/strategies/imbalance.hpp    # install a strategy: one C++ header
 > /compare imbalance smoke                  # score it on 4 seeds against an empty seat
 > /watch imbalance                          # watch it trade live; q comes back
@@ -50,13 +50,14 @@ project is built to show.
 | `/learn [N]` | the guided exercises, from one order book to a strategy of your own |
 | `/strategies` | the built-in strategies, and the ones you installed |
 | `/add PATH` | install a strategy of your own |
-| `/compare NAME[,NAME...] [smoke] [wide\|busy\|all\|market=M]` | score strategies in the same seat of the same market, and print the report |
+| `/compare NAME[,NAME...] [smoke\|holdout] [wide\|busy\|all\|sensitivity\|market=M\|suite=S]` | score strategies in the same seat of the same market, and print the report; tune on the standard block, confirm once on `holdout`; `suite=S` runs a suite of your own, written in a file |
 | `/runs`, `/report [RUN]` | list your runs; show one's report |
 | `/reproduce [RUN]` | re-run a run from its own record and compare every file |
 | `/watch [NAME,...] [seed=N]` | watch the market trade live, full screen |
 | `/sweep FLAGS` | run one market many times, changing one thing |
 | `/data add FILE`, `/data show NAME` | bring a market data file you have in as a tape, and see what it holds |
-| `/calibrate NAME` | set the simulated market to resemble a tape, behind a known-answer control |
+| `/calibrate NAME [holdback=PCT]` | set the simulated market to resemble a tape, behind a known-answer control; `holdback=30` checks the fit on the part it never saw |
+| `/facts NAME` | the stylised facts calibration does not fit, the tape's beside the simulated market's |
 | `/replay NAME [STRATEGY]` | play an order-by-order tape back through the engine, with one strategy in it |
 | `/controls` | check the evaluator itself against answers known in advance |
 | `/book` | an order book you drive by hand |
@@ -114,7 +115,8 @@ replay of history. What it adds:
 - `/watch` to see a whole market: two makers, an informed trader, noise traders and momentum.
 - `/add` and `/compare` to write a strategy and learn where its profit really comes from:
   spread earned, the price move after each fill, carry to the close, and who paid for it.
-- `/learn` takes you through all of it in nine exercises; every command in them was run as
+- `/learn` takes you through all of it in eleven exercises: the tenth is a whole study from
+  hypothesis to holdout, the eleventh a strategy's settings and a suite of your own; every command in them was run as
   written. [`GLOSSARY.md`](GLOSSARY.md) defines every term.
 
 ## For researchers
@@ -123,7 +125,17 @@ replay of history. What it adds:
   comparable only if their fingerprints match. Scenario families (`wide`, `busy`) are
   reported side by side, never pooled.
 - **Honest statistics.** Paired differences with intervals, the smallest effect a seed count
-  can resolve, a count of interval tests, and a measured noise floor of about ±2 a session.
+  can resolve, a count of interval tests with a Holm correction across the value comparisons,
+  and a measured noise floor of about ±2 a session.
+- **A floor, a holdout and a sensitivity grid.** `zi`, a zero-intelligence strategy, is the
+  baseline a candidate has to beat, not just the empty seat. Tune on the standard seeds,
+  confirm once on the `holdout` block, which no example touches, and ask whether the result
+  survives a fixed grid of changed conditions (`/compare NAME sensitivity`).
+- **Conditions of your own, kept as strict.** A strategy's settings go on its name
+  (`imbalance+ratio=5`) and are recorded with the run. A different market, line-up, session
+  length or seed block is a suite file: it has its own fingerprint, is admitted only if its
+  placebo passes the health gate, and reproduces from the run's record without the file
+  ([`docs/RUNNER.md`](docs/RUNNER.md#a-suite-of-your-own)).
 - **Known limits.** One instrument, one informed trader, no second venue, no quote fade, and
   a thin book. Results are statements about this instrument, not about trading.
   [`docs/RUNNER.md`](docs/RUNNER.md#known-weaknesses) lists the runner's own weaknesses.
@@ -168,6 +180,10 @@ make bench                    # the engine's benchmarks
 
 ## Scope
 
+A coding agent can write a strategy and read a report beside the app
+([`docs/CODING-AGENT.md`](docs/CODING-AGENT.md)); a model trained elsewhere can run frozen into
+integers ([`examples/frozen/`](examples/frozen/README.md)). No model is ever called from a session.
+
 **Not built, on purpose:** a browser or desktop interface, an AI model, live trading, a
 network connection of any kind (data files are read from disk, never fetched), order amend,
 stop orders and auctions.
@@ -180,11 +196,17 @@ stop orders and auctions.
 | `include/px/`, `src/` | the matching engine |
 | `arena/` | the simulated market, its strategies, the runner, the controls and the viewer |
 | `marketdata/` | your own data: the tape, the importers, calibration and replay |
-| `examples/` | a complete strategy of your own to copy, and made-up data files to import |
+| `examples/` | a complete strategy of your own to copy, a frozen learned model, and made-up data files to import |
 | `tests/`, `bench/`, `results/` | tests, benchmarks, and the committed evidence behind every number |
-| `docs/` | [`LEARN`](docs/LEARN.md), [`APP`](docs/APP.md), [`ARENA`](docs/ARENA.md), [`RESULTS`](docs/RESULTS.md), [`RUNNER`](docs/RUNNER.md), [`REPORT`](docs/REPORT.md), [`CONTROLS`](docs/CONTROLS.md), [`REPRODUCE`](docs/REPRODUCE.md), [`DATA`](docs/DATA.md), [`ENGINE`](docs/ENGINE.md), [`PLATFORMS`](docs/PLATFORMS.md) |
+| `docs/` | [`LEARN`](docs/LEARN.md), [`CODING-AGENT`](docs/CODING-AGENT.md), [`APP`](docs/APP.md), [`ARENA`](docs/ARENA.md), [`RESULTS`](docs/RESULTS.md), [`RUNNER`](docs/RUNNER.md), [`REPORT`](docs/REPORT.md), [`CONTROLS`](docs/CONTROLS.md), [`REPRODUCE`](docs/REPRODUCE.md), [`DATA`](docs/DATA.md), [`ENGINE`](docs/ENGINE.md), [`PLATFORMS`](docs/PLATFORMS.md) |
 
-## Licence and issues
+## Licence, citation and issues
 
-There is no licence yet, so all rights are reserved until one is added. Questions and bugs go
-in [GitHub Issues](https://github.com/PhillysTheBest/exchange-lab/issues).
+Apache License 2.0 ([`LICENSE`](LICENSE), [`NOTICE`](NOTICE)). The licence covers the whole
+repository: the code, the documentation, the committed evidence and the sample data files in
+`examples/data/`, which were made up by hand. To cite exchange-lab, use
+[`CITATION.cff`](CITATION.cff) (GitHub shows it as "Cite this repository"); cite a tagged
+release, not `main`; [`CHANGELOG.md`](CHANGELOG.md) says what each release changed and which
+fingerprints moved. Questions and bugs go in
+[GitHub Issues](https://github.com/PhillysTheBest/exchange-lab/issues), and
+[`CONTRIBUTING.md`](CONTRIBUTING.md) sets out the rules a change has to keep.

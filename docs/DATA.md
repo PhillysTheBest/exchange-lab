@@ -17,13 +17,16 @@ replay and its control, and what went wrong on the way.
 > /data show demo-2012-06-21
 > /calibrate --known=known          # a tape whose answer is known in advance
 > /calibrate known                  # writes markets/known.cfg
+> /calibrate known holdback=30      # fit the first 70%, check the fit on the rest
+> /facts known                      # what was not fitted: the stylised facts, side by side
 > /compare imbalance market=known   # the standard experiment, on that market
 > /replay demo-2012-06-21           # the replay's control: the book must be the tape's
 > /replay demo-2012-06-21 maker     # one strategy trading in the recorded market
 ```
 
-Without the app: `make data FILE=path [OPTS='name=x']`, `make calibrate TAPE=name`,
-`make compare CANDIDATES=a MARKET=name` and `make replay TAPE=name [STRATEGY=s]`. The
+Without the app: `make data FILE=path [OPTS='name=x']`, `make calibrate TAPE=name
+[HOLDBACK=30]`, `make facts TAPE=name`, `make compare CANDIDATES=a MARKET=name` and
+`make replay TAPE=name [STRATEGY=s]`. The
 programs are `build/release/ingest`, `calibrate` and `replay`.
 
 ## What it is, and what it is not
@@ -188,6 +191,88 @@ confusion described under "What was wrong on the way", where two such markets ha
 the same pace. Read a calibrated market's parameters as one market that fits the statistics,
 not as the only one.
 
+## How well the parameters are identified
+
+The robustness table shows two different markets fitting one tape. `/calibrate` now says so
+for every tape. It measures the calibrated market's sessions one seed at a time, takes each
+matched statistic's standard error across the eight seeds, and lists every other parameter
+set the search ran on all eight seeds whose statistics all lie within two standard errors
+of the chosen one's. On the known-answer tape:
+
+```
+   NOT UNIQUELY IDENTIFIED: 1 of the 146 other parameter sets the search ran on all 8 seeds
+   give statistics within 2 s.e. of this one's (s.e. spread 2, size 5, pace 27): 3 / 50 / 20000.
+   The tape cannot tell them apart. The one written is the closest, not the only one that fits.
+```
+
+The truth is 3 / 40 / 20000, and calibration found it. The tape cannot tell `noise.qty` 40
+from 50, which is also why the control accepts one grid step. The list is a lower bound: it
+covers only the parameter sets the search happened to run, so "none" means none of those,
+not none at all. `markets/NAME.cfg` records it (`identified.*`). Those lines are a result,
+not a condition, so they move no fingerprint.
+
+## Holding back part of the tape
+
+`/calibrate NAME holdback=30` (or `make calibrate TAPE=name HOLDBACK=30`, 10 to 50) fits the
+first 70% of the tape's events and then measures the last 30%, which the search never saw.
+The book is still built from the whole tape, so the held-back part starts from the book as
+it really stood. Beside the market's distance from the held-back part it prints the tape's
+own first part against its held-back part, as a yardstick for how much a tape moves:
+
+```
+2b. The held-back part, which calibration never saw: the market's statistics against it, and
+    the tape's own two parts against each other, as a yardstick for how much a tape moves.
+   statistic                                             first     held      market    market-held   first-held
+   spread: mean spread, hundredths of a tick             447       441       443       0.4%          1.3%
+   size: mean print / mean touch depth, thousandths      378       374       389       4.0%          1.0%
+   pace: prints per one-tick move, hundredths            566       505       552       9.3%          12.0%
+```
+
+**How to read it.** A market as far from the held-back part as the tape's first part is fits
+as well as the tape agrees with itself. Here the pace moved 12% between the tape's two parts,
+and the market is 9.3% from the held-back part. That says the fit did not depend on which part
+it saw. It does not say the market fits better than the data agrees with itself, and the
+report does not claim that. The market file records the holdback among its conditions
+(`calibration.holdback`), so a market fitted on part of a tape is a different market, with a
+different fingerprint, from one fitted on all of it. Both parts must have enough prints;
+otherwise it is refused.
+
+## Stylised facts: what was not fitted
+
+Calibration matches three statistics. The literature uses others to ask whether a market
+model looks like a market (Cont 2001, "Empirical properties of asset returns: stylized facts
+and statistical issues"). `/facts NAME` (`make facts TAPE=name`) prints them for the tape, the
+standard market and, if `markets/NAME.cfg` exists, the market calibrated to it. `/calibrate`
+prints them too, as its step 4, against the market it just made. They are a **diagnostic**:
+nothing is fitted to them and nothing passes or fails on them.
+
+**Sampling.** Neither clock is used. Each tape is cut into intervals of 10 of **its own** mean
+times between prints, so a real day and a 25 ms session are compared at the same number of
+prints an interval. A return is the change of the mid, in half ticks, from the end of one
+interval to the end of the next. On a tape read as trades only it is the print price.
+Intervals restart at every reset (a new session or day), and no return or lag crosses one.
+Every statistic is computed with 128-bit integer sums and an integer square root
+(`stylised_facts()` in `marketdata/stats.hpp`), like everything else a tape is measured by.
+
+| Statistic | What it shows | What it does not |
+|---|---|---|
+| return autocorrelation, lag 1 | whether one interval's move predicts the next. Outside ±2/√n it is told apart from zero | why. Bid-ask bounce pushes it negative (Roll), and quotes that update slowly push it positive |
+| \|return\| autocorrelation, lags 1 and 10 | volatility clustering: positive and slow to decay in real markets | where clustering comes from. The fundamental here jumps at a constant rate, so the simulation has little to cluster |
+| returns beyond 3 s.d., per 10,000 | fat tails at this interval: a normal distribution gives 27 | a tail exponent. Moves are whole ticks and many intervals have none, so it is coarse |
+| volume against \|return\| | whether busy intervals are volatile ones | which drives which. At a fixed number of prints an interval it mostly reads how print sizes vary |
+| spread and touch depth, 10th, 50th and 90th percentiles; time at one tick | the shape of the book behind the means calibration fits | anything about queue dynamics |
+| orders added and cancels per print; cancels per order added | how much quoting a trade takes (needs an order-by-order tape) | an exchange's message mix, which depends on order types the arena does not have |
+
+On the known-answer tape the two columns agree closely: the return autocorrelation is +0.046
+and +0.064 inside a ±0.080 band, and the spread percentiles are 3 / 5 / 6 for both. That
+shows only that the measurement reads a simulated tape and a simulation alike, because the
+tape is the same model. The standard market itself, at the same sampling, has a lag-1 return
+autocorrelation of +0.131 (band ±0.066) and almost none in |return| at lag 10 (−0.027). Why
+the mid trends is not established; makers that learn the price from the flow a step at a time
+would do it. The missing clustering is expected: the fundamental jumps at a constant rate. Read on a real tape, those two lines are
+the first place the invented market is likely to differ from a real one. That is a property
+of the model to report, not a defect calibration can fix: no parameter it moves changes them.
+
 ## A calibrated market in use, and reproduced
 
 `/calibrate NAME` writes `markets/NAME.cfg`: the statistics matched, the parameters set, the
@@ -294,6 +379,8 @@ stream again.
 - Downloading data, an API key, a vendor account, or any network access.
 - Matching the real clock. Calibration matches ratios; sessions stay 25 ms.
 - Fitting the informed trader, or any statistic no public data can show.
+- A realism score or gate built from the stylised facts. They are printed side by side and
+  never combined into a pass or a fail.
 - Compressed files, which must be opened first.
 - Committing any data, or publishing a result made from it in `results/`.
 - Floating point anywhere: importers, statistics and calibration are integer, so a tape and a

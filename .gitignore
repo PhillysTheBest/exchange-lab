@@ -26,3 +26,7 @@ runs/
 # it. A tape made from data you paid for must never be committed.
 /data/
 /markets/
+
+# Suites of your own (docs/RUNNER.md, "A suite of your own"), like an installed
+# strategy. The worked example is examples/suites/.
+/suites/

@@ -1,0 +1,67 @@
+name: Bug report
+description: Something built, ran or printed differently from what the documentation says.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A bug in exchange-lab is reproducible by construction: the same command on the same
+        release gives the same bytes. The fields below are what it takes to reproduce yours.
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and architecture
+      placeholder: "Windows 11 x86-64, MSYS2 UCRT64 / Ubuntu 24.04 x86-64 / macOS 14 ARM64"
+    validations:
+      required: true
+  - type: input
+    id: compiler
+    attributes:
+      label: Compiler and version
+      description: The first line of `g++ --version` or `clang++ --version`.
+      placeholder: "g++ (Rev2, Built by MSYS2 project) 13.2.0"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Release or commit
+      description: The tag, or `git rev-parse --short HEAD`, and whether the tree had local changes.
+      placeholder: "v1.0.0, clean"
+    validations:
+      required: true
+  - type: textarea
+    id: build
+    attributes:
+      label: Build command
+      description: Exactly as you ran it, including any BUILD=, CXX= or SAN= setting.
+      render: shell
+      placeholder: "make app"
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction command
+      description: The command, or the app command, that shows the bug, with its seed and every flag.
+      render: shell
+      placeholder: "build/release/exchange-lab -c '/compare maker smoke'"
+    validations:
+      required: true
+  - type: input
+    id: fingerprint
+    attributes:
+      label: Run fingerprint
+      description: >-
+        For a run under runs/, the `fingerprint=` line of its outcome.cfg. For a sweep or the
+        viewer, the session hash it printed. Write "none" if the command made neither.
+      placeholder: "d461c30ab2446acf"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+      description: Paste the output. If `make canonical` differs, paste its diff too.
+    validations:
+      required: true

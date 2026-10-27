@@ -1,8 +1,10 @@
 # Learning with exchange-lab
 
-A guided path through exchange-lab in nine short exercises, each building on the last. It
+A guided path through exchange-lab in eleven short exercises, each building on the last. It
 starts with one order book, goes on to a strategy of your own, scored, controlled and
-reproduced, and ends with a file of market data. It is written for students meeting market microstructure for the first time,
+reproduced, brings in a file of market data, runs one study the way a paper should run it,
+and ends by changing a strategy's settings and the market itself without weakening the
+experiment. It is written for students meeting market microstructure for the first time,
 and for researchers who want the tour before the design documents.
 [`GLOSSARY.md`](../GLOSSARY.md) defines every term used here.
 
@@ -296,7 +298,7 @@ simulated market to resemble one, keeping in mind what each can and cannot tell 
 > /compare maker smoke market=known
 ```
 
-**Look for.** The sample is a made-up LOBSTER file, so it carries no licence: 771 events, read
+**Look for.** The sample is a made-up LOBSTER file, so it carries no vendor's licence: 771 events, read
 order by order. `/replay` alone runs the replay's control and ends `The control holds: replay
 plays this tape back as it was.` With `maker` in it, the report opens `History cannot react`
 and counts where history and the strategy collided: 1300 of history's recorded flow traded
@@ -311,9 +313,158 @@ calibration need many prints? A calibrated market keeps the standard informed tr
 would a strategy that beats it have learned about the real market? Why does a replay flatter a
 market maker? **Read next:** [`docs/DATA.md`](DATA.md).
 
+## 10. A study, start to finish (advanced)
+
+**Goal:** the whole discipline in one go: say what you expect before you look, tune on one set
+of seeds, confirm once on another, read the uncertainty, check the market you ran on, and ask
+whether the answer survives a change. Do exercises 4, 5 and 9 first: this one uses `imbalance`
+and the `known` tape.
+
+**1. A hypothesis, written down first.** "`imbalance` does better than chance." Chance is
+`zi`, the built-in zero-intelligence strategy: random limit orders around the mid, no view at
+all. What would refute it: the row `imbalance vs zi` not separating, or separating below zero.
+
+```
+> /compare zi,imbalance
+```
+
+**2. Tune on the standard block, and only there.** A pickier variant that acts only when the
+touch is five times lopsided, not three:
+
+```bash
+mkdir -p ~/strategies
+sed 's/Imbalance/Picky/; s/"imbalance"/"picky"/; s/ratio = 3;/ratio = 5;/' examples/strategies/imbalance.hpp > ~/strategies/picky.hpp
+```
+
+```
+> /add ~/strategies/picky.hpp
+> /compare imbalance,picky
+```
+
+**3. Confirm once, on seeds you have not looked at.**
+
+```
+> /compare imbalance,picky holdout
+```
+
+**4. Check the market, then whether the answer survives a change.**
+
+```
+> /calibrate known holdback=30
+> /facts known
+> /compare picky sensitivity
+```
+
+**Look for.** Step 1: `imbalance vs zi` is +56.90 ± 4.87, separated, ahead on 61 of 64 seeds:
+`imbalance` loses (−34.92) but loses much less than chance (−91.82). Its `pairing` is −52%:
+pairing *added* variance, because two unrelated strategies share little noise. With three
+value comparisons, the report prints a Holm correction beside them, and all three survive it.
+Step 2: `picky vs imbalance` is +19.05 ± 1.88, `pairing` 81%: two versions of one strategy share
+most of their noise, so a small change is resolvable (±5.25). Step 3: the holdout report says
+`confirmatory`, and the gain holds on seeds the tuning never saw, +18.27 ± 2.27. Report both
+runs, side by side, never pooled. Step 4: the calibration prints `NOT UNIQUELY IDENTIFIED`
+(3 / 50 / 20000 fits as well as the 3 / 40 / 20000 it recovered). Its held-back part puts the
+market 9.3% from the unseen pace, against the 12.0% by which the tape's own two parts differ.
+`/facts` shows the standard market's lag-1 return autocorrelation, +0.131, outside its ±0.066
+band. `picky vs placebo` holds its sign in 6 of 6 conditions, but its size runs from 26%
+(`no-rival`) to 111% of standard's.
+
+**Think about.** What would you have concluded from step 1 against the placebo alone? If you
+had tried twenty ratios on the standard block and kept the best, what would the holdout run
+still tell you, and what would it not? The gain held, but `picky` still loses money against
+the placebo in every condition: what is the hypothesis you have actually confirmed? Without the
+rival maker, `picky` loses a quarter as much: whose spread was it paying (`/report` the
+`no-rival` condition, and read its attribution)? Why can a calibration that recovers its known
+answer still not identify it? **Read next:** [The seeds](RUNNER.md#the-seeds),
+[The floor: `zi`](RUNNER.md#the-floor-zi) and [Sensitivity](RUNNER.md#sensitivity) in
+`docs/RUNNER.md`; [Many comparisons](REPORT.md#many-comparisons) in `docs/REPORT.md`;
+[Stylised facts](DATA.md#stylised-facts-what-was-not-fitted) in `docs/DATA.md`.
+
+## 11. Change a setting, then the market
+
+**Goal:** ask a new question without weakening the experiment: change a number in your
+strategy from the command line, then write down a market of your own as a suite file, score
+against it, and reproduce it. Do exercises 4, 5 and 8 first: this one uses `imbalance`.
+
+**1. A setting on the strategy's name.** `imbalance` names the fields a run may set in its
+`settings()` member, so exercise 10's `picky` needs no second file:
+
+```
+> /compare imbalance+ratio=5,imbalance
+> /sweep --strategies=maker,rival,informed,noise:2,momentum,imbalance --param=imbalance.ratio --values=3,5,8 --seeds=8
+```
+
+**2. A suite of your own.** Copy the worked example, the standard market with the seat at
+100 µs instead of 10 µs, and score against it:
+
+```bash
+mkdir -p suites
+cp examples/suites/slow_seat.cfg suites/slow_seat.cfg
+```
+
+```
+> /compare imbalance suite=slow_seat
+```
+
+**3. Reproduce it, without the file.** Change the file, try to reproduce, then move the file
+away and try again:
+
+```bash
+sed 's/^seat.reaction_ns=100000$/seat.reaction_ns=50000/' examples/suites/slow_seat.cfg > suites/slow_seat.cfg
+```
+
+```
+> /reproduce imbalance-slow_seat-file
+```
+
+```bash
+mv suites/slow_seat.cfg ~/slow_seat.cfg
+```
+
+```
+> /reproduce imbalance-slow_seat-file
+```
+
+**4. A suite that is not a market.** A third noise trader, at the standard delay:
+
+```bash
+sed 's/^suite.name=slow_seat$/suite.name=crowded/; s/noise:2/noise:3/; s/^seat.reaction_ns=100000$/seat.reaction_ns=10000/' examples/suites/slow_seat.cfg > suites/crowded.cfg
+```
+
+```
+> /compare imbalance suite=crowded
+```
+
+**Look for.** Step 1: `imbalance+ratio=5 vs placebo` is −15.87 ± 3.00 and `imbalance vs
+imbalance+ratio=5` −19.05 ± 1.88, exercise 10's `picky` numbers to the digit, because it is the
+same strategy. The fingerprint is standard's, `9e8d07b24ee5d562`: a setting belongs to the
+candidate, not to the market. The sweep ends with a table for `imbalance` itself: ratios 5 and 8
+gain +401.45 and +676.58 on ratio 3, mostly by trading less (4,424 orders, then 1,642, then 88).
+Its health table puts the book about 5 ticks from the fundamental, because a sweep session runs
+200,000 requests, not the suite's 25 ms. Step 2: the report opens `suite slow_seat v1, block
+file`, admits the suite on 64 seeds, and gives `imbalance vs placebo` −7.60 ± 1.94 on 56 fills,
+against −34.92 on 310 at 10 µs. The fingerprint is `eabf7a1767548125`, not standard's. Step 3:
+the first `/reproduce` is refused before running (exit 2): `suites/slow_seat.cfg has changed
+since the run (seat.reaction_ns=100000 in the run, seat.reaction_ns=50000 now): not the same
+suite`. With the file gone, the run is rebuilt from its own `suite.cfg`, admitted again, and
+every file is `identical`: `REPRODUCED`. Step 4 writes nothing and exits 3: `suite crowded is
+not admitted: its placebo fails the health gate on 3 of 64 seeds: 79 (gap), 94 (gap), 105
+(gap)`.
+
+**Think about.** Why does a setting leave the fingerprint alone when a suite file moves it?
+At 100 µs `imbalance` loses about a fifth as much: divide `spread earned` by `fills` in both reports.
+Is the slower seat better per trade, or does it just trade less? The sweep said the same about
+`ratio` on a market 5 ticks loose. Which of its numbers would you report, and which would you
+re-run as a suite? `crowded` fails on 3 of 64 seeds. Why not drop those three and keep the
+other 61? If you had written `slow_seat.cfg` after seeing the sweep, what would a run on it
+prove? **Read next:** [A strategy's own settings](RUNNER.md#a-strategys-own-settings) and
+[A suite of your own](RUNNER.md#a-suite-of-your-own) in `docs/RUNNER.md`, including when a
+`/sweep` is enough; [`docs/REPRODUCE.md`](REPRODUCE.md).
+
 ## Where to go from here
 
-Write a second strategy, compare it with your first on the standard block and `SUITE=all`, and
-report it as the project does: health first, the paired difference with its standard error, and
-a plain statement when an interval straddles zero. Then work out from `arena/fair_value.hpp` why
+Write a second strategy and run exercise 10 on it: a hypothesis first, tuning on the standard
+block, one confirmation on `holdout`, `zi` beside it, and `sensitivity` after. Report it as the
+project does: health first, the paired difference with its standard error, the Holm line when
+there is more than one comparison, and a plain statement when an interval straddles zero. Then work out from `arena/fair_value.hpp` why
 the expected adverse markout must be zero for any strategy you write ([And the control says it is not adverse selection](RESULTS.md#and-the-control-says-it-is-not-adverse-selection)).

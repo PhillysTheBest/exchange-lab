@@ -30,6 +30,7 @@
 #include "arena/session.hpp"
 #include "arena/suite.hpp"
 #include "arena/suite_report.hpp"
+#include "arena/suite_file.hpp"
 #include "arena/controls.hpp"
 #include "arena/ui.hpp"
 #include "px/matching_engine.hpp"
@@ -69,6 +70,19 @@ constexpr std::uint64_t kPinnedSmokeFingerprint = 0xd461c30ab2446acfULL;
 // The scenario families, likewise pinned: a change needs a version bump.
 constexpr std::uint64_t kPinnedWideFingerprint = 0x9bb1a7c184ccb2d7ULL;
 constexpr std::uint64_t kPinnedBusyFingerprint = 0x5d735a9faa384bf5ULL;
+// The standard suite over the holdout block, the confirmatory seeds: pinned so
+// that the block cannot drift under the people who report on it.
+constexpr std::uint64_t kPinnedHoldoutFingerprint = 0x6e1fe05931a6f560ULL;
+// The sensitivity protocol's conditions over the smoke block, in
+// kSensitivityNames order after standard; busy is the family's own pin.
+constexpr std::uint64_t kPinnedSensitivityFingerprints[] = {
+    0xc84d3a36febd5f83ULL, // delay-5us
+    0x3899f12e9a01ff39ULL, // delay-20us
+    0xcc9bfe4fe4bc3243ULL, // thin
+    0x5d735a9faa384bf5ULL, // busy
+    0x20488d4a03f1b808ULL, // no-momentum
+    0x0fb101e0d939d17bULL, // no-rival
+};
 
 // ---- 1. the mirror against the engine ------------------------------------
 
@@ -695,7 +709,7 @@ void test_roster_from_spec() {
         }
     }
     std::printf("  spec: %zu named participants, all addable\n", listed);
-    PX_CHECK(listed == 8);
+    PX_CHECK(listed == 9);
 
     // Counts repeat a name, and the roster comes out in the order written.
     Roster r;
@@ -1208,6 +1222,348 @@ void test_suite_inert_arm() {
     }
 }
 
+// The zero-intelligence floor: it trades, it keeps to its budget on the path
+// and not only at the close, it replays, and the market it sits in stays one.
+void test_zi_floor() {
+    const suite::SuiteDef def = suite::standard_suite();
+    const suite::SeedBlock& blk = smoke_block();
+    const strategies::Zi zi;
+    for (std::uint64_t seed = blk.first; seed < blk.first + blk.count; ++seed) {
+        const suite::ArmRecord a = run_named(def, seed, "zi");
+        const suite::ArmRecord b = run_named(def, seed, "zi");
+        PX_CHECK(a.session.session_hash == b.session.session_hash);
+        PX_CHECK(a.session.healthy());
+        PX_CHECK(a.session.seat_orders > 100 && a.session.seat_fills > 10);
+        PX_CHECK(a.session.seat_max_abs_position <= static_cast<std::uint64_t>(zi.max_position));
+        PX_CHECK(!a.session.inert);
+    }
+}
+
+// ---- a strategy's own settings (arena/strategy_settings.hpp) ------------------
+
+// A strategy with the optional sixth member: three settings of three integer
+// types, one whose range is wider than its type.
+struct Tunable {
+    const char* name = "tunable";
+    SimTime reaction_ns = 10'000;
+    SimTime timer_ns = 0;
+    Qty qty = 10;
+    std::int64_t edge = 0;
+    std::uint8_t lean = 1;
+    template <class F>
+    void settings(F&& f) {
+        f("qty", qty, 1, 100);
+        f("edge", edge, -5, 5);
+        f("lean", lean, 0, 1000); // the type stops it at 255
+    }
+    void reset(std::uint64_t) {}
+    ActionBatch on_event(const MarketView&) { return ActionBatch{}; }
+};
+
+// The same strategy without the member: it must compile and refuse every setting.
+struct Plain {
+    const char* name = "plain";
+    SimTime reaction_ns = 10'000;
+    SimTime timer_ns = 0;
+    Qty qty = 10;
+    void reset(std::uint64_t) {}
+    ActionBatch on_event(const MarketView&) { return ActionBatch{}; }
+};
+
+using ApplyFn = bool (*)(StrategyHandle&, std::string_view, std::int64_t, std::string&);
+
+bool apply_real(StrategyHandle& h, std::string_view k, std::int64_t v, std::string& why) {
+    return h.apply_setting(k, v, why);
+}
+// Planted defects: one adapter that accepts a key it does not know, one that
+// clamps a value into range instead of refusing it.
+bool apply_lenient(StrategyHandle& h, std::string_view k, std::int64_t v, std::string& why) {
+    return h.apply_setting(k, v, why) || why.find("has no setting") != std::string::npos;
+}
+bool apply_clamping(StrategyHandle& h, std::string_view k, std::int64_t v, std::string& why) {
+    if (k == "qty") v = std::clamp<std::int64_t>(v, 1, 100);
+    if (k == "edge") v = std::clamp<std::int64_t>(v, -5, 5);
+    if (k == "lean") v = std::clamp<std::int64_t>(v, 0, 255);
+    return h.apply_setting(k, v, why);
+}
+
+// The checks, which the real adapter must pass and each defect must fail.
+bool refuses_unknown_key(ApplyFn apply) {
+    StrategyAdapter<Tunable> h(Tunable{});
+    std::string why;
+    return !apply(h, "qtty", 5, why) && !apply(h, "", 5, why) && h.get().qty == 10;
+}
+bool refuses_out_of_range(ApplyFn apply) {
+    StrategyAdapter<Tunable> h(Tunable{});
+    std::string why;
+    return !apply(h, "qty", 0, why) && !apply(h, "qty", 101, why) && !apply(h, "edge", -6, why) &&
+           !apply(h, "lean", 256, why) && h.get().qty == 10 && h.get().edge == 0 && h.get().lean == 1;
+}
+
+void test_strategy_settings() {
+    StrategyAdapter<Tunable> t(Tunable{});
+    StrategyAdapter<Plain> p(Plain{});
+    PX_CHECK(t.has_settings() && !p.has_settings());
+    PX_CHECK(t.setting_names() == "qty edge lean" && p.setting_names().empty());
+    std::string why;
+    PX_CHECK(t.apply_setting("qty", 42, why) && t.get().qty == 42);
+    PX_CHECK(t.apply_setting("edge", -5, why) && t.get().edge == -5);
+    PX_CHECK(t.apply_setting("lean", 255, why) && t.get().lean == 255);
+    PX_CHECK(!t.apply_setting("qtty", 1, why) && why == "tunable has no setting 'qtty'; its settings: qty edge lean");
+    PX_CHECK(!t.apply_setting("qty", 101, why) && why == "tunable+qty=101: outside 1..100");
+    PX_CHECK(!p.apply_setting("qty", 5, why) && why.find("plain has no settings member") == 0 && p.get().qty == 10);
+    // The pairing: each check holds for the real adapter and fails for its defect.
+    PX_CHECK(refuses_unknown_key(apply_real) && !refuses_unknown_key(apply_lenient));
+    PX_CHECK(refuses_out_of_range(apply_real) && !refuses_out_of_range(apply_clamping));
+
+    // The spec: canonical label, an id with no '=', and every refusal naming the token.
+    StrategySpec s;
+    PX_CHECK(parse_strategy_spec("imbalance+ratio=5+qty=20", s, why) && s.label() == "imbalance+qty=20+ratio=5" &&
+             s.id() == "imbalance+qty_20+ratio_5");
+    PX_CHECK(parse_strategy_spec("imbalance+qty=20+ratio=5", s, why) && s.label() == "imbalance+qty=20+ratio=5");
+    PX_CHECK(parse_strategy_spec("noise", s, why) && s.name == "noise" && s.settings.empty() && s.label() == "noise");
+    PX_CHECK(parse_strategy_spec("x+edge=-3", s, why) && s.settings.front().second == -3);
+    PX_CHECK(!parse_strategy_spec("x+ratio=five", s, why) && why.find("'ratio=five'") == 0);
+    PX_CHECK(!parse_strategy_spec("x+ratio=", s, why) && !parse_strategy_spec("x+=3", s, why));
+    PX_CHECK(!parse_strategy_spec("x+Ratio=3", s, why) && !parse_strategy_spec("+ratio=3", s, why));
+    PX_CHECK(!parse_strategy_spec("x+a=1+a=2", s, why) && why == "'x+a=1+a=2' sets a twice");
+    // A settings member reached through every wrapper the session uses.
+    LabelledHandle l(std::make_unique<StrategyAdapter<Tunable>>(Tunable{}), "tunable+qty=7");
+    PX_CHECK(std::string(l.name()) == "tunable+qty=7" && l.has_settings() && l.apply_setting("qty", 7, why));
+
+    // This build is an evidence build: a line-up or a candidate with a setting is
+    // refused, naming the token; one without is read exactly as before.
+    Roster r;
+    PX_CHECK(!roster_from_spec("maker,zi+band_ticks=4", RosterConfig{}, r, why) &&
+             why.find("'zi+band_ticks=4': settings are taken by the lab programs only") == 0);
+    PX_CHECK(roster_from_spec("maker,noise:2", RosterConfig{}, r, why) && r.size() == 3);
+    PX_CHECK(!roster_from_spec("maker,noise:x", RosterConfig{}, r, why) && why == "count after ':' is not a number");
+    std::vector<std::string> c{"zi+band_ticks=4"};
+    PX_CHECK(!suite::check_candidates(c, why) && why.find("settings are taken by the lab programs only") != std::string::npos);
+    // In a lab build a built-in is still refused, because its fields are --set= names.
+    Roster one;
+    PX_CHECK(!add_strategy_spec(StrategySpec{"zi", {{"band_ticks", 4}}}, RosterConfig{}, one, why, true) &&
+             why.find("zi is built in") != std::string::npos);
+    c = {"maker", "zi"};
+    PX_CHECK(suite::canonical_candidates(c, why) && c == (std::vector<std::string>{"maker", "zi"}));
+
+    // Recorded as conditions, never fingerprinted, and only when there are any.
+    const suite::SuiteDef def = suite::standard_suite();
+    auto named = [](const char* n) {
+        suite::CandidateInfo ci;
+        ci.name = n;
+        return ci;
+    };
+    suite::RunInfo info;
+    info.candidates.push_back(named("imbalance+qty=20+ratio=5"));
+    info.candidates.push_back(named("maker"));
+    const std::string cfg = suite::suite_cfg_text(def, smoke_block(), info);
+    PX_CHECK(cfg.find("\nsetting.imbalance+qty_20+ratio_5.qty=20\nsetting.imbalance+qty_20+ratio_5.ratio=5\n") !=
+             std::string::npos);
+    PX_CHECK(cfg.find("run.candidate.imbalance+qty_20+ratio_5.origin=") != std::string::npos);
+    const std::vector<std::string> cond = suite::condition_lines(cfg);
+    PX_CHECK(std::find(cond.begin(), cond.end(), "setting.imbalance+qty_20+ratio_5.ratio=5") != cond.end());
+    PX_CHECK(suite::conditions_text(def, smoke_block()).find("setting.") == std::string::npos);
+    suite::RunInfo plain_info;
+    plain_info.candidates.push_back(named("maker"));
+    PX_CHECK(suite::suite_cfg_text(def, smoke_block(), plain_info).find("setting.") == std::string::npos);
+    // A run whose candidate's setting was changed has different condition lines,
+    // which is what reproduce refuses on.
+    suite::RunInfo changed = info;
+    changed.candidates[0].name = "imbalance+qty=20+ratio=6";
+    PX_CHECK(suite::condition_lines(suite::suite_cfg_text(def, smoke_block(), changed)) != cond);
+}
+
+// ---- a suite of one's own (arena/suite_file.hpp) -----------------------------
+
+const char* const kSlowSeat = "# a comment\n"
+                              "suitefile.format=1\n"
+                              "suite.name=slow_seat\n"
+                              "suite.version=1\n"
+                              "suite.lineup=maker,rival,informed,noise:2,momentum\n"
+                              "suite.session_ns=25000000\n"
+                              "seat.reaction_ns=100000\n"
+                              "block.first_seed=42\n"
+                              "block.seeds=64\n";
+
+// The text with one line replaced (or, with `from` absent from it, appended).
+std::string edited(std::string text, const std::string& from, const std::string& to) {
+    const std::size_t at = text.find(from);
+    if (at == std::string::npos) return text + to + "\n";
+    return text.replace(at, from.size(), to);
+}
+
+using SuiteFp = std::uint64_t (*)(const std::string&);
+// The conditions' half of the fingerprint (the placebo hashes are the other).
+std::uint64_t fp_real(const std::string& text) {
+    suite::SuiteFile f;
+    suite::SuiteDef d = suite::standard_suite();
+    suite::SeedBlock b{"file", 0, 0};
+    std::string why;
+    if (!suite::parse_suite_file(text, f, why) || !suite::suite_from_file(f, d, b, why)) return 0;
+    return suite::suite_fingerprint(d, b, {});
+}
+// Planted defect: a fingerprint that leaves out the suitefile.* lines.
+std::uint64_t fp_without_definition(const std::string& text) {
+    suite::SuiteFile f;
+    suite::SuiteDef d = suite::standard_suite();
+    suite::SeedBlock b{"file", 0, 0};
+    std::string why;
+    if (!suite::parse_suite_file(text, f, why) || !suite::suite_from_file(f, d, b, why)) return 0;
+    d.definition.clear();
+    return suite::suite_fingerprint(d, b, {});
+}
+// Every field of the file, changed alone, must change the fingerprint: version
+// included, and a parameter of a participant that is not in the line-up.
+bool fingerprint_covers_every_field(SuiteFp fp) {
+    const std::string base = kSlowSeat;
+    const std::uint64_t f0 = fp(base);
+    if (f0 == 0) return false;
+    const std::pair<const char*, const char*> changes[] = {
+        {"suite.name=slow_seat", "suite.name=slow_seat2"},
+        {"suite.version=1", "suite.version=2"},
+        {"suite.lineup=maker,rival,informed,noise:2,momentum", "suite.lineup=maker,informed,noise:2,momentum"},
+        {"suite.session_ns=25000000", "suite.session_ns=20000000"},
+        {"seat.reaction_ns=100000", "seat.reaction_ns=100001"},
+        {"block.first_seed=42", "block.first_seed=43"},
+        {"block.seeds=64", "block.seeds=63"},
+        {"(absent)", "set.fader.qty=11"},
+        {"(absent)", "set.maker.half_spread_ticks=3"},
+    };
+    std::vector<std::uint64_t> seen{f0};
+    for (const auto& [from, to] : changes) {
+        const std::uint64_t f = fp(edited(base, from, to));
+        if (f == 0 || std::find(seen.begin(), seen.end(), f) != seen.end()) return false;
+        seen.push_back(f);
+    }
+    return true;
+}
+
+using SuiteReader = bool (*)(const std::string&, suite::SuiteFile&, std::string&);
+bool read_real(const std::string& t, suite::SuiteFile& f, std::string& why) { return suite::parse_suite_file(t, f, why); }
+// Planted defect: a reader that drops every line it does not know before reading.
+bool read_lenient(const std::string& t, suite::SuiteFile& f, std::string& why) {
+    std::string kept;
+    std::size_t at = 0;
+    while (at < t.size()) {
+        std::size_t end = t.find('\n', at);
+        if (end == std::string::npos) end = t.size();
+        const std::string line = t.substr(at, end - at);
+        at = end + 1;
+        if (!line.starts_with("suite.colour") && !line.starts_with("health.") && !line.starts_with("suite.step"))
+            kept += line + "\n";
+    }
+    return suite::parse_suite_file(kept, f, why);
+}
+bool refuses_what_a_file_cannot_set(SuiteReader read) {
+    suite::SuiteFile f;
+    std::string why;
+    for (const char* bad : {"suite.colour=red", "health.max_mean_gap_ticks=40", "suite.step_ceiling=10"}) {
+        if (read(edited(kSlowSeat, "(absent)", bad), f, why)) return false;
+    }
+    return true;
+}
+
+using Admit = bool (*)(const suite::SuiteDef&, const suite::SeedBlock&, std::vector<std::pair<std::uint64_t, suite::Health>>&,
+                       std::string&);
+bool admit_real(const suite::SuiteDef& d, const suite::SeedBlock& b,
+                std::vector<std::pair<std::uint64_t, suite::Health>>& failing, std::string& why) {
+    return suite::admit_suite(d, b, failing, why);
+}
+// Planted defect: an admission that looks only at the block's first seed.
+bool admit_first_only(const suite::SuiteDef& d, const suite::SeedBlock& b,
+                      std::vector<std::pair<std::uint64_t, suite::Health>>& failing, std::string& why) {
+    return suite::admit_suite(d, suite::SeedBlock{b.name, b.first, 1}, failing, why);
+}
+// A third noise trader breaks the book on seed 79 (docs/RUNNER.md, "Sensitivity"); 78 is fine.
+bool refuses_a_loose_placebo(Admit admit) {
+    suite::SuiteFile f;
+    suite::SuiteDef d = suite::standard_suite();
+    suite::SeedBlock b{"file", 0, 0};
+    std::string why;
+    std::string text = edited(kSlowSeat, "suite.lineup=maker,rival,informed,noise:2,momentum",
+                              "suite.lineup=maker,rival,informed,noise:3,momentum");
+    text = edited(edited(text, "block.first_seed=42", "block.first_seed=78"), "block.seeds=64", "block.seeds=2");
+    if (!suite::parse_suite_file(text, f, why) || !suite::suite_from_file(f, d, b, why)) return false;
+    std::vector<std::pair<std::uint64_t, suite::Health>> failing;
+    if (!admit(d, b, failing, why)) return false;
+    return failing.size() == 1 && failing.front().first == 79 && failing.front().second == suite::Health::Gap;
+}
+
+void test_suite_file() {
+    suite::SuiteFile f;
+    std::string why;
+    PX_CHECK(suite::parse_suite_file(kSlowSeat, f, why) && f.name == "slow_seat" && f.version == 1 &&
+             f.seat_reaction_ns == 100'000 && f.first_seed == 42 && f.seeds == 64 && f.sets.empty());
+    std::string crlf = kSlowSeat;
+    for (std::size_t at = crlf.find('\n'); at != std::string::npos; at = crlf.find('\n', at + 2)) crlf.insert(at, "\r");
+    suite::SuiteFile g;
+    PX_CHECK(suite::parse_suite_file(crlf, g, why) && suite::suite_file_text(g) == suite::suite_file_text(f));
+    suite::SuiteDef d = suite::standard_suite();
+    suite::SeedBlock b{"file", 0, 0};
+    PX_CHECK(suite::suite_from_file(f, d, b, why) && std::string(d.name) == "slow_seat" && d.seat_reaction_ns == 100'000 &&
+             b.first == 42 && b.count == 64 && std::string(d.change) == "seat reaction 100000 ns");
+    // The seat, the placebo, the health gate and the step ceiling are standard's.
+    PX_CHECK(d.step_ceiling == suite::standard_suite().step_ceiling &&
+             d.health.max_mean_gap_ticks == suite::standard_suite().health.max_mean_gap_ticks);
+
+    // The pairings: each check holds for the real code and fails for its defect.
+    PX_CHECK(fingerprint_covers_every_field(fp_real) && !fingerprint_covers_every_field(fp_without_definition));
+    PX_CHECK(refuses_what_a_file_cannot_set(read_real) && !refuses_what_a_file_cannot_set(read_lenient));
+    PX_CHECK(refuses_a_loose_placebo(admit_real) && !refuses_a_loose_placebo(admit_first_only));
+
+    // Every other refusal names its line or its reason.
+    auto refused = [&](const std::string& text, const char* says) {
+        suite::SuiteFile x;
+        std::string w;
+        const bool no = !suite::parse_suite_file(text, x, w) && w.find(says) != std::string::npos;
+        if (!no) std::printf("  suite file: expected a refusal saying '%s', got '%s'\n", says, w.c_str());
+        return no;
+    };
+    PX_CHECK(refused(edited(kSlowSeat, "(absent)", "seat.index=3"), "is fixed by the runner"));
+    PX_CHECK(refused(edited(kSlowSeat, "(absent)", "session.fee_per_qty=1"), "not settable by a suite file"));
+    PX_CHECK(refused(edited(kSlowSeat, "(absent)", "fair.step_mean_ns=5"), "not settable by a suite file"));
+    PX_CHECK(refused(edited(kSlowSeat, "(absent)", "suite.version=3"), "suite.version is given twice"));
+    PX_CHECK(refused(edited(kSlowSeat, "(absent)", "set.maker.colour=1"), "is not a reference parameter"));
+    PX_CHECK(refused(edited(kSlowSeat, "suite.version=1\n", ""), "sets no suite.version"));
+    PX_CHECK(refused(edited(kSlowSeat, "suite.session_ns=25000000", "suite.session_ns=5"), "from 1000000 to 1000000000"));
+    PX_CHECK(refused(edited(kSlowSeat, "block.seeds=64", "block.seeds=1"), "block.seeds must be"));
+    PX_CHECK(refused(edited(kSlowSeat, "seat.reaction_ns=100000", "seat.reaction_ns=ten"), "seat.reaction_ns must be"));
+    PX_CHECK(refused(edited(kSlowSeat, "block.first_seed=42", "block.first_seed=999990"), "overlaps the holdout block"));
+    for (const char* r : {"standard", "wide", "busy", "smoke", "holdout", "sensitivity", "thin"})
+        PX_CHECK(refused(edited(kSlowSeat, "suite.name=slow_seat", std::string("suite.name=") + r), "cannot be called"));
+    PX_CHECK(refused(edited(kSlowSeat, "suite.name=slow_seat", "suite.name=Slow"), "a suite name is"));
+    PX_CHECK(refused("suite.name\n", "not key=value"));
+    suite::SuiteFile h;
+    PX_CHECK(suite::parse_suite_file(edited(kSlowSeat, "suite.lineup=maker,rival,informed,noise:2,momentum",
+                                            "suite.lineup=maker,bogus"), h, why));
+    PX_CHECK(!suite::suite_from_file(h, d, b, why) && why.find("unknown participant 'bogus'") != std::string::npos);
+
+    // No built-in suite carries a suitefile.* line, so no pinned fingerprint moved.
+    for (const std::string& n : suite::split_names(suite::kSensitivityNames)) {
+        suite::SuiteDef s = suite::standard_suite();
+        PX_CHECK(suite::find_suite(n, s) && s.definition.empty());
+        PX_CHECK(suite::conditions_text(s, smoke_block()).find("suitefile.") == std::string::npos);
+    }
+
+    // The record alone gives the same suite back; an edited line in it does not.
+    suite::SuiteDef rd = suite::standard_suite();
+    suite::SeedBlock rb{"file", 0, 0};
+    PX_CHECK(suite::suite_from_file(f, rd, rb, why));
+    const std::string cfg = suite::suite_cfg_text(rd, rb, suite::RunInfo{});
+    PX_CHECK(cfg.find("\nsuitefile.format=1\n") != std::string::npos && cfg.find("\nsuitefile.digest=") != std::string::npos);
+    suite::SuiteFile back;
+    PX_CHECK(suite::suite_file_from_record(cfg, back, why) && suite::suite_file_text(back) == suite::suite_file_text(f));
+    const std::string tampered = edited(cfg, "seat.reaction_ns=100000", "seat.reaction_ns=90000");
+    suite::SuiteFile t;
+    suite::SuiteDef td = suite::standard_suite();
+    suite::SeedBlock tb{"file", 0, 0};
+    PX_CHECK(suite::suite_file_from_record(tampered, t, why) && suite::suite_from_file(t, td, tb, why));
+    PX_CHECK(suite::condition_lines(suite::suite_cfg_text(td, tb, suite::RunInfo{})) != suite::condition_lines(tampered));
+    std::printf("  suite file: slow_seat, conditions fingerprint %016llx\n",
+                static_cast<unsigned long long>(fp_real(kSlowSeat)));
+}
+
 void test_suite_ceiling() {
     suite::SuiteDef def = suite::standard_suite();
     def.step_ceiling = 5'000;
@@ -1328,6 +1684,33 @@ void test_suite_fingerprint() {
     const auto moved = smoke_placebo_hashes(ref);
     PX_CHECK(moved != hashes);
     PX_CHECK(suite::suite_fingerprint(ref, smoke_block(), moved) != fp);
+}
+
+// The holdout block: disjoint from standard (so tuning on standard cannot reach
+// it), as long as standard (so its intervals are as wide), marked confirmatory,
+// healthy on every seed, and pinned.
+void test_suite_holdout() {
+    const suite::SeedBlock* std_blk = suite::find_block("standard");
+    const suite::SeedBlock* hold = suite::find_block("holdout");
+    PX_CHECK(std_blk != nullptr && hold != nullptr);
+    if (std_blk == nullptr || hold == nullptr) return;
+    PX_CHECK(hold->count == std_blk->count);
+    PX_CHECK(hold->first >= std_blk->first + std_blk->count);
+    PX_CHECK(hold->confirmatory && !std_blk->confirmatory && !smoke_block().confirmatory);
+    const suite::SuiteDef def = suite::standard_suite();
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> hashes;
+    int healthy = 0;
+    for (std::uint64_t seed = hold->first; seed < hold->first + hold->count; ++seed) {
+        const suite::ArmRecord rec = run_named(def, seed, "placebo");
+        healthy += rec.session.healthy() ? 1 : 0;
+        hashes.emplace_back(seed, rec.session.session_hash);
+    }
+    PX_CHECK(healthy == static_cast<int>(hold->count));
+    const std::uint64_t fp = suite::suite_fingerprint(def, *hold, hashes);
+    std::printf("  holdout: %d/%u placebo seeds healthy, fingerprint %016llx\n", healthy, hold->count,
+                static_cast<unsigned long long>(fp));
+    PX_CHECK(fp == kPinnedHoldoutFingerprint);
+    PX_CHECK(fp != kPinnedSmokeFingerprint);
 }
 
 void test_paired_stats() {
@@ -1570,6 +1953,99 @@ void test_report_t_table() {
     PX_CHECK(near(suite::t975(120), 1.9799));
     // Non-increasing, give or take the table's three decimals at 63 and 127.
     for (std::size_t df = 31; df < 200; ++df) PX_CHECK(suite::t975(df + 1) < suite::t975(df) + 5e-4);
+}
+
+// The p-values behind the Holm correction: against quantiles computed
+// independently, for odd and even degrees of freedom, and the step-down
+// adjustment against a worked example.
+void test_report_holm() {
+    auto near = [](double a, double b, double tol) { return a - b < tol && b - a < tol; };
+    for (double x = 0; x < 50; x += 0.37) PX_CHECK(near(suite::atan_portable(x), std::atan(x), 1e-15));
+    PX_CHECK(near(suite::atan_portable(-2.5), -std::atan(2.5), 1e-15));
+    PX_CHECK(near(suite::t_two_sided_p(1.0, 1), 0.5, 1e-12));
+    PX_CHECK(near(suite::t_two_sided_p(4.302653, 2), 0.05, 1e-6));
+    PX_CHECK(near(suite::t_two_sided_p(3.182446, 3), 0.05, 1e-6));
+    PX_CHECK(near(suite::t_two_sided_p(2.228139, 10), 0.05, 1e-6));
+    PX_CHECK(near(suite::t_two_sided_p(1.998341, 63), 0.05, 1e-6));
+    PX_CHECK(near(suite::t_two_sided_p(-2.0, 10), 0.073388, 1e-6));
+    PX_CHECK(near(suite::t_two_sided_p(3.5, 64), 0.0008528, 1e-7));
+    PX_CHECK(near(suite::t_two_sided_p(0.3, 63), 0.7651648, 1e-7));
+    PX_CHECK(suite::t_two_sided_p(0, 63) == 1.0);
+    // The interval and the p-value agree away from the boundary.
+    for (std::size_t df : {3u, 10u, 63u}) {
+        PX_CHECK(suite::t_two_sided_p(suite::t975(df) * 1.01, df) < 0.05);
+        PX_CHECK(suite::t_two_sided_p(suite::t975(df) * 0.99, df) > 0.05);
+    }
+    // Holm, in the input's order: sorted 0.005 0.01 0.03 0.04 -> x4 x3 x2 x1,
+    // with the running maximum carried.
+    const std::vector<double> adj = suite::holm_adjusted({0.01, 0.04, 0.03, 0.005});
+    PX_CHECK(adj.size() == 4);
+    PX_CHECK(near(adj[0], 0.03, 1e-12) && near(adj[1], 0.06, 1e-12) && near(adj[2], 0.06, 1e-12) &&
+             near(adj[3], 0.02, 1e-12));
+    PX_CHECK(suite::holm_adjusted({0.6, 0.7})[0] == 1.0);
+    PX_CHECK(suite::holm_adjusted({}).empty());
+    // Only tests enter the family: identical and inadmissible rows do not.
+    suite::ComparisonRow sep, ns, same, bad;
+    sep.stats = suite::paired({0, 0, 0, 0}, {10, 11, 12, 13});
+    sep.verdict = "separated";
+    ns.stats = suite::paired({0, 0, 0, 0}, {-3, 4, -2, 2});
+    ns.verdict = "not_separated";
+    same.verdict = "identical";
+    bad.verdict = "not_admissible";
+    const std::vector<suite::HolmRow> h =
+        suite::holm_rows({{"a", &sep}, {"b", &ns}, {"c", &same}, {"d", &bad}});
+    PX_CHECK(h.size() == 2 && h[0].label == "a" && h[1].label == "b");
+    PX_CHECK(h[0].p_holm >= h[0].p && h[1].p_holm >= h[1].p);
+    PX_CHECK(h[0].raw_separated && !h[1].raw_separated && !h[1].separated());
+    const std::string text = suite::holm_text(h, "x");
+    PX_CHECK(text.find("Holm across x: 2 tests") != std::string::npos);
+    std::printf("  holm: p(1.998, 63) = %.6f; {0.01 0.04 0.03 0.005} -> {%.2f %.2f %.2f %.3f}\n",
+                suite::t_two_sided_p(1.998, 63), adj[0], adj[1], adj[2], adj[3]);
+}
+
+// The sensitivity protocol: a fixed grid, each condition a pinned suite of its
+// own whose market is healthy, and a table that says when a result does not hold.
+void test_sensitivity() {
+    const std::vector<std::string> names = suite::split_names(suite::kSensitivityNames);
+    PX_CHECK(names.size() == 1 + std::size(kPinnedSensitivityFingerprints) && names[0] == "standard");
+    for (std::size_t i = 1; i < names.size(); ++i) {
+        suite::SuiteDef f = suite::standard_suite();
+        PX_CHECK(suite::find_suite(names[i], f) && names[i] == f.name && f.change[0] != '\0');
+        const auto hashes = smoke_placebo_hashes(f);
+        for (std::uint64_t seed = smoke_block().first; seed < smoke_block().first + smoke_block().count; ++seed) {
+            PX_CHECK(run_named(f, seed, "placebo").session.healthy());
+        }
+        const std::uint64_t fp = suite::suite_fingerprint(f, smoke_block(), hashes);
+        if (fp != kPinnedSensitivityFingerprints[i - 1])
+            std::printf("  sensitivity: %s smoke fingerprint %016llx\n", names[i].c_str(), static_cast<unsigned long long>(fp));
+        PX_CHECK(fp == kPinnedSensitivityFingerprints[i - 1]);
+    }
+    // The verdicts, on made-up rows: one condition flips the sign, one loses the separation.
+    auto row = [](std::vector<std::int64_t> d, const char* verdict) {
+        suite::ComparisonRow r;
+        r.baseline = "placebo";
+        r.arm = "x";
+        r.stats = suite::paired(std::vector<std::int64_t>(d.size(), 0), d);
+        r.verdict = verdict;
+        return r;
+    };
+    std::vector<suite::FamilyResult> conds(4);
+    conds[0].suite = "standard";
+    conds[0].rows = {row({100000, 110000, 120000, 130000}, "separated")};
+    conds[1].suite = "a";
+    conds[1].rows = {row({50000, 60000, 70000, 80000}, "separated")};
+    conds[2].suite = "b";
+    conds[2].rows = {row({-100000, -110000, -120000, -130000}, "separated")};
+    conds[3].suite = "c";
+    conds[3].rows = {row({-50000, 60000, -70000, 80000}, "not_separated")};
+    std::string t = suite::sensitivity_text(conds);
+    PX_CHECK(t.find("sign: holds in 1 of 3 conditions; not in b (flips), c (vanishes)") != std::string::npos);
+    PX_CHECK(t.find("size: -100% to 57% of standard's") != std::string::npos);
+    conds.resize(2);
+    t = suite::sensitivity_text(conds);
+    PX_CHECK(t.find("sign: HOLDS in 1 of 1 conditions") != std::string::npos);
+    conds[0].rows = {row({-50000, 60000, -70000, 80000}, "not_separated")};
+    PX_CHECK(suite::sensitivity_text(conds).find("standard does not separate") != std::string::npos);
 }
 
 void test_report_families() {
@@ -1868,9 +2344,13 @@ int main() {
     test_suite_arm_determinism();
     test_suite_inert_arm();
     test_suite_ceiling();
+    test_strategy_settings();
+    test_suite_file();
+    test_zi_floor();
     test_suite_closed_identity();
     test_suite_param_dump();
     test_suite_fingerprint();
+    test_suite_holdout();
     test_paired_stats();
     test_suite_compare();
     test_suite_rows();
@@ -1878,6 +2358,8 @@ int main() {
     test_report_metrics();
     test_report_attribution();
     test_report_t_table();
+    test_report_holm();
+    test_sensitivity();
     test_report_families();
     test_controls_hold();
     test_controls_catch_defects();

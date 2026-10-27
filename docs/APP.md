@@ -41,14 +41,15 @@ need the session code compiled twice anyway.
 | `/learn [N]` | lists the exercises in `docs/LEARN.md`, or shows exercise N | reads `docs/LEARN.md` |
 | `/strategies` | the built-in strategies, and the installed ones, saying whether the lab is built with them | reads `arena/strategies/user/` and the generated manifest |
 | `/add PATH` | validates and installs a strategy, then rebuilds the lab programs | `make strategy STRATEGY=PATH` |
-| `/compare NAME[,NAME...] [smoke] [wide\|busy\|all\|market=M]` | scores strategies in the standard seat, then prints the report | `suite_lab` |
+| `/compare NAME[,NAME...] [smoke\|holdout] [wide\|busy\|all\|sensitivity\|market=M\|suite=S]` | scores strategies in the standard seat, then prints the report; a strategy of your own takes settings on its name (`imbalance+ratio=5`); `suite=S` runs a suite of your own from `suites/S.cfg` or a path ([`RUNNER.md`](RUNNER.md#a-suite-of-your-own)) | `suite_lab` |
 | `/runs` | the run directories in `runs/`, newest first: complete or not, suite, block, candidates | reads `runs/` |
 | `/report [RUN]` | a run's report; the newest complete run by default | reads `report.txt`, or `families.txt` |
 | `/reproduce [RUN]` | re-runs a run and compares every file | `suite_lab --reproduce` |
 | `/watch [NAME,...] [seed=N] [still=NS] [script=PATH] [lineup=SPEC] [market=M]` | the live viewer, full screen, back to the prompt on `q` | `arena_lab` |
 | `/sweep [FLAGS] [market=M]` | free exploration: change one thing, many seeds | `sweep_lab`, flags passed through |
 | `/data [add FILE \| show NAME \| remove NAME]` | imports a data file you have into `data/NAME.tape`, lists the tapes, or shows one | `ingest` |
-| `/calibrate NAME` | runs the known-answer control, sets the market to resemble the tape, runs the health gate, writes `markets/NAME.cfg` | `calibrate` |
+| `/calibrate NAME [holdback=PCT]` | runs the known-answer control, sets the market to resemble the tape, says what else fits, runs the health gate, prints what was not fitted, writes `markets/NAME.cfg` | `calibrate` |
+| `/facts NAME` | the tape's stylised facts beside the standard market's and the calibrated one's: a diagnostic | `calibrate --facts=` |
 | `/replay NAME [STRATEGY] [reaction=T] [from=T] [for=T]` | plays an order-by-order tape back through the engine: the control alone, or one strategy in it | `replay` |
 | `/controls [smoke]` | the evaluator's own controls | `controls` |
 | `/book` | an order book driven by hand | `repl` |
@@ -60,8 +61,8 @@ it needs, silently, so a source change is picked up and nothing is rebuilt when 
 changed.
 
 Exit codes from the programs underneath are explained in words: exit 3 from `suite_lab`
-says "the reference market is not admissible on this build, so nothing was compared", not
-just "3". After a complete `/compare`, the app says where the run was saved.
+says "the market is not admissible on this build (the message above says why), so nothing was
+compared", not just "3". After a complete `/compare`, the app says where the run was saved.
 
 ## How it works
 
@@ -111,7 +112,7 @@ just "3". After a complete `/compare`, the app says where the run was saved.
   `/report` find it, `/reproduce` of a copy says REPRODUCED and of a tampered copy exits 1
   through `-c`, `/controls smoke`, `/watch` with `still=`, `/sweep --help` and `/book` each
   run, `/data` imports, lists, shows and removes a tape, `/calibrate` and `/replay` refuse a
-  trades-only tape, `/replay` runs its control and a strategy, `/learn` lists the nine
+  trades-only tape, `/replay` runs its control and a strategy, `/learn` lists the eleven
   exercises, and outside the repository root it refuses. It writes `runs/maker-smoke`, as
   that command would for anyone, and nothing else outside `$(BUILD)/app-test`.
 

@@ -31,8 +31,9 @@ make compare CANDIDATES=imbalance,maker
 build/release/suite --candidates=maker,momentum            # built-ins only; cannot see installed code
 ```
 
-`make compare` takes `CANDIDATES` (required; empty exits 2), `BLOCK` (`standard` or `smoke`),
-`SUITE` (`standard`, `wide`, `busy` or `all`) and `OUT`. It is `BLOCK`, not `SEEDS`, because
+`make compare` takes `CANDIDATES` (required; empty exits 2), `BLOCK` (`standard`, `smoke` or `holdout`),
+`SUITE` (`standard`, `wide`, `busy`, `all` or `sensitivity`), `MARKET` (a calibrated market),
+`SUITE_FILE` (a suite of your own, [below](#a-suite-of-your-own)) and `OUT`. It is `BLOCK`, not `SEEDS`, because
 `bench/run_arena_evidence.sh` reads a numeric `SEEDS` from the environment.
 
 The flags of `suite` and `suite_lab`:
@@ -40,15 +41,17 @@ The flags of `suite` and `suite_lab`:
 | Flag | Meaning |
 |---|---|
 | `--candidates=A[,B,...]` | 1 to 8 strategies; the first is the baseline of the paired rows |
-| `--block=NAME` | `standard` (64 seeds, the default) or `smoke` (4 seeds) |
+| `--block=NAME` | `standard` (64 seeds, the default), `smoke` (4 seeds) or `holdout` (64 confirmatory seeds) |
 | `--suite=NAME` | `standard` (the default), `wide`, `busy`, or `all`: one directory each |
 | `--out=DIR` | default `runs/<a>[-vs-<b>...]-<block>/`; a previous run there is replaced |
 | `--reproduce=DIR` | re-run DIR from its `suite.cfg` and compare every file ([`REPRODUCE.md`](REPRODUCE.md)) |
+| `--suite-file=PATH` | `suite_lab` only: a suite of your own ([below](#a-suite-of-your-own)); not with `--suite`, `--block` or `--market` |
 | `--help` | lists the built-in names and, in `suite_lab`, the installed ones |
 
 **No condition can be set on the command line.** There is no `--set`, `--param`, `--seeds`,
 `--requests` or `--strategies`, and an unknown flag exits 2. A different set of conditions is a
-new suite in code; exploration stays with `/sweep` and `sweep_lab`.
+new suite: in code, or written down in a suite file that `suite_lab` reads
+([A suite of your own](#a-suite-of-your-own)). Exploration stays with `/sweep` and `sweep_lab`.
 
 | Exit | Meaning |
 |---|---|
@@ -119,7 +122,19 @@ wakes without ordering. Placebo sessions take 18,155 to 20,051 steps.
 ### The seeds
 
 Named blocks only. `standard` is 42..105 (64 seeds). `smoke` is its first four, 42..45, which
-shows a strategy runs and cannot separate anything. Paired standard errors at 64 seeds were 1.0
+shows a strategy runs and cannot separate anything. `holdout` is 1,000,000..1,000,063 (64
+seeds), shares no seed with either and is used by no example.
+
+**Tune on `standard`, report once on `holdout`.** Every change you make after reading a
+standard report, whether a threshold, a size or a whole idea, is fitted to those 64 seeds a
+little, and the standard interval no longer means what it says. The holdout block is the
+answer to that: when the strategy is final, run `/compare NAME holdout` once and report it
+beside the standard run. Its report says `confirmatory` and is never pooled with standard,
+because pooling would mix a fitted number with an unfitted one. Running it again after
+another change spends it: the honest report then says how many times it was looked at. The
+seeds sit far from standard's so that nobody reaches them by extending a range. The block's
+fingerprint is `6e1fe05931a6f560`, pinned in `test_arena` (`kPinnedHoldoutFingerprint`), which
+also checks that every placebo session on it passes the health gate. Paired standard errors at 64 seeds were 1.0
 to 1.8 currency units for small changes to one strategy (probe) and 3.26 to 17.02 between
 unrelated strategies (runner). 24 seeds would make every interval about 1.6 times wider.
 
@@ -199,14 +214,15 @@ caused by the candidate's orders.**
 ### The fingerprint
 
 FNV-1a 64 over `suite.cfg`'s condition lines (keys starting `suite.`, `seat.`, `health.`,
-`block.`, `market.`, `session.`, `fair.`) plus `seed=<s> placebo=<hash>` for each seed.
+`block.`, `market.`, `session.`, `fair.`, and on a calibrated market or a suite file
+`calibration.` and `suitefile.`) plus `seed=<s> placebo=<hash>` for each seed.
 Reference parameters enter through the placebo hashes, so an unrelated new `RosterConfig`
 field does not move it.
 
 It moves with the engine, the session, a reference strategy, a default, the suite or the
 block, and **two results are comparable only if their fingerprints are equal.** The smoke
 fingerprint `d461c30ab2446acf` is pinned in `test_arena` (`kPinnedSmokeFingerprint`, with one
-pin per family). Moving a pin needs a version bump in `standard_suite()`, never a silent
+pin per family and one for the holdout block). Moving a pin needs a version bump in `standard_suite()`, never a silent
 re-pin. `test-lab` checks that `suite` and `suite_lab` agree.
 
 ## The run directory
@@ -231,6 +247,263 @@ A directory without `status=complete` is incomplete. The verdicts are `not_admis
 `identical` (every difference 0), `separated` (the 95% interval excludes 0) and
 `not_separated`.
 
+## A strategy's own settings
+
+A strategy's numbers are fixed in its header: `imbalance.hpp` acts when the touch is 3 times
+lopsided. Asking about 5 used to need a second copy of the file. A strategy may now name the
+integer fields a run is allowed to set, with an optional sixth member:
+
+```cpp
+template <class F>
+void settings(F&& f) {
+    f("ratio", ratio, 1, 100);            // name, field, smallest and largest value
+    f("qty", qty, 1, 10'000);
+    f("max_position", max_position, 1, 100'000);
+}
+```
+
+The harness hands it a visitor and the strategy hands back each setting. The harness checks a
+value, never the strategy: it must be a whole number inside the range and inside the field's
+own integer type. A strategy without the member compiles and runs exactly as before, and
+refuses every setting. The built-in strategies have no member: their fields are `RosterConfig`
+fields under the names `--set=` takes, and stay one mechanism.
+
+**The syntax** puts the settings on the strategy's name, each after a `+`:
+
+```
+> /compare imbalance+ratio=5,imbalance           # the same strategy at two settings, paired
+> /sweep --strategies=maker,rival,informed,noise:2,momentum,imbalance --param=imbalance.ratio --values=3,5,8 --seeds=8
+```
+
+`make compare CANDIDATES=imbalance+ratio=5,imbalance` and `suite_lab --candidates=` take the
+same token; `sweep_lab --strategies=` takes it in a line-up, where `imbalance+ratio=5:2` is two
+of them. A comma still separates names and `:N` still repeats one. No name contains `+`, and a
+count is read from the right before any setting, so every spec that parsed before parses the
+same way. The keys are sorted into one label, `imbalance+qty=20+ratio=5` however they were
+typed, and the label is the arm's name in the report, the CSVs and `run.candidates`. In a sweep,
+`--param=NAME.KEY` sweeps a setting of the participant `NAME` and `--set=NAME.KEY=VALUE` fixes
+one; a name a built-in field takes (`maker.reaction_ns`) is always the field. The sweep then
+adds a paired table for that participant, because its maker-centred tables say nothing about it.
+
+**Refused, naming the token, exit 2:** an unknown key (`imbalance has no setting 'ratoi'; its
+settings: ratio qty max_position`), a value that is not a whole number or is out of range, a key
+given twice, a strategy with no settings member, a built-in strategy, and any setting given to
+an evidence program (`suite`, `sweep`, `arena`): `'zi+band_ticks=4': settings are taken by the
+lab programs only`. The tests and `controls` take no strategies.
+
+**Recorded, and not fingerprinted.** A run writes one condition line per setting,
+`setting.imbalance+ratio_5.ratio=5`, which `/reproduce` compares and refuses on
+([`REPRODUCE.md`](REPRODUCE.md)). The fingerprint does not include them: a setting belongs to
+the candidate, not to the market, and runs of different candidates on one market must keep one
+fingerprint. The run directory is named by the label with `=` written as `_`:
+`runs/imbalance+ratio_5-vs-imbalance-standard/`.
+
+On the standard block, `imbalance+ratio=5` is −15.87 ± 3.00 against the placebo, the same
+number as the copied header of [`LEARN.md`](LEARN.md)'s exercise 10, because it is the same
+strategy; `imbalance vs imbalance+ratio=5` is −19.05 ± 1.88. Setting `ratio=3`, the default,
+gives the session hash of no setting at all.
+
+## A suite of your own
+
+The standard suite is fixed in code so that "standard v1" always names one set of conditions.
+A researcher whose question needs a different market writes those conditions down in a file,
+and the file becomes a suite of its own: its own name, version, fingerprint, placebo arm and
+seed block. `examples/suites/slow_seat.cfg` is the standard market with the seat at 100 µs
+instead of 10 µs:
+
+```
+suitefile.format=1
+suite.name=slow_seat
+suite.version=1
+suite.lineup=maker,rival,informed,noise:2,momentum
+suite.session_ns=25000000
+seat.reaction_ns=100000
+block.first_seed=42
+block.seeds=64
+```
+
+```
+> /compare imbalance suite=examples/suites/slow_seat.cfg
+> /compare imbalance suite=slow_seat              # a bare name is suites/slow_seat.cfg
+```
+
+`make compare CANDIDATES=imbalance SUITE_FILE=examples/suites/slow_seat.cfg` and
+`suite_lab --suite-file=PATH` do the same. The run goes to `runs/imbalance-slow_seat-file/`:
+the block of a file suite is called `file`.
+
+**The format.** Integer text, one `key=value` a line, `#` starting a comment line, as in
+`markets/NAME.cfg`. A comment cannot follow a value on the same line: `seat.reaction_ns=100000  # 100 us`
+is refused as not a whole number. The file sets:
+
+| Key | Takes |
+|---|---|
+| `suitefile.format` | `1` |
+| `suite.name` | lower-case letters, digits, `-`, `_` and `.`, starting with a letter or digit |
+| `suite.version` | 1 or more; raise it whenever the file changes, as `standard_suite()` would |
+| `suite.lineup` | the opposing line-up, a `--strategies=` spec: built-ins, installed strategies and their settings |
+| `suite.session_ns` | 1 ms to 1 s of simulated time |
+| `seat.reaction_ns` | 1 ns to 10 ms |
+| `block.first_seed`, `block.seeds` | the seeds, 2 to 1024 of them |
+| `set.NAME=VALUE` | any number of reference parameters, under the names `--set=` takes (`set.maker.half_spread_ticks=2`) |
+
+Every key except `set.` lines is required, and none may be given twice.
+
+**What a file cannot set**, because the evaluator's guarantees rest on it: the seat (appended
+last, never informed), the placebo arm, the health gate (`health.*`) and the step ceiling
+(`suite.step_ceiling`), which are the same in every suite; and `session.*`, `fair.*` and
+`market.*`, so the fundamental and the markout stay the standard market's for now. A file that
+names one is refused, and so is any key the reader does not know, naming the line: a typo is a
+message, never a silently standard condition. The name may not be one the project already
+uses (`standard`, `wide`, `busy`, `smoke`, `holdout`, `all`, `sensitivity`, a sensitivity
+condition's name, `file`) or that of a calibrated market in `markets/`, and the seeds may not
+overlap the `holdout` block, which a suite file may not spend. All of these exit 2 before
+anything runs.
+
+**Admission.** Before any candidate runs, the placebo arm runs on every seed of the block and
+must pass the health gate on each, as a calibrated market must. Otherwise `suite_lab` writes
+nothing and exits 3, naming the seeds. `slow_seat` with a third noise trader and the standard
+10 µs seat gives:
+
+```
+suite crowded is not admitted: its placebo fails the health gate on 3 of 64 seeds: 79 (gap), 94 (gap), 105 (gap). A market whose book comes loose from the fundamental is not a market
+```
+
+The same three seeds made the sensitivity grid drop that line-up ([Sensitivity](#sensitivity)).
+Dropping the failing seeds instead would select calm paths, which is why a suite is admitted
+whole or not at all.
+
+**The fingerprint and the digest.** The conditions already hold the name, version, line-up,
+session length, seat delay and block. Reference parameters reach the fingerprint only through
+the placebo's session hashes, which a parameter of a participant not in the line-up never
+moves. So a file suite also writes its whole definition among its conditions, as
+`suitefile.format=1`, one `suitefile.set.NAME=VALUE` per `set.` line, sorted, and
+`suitefile.digest`, an FNV-1a of every field of the file. Two files that differ anywhere differ
+in fingerprint, version included; `slow_seat`'s, on its 64 seeds, is `eabf7a1767548125`. No
+built-in suite carries a `suitefile.` line, so no pinned fingerprint moved when suite files
+arrived.
+
+**Reproduction.** `suite.cfg` records the file's path as `run.suite_file`, and every line of the
+file is among its conditions, so `/reproduce` rebuilds the suite from the run's own record and
+needs no file. If the file is still at its path and now says something else, the reproduction
+is refused, as for a market calibrated again; move the file aside to reproduce from the record.
+A reproduction admits the suite again before running it ([`REPRODUCE.md`](REPRODUCE.md)).
+
+**Only in the lab.** `suite`, the evidence program, refuses `--suite-file` (exit 2), and
+neither `suite` nor `--help` of an evidence build mentions it. A suite file beside `--market`
+is refused too: a suite file on a calibrated market is not built yet.
+
+**What 100 µs does.** On `slow_seat`, `imbalance vs placebo` is −7.60 ± 1.94 and `maker vs
+placebo` is +62.03 ± 7.38, against −34.92 for `imbalance` with the standard 10 µs seat
+(runner). Two suites, two fingerprints: report them side by side, never pooled, and read each
+one's health line first.
+
+### A suite file or `/sweep`?
+
+Both change a condition. They answer different questions.
+
+- **`/sweep` is enough** to ask how one number moves as one parameter moves: a delay, a spread,
+  a setting, across a few values on a few seeds, to see where something interesting is. It
+  writes no run directory, has no placebo arm or health gate per value, and is exploration,
+  not a result.
+- **Write a suite file** when the answer will be reported: a different market, line-up, session
+  length or seed block that you mean to score strategies against and cite. It gets a name and
+  a version you can write in a paper, a fingerprint that says when two runs faced the same
+  thing, a placebo arm, admission, a run directory and `/reproduce`.
+
+A suite file is not a way round the holdout. Choosing its conditions after reading standard
+results is tuning, and the file's seeds are as public as standard's. A suite file whose
+conditions came from a sweep is a hypothesis; a run on it is the test only if the file was
+written before the run.
+
+## The floor: `zi`
+
+A positive result needs something to be positive against. The placebo is zero by
+construction, so it says whether a strategy made money, not whether it did anything a
+strategy with no intelligence would not. `zi` (`arena/strategies/zi.hpp`) is that strategy,
+after Gode and Sunder's zero-intelligence traders: on its timer it withdraws its resting
+order, flips a coin for the side and posts one limit order at a price drawn uniformly from 8
+ticks either side of the mid it sees, never trading past ±200. It has no view, no memory and
+no signal.
+
+**What it was expected to do,** written in its header before it ran: lose money, mostly in
+the `spread` column, because its orders that cross pay the spread and its resting orders fill
+mostly once the market has moved through them. How much was not predicted. On the standard
+block (`suite --candidates=zi,roundtrip,maker`):
+
+| arm vs baseline | mean ± s.e. | verdict |
+|---|---|---|
+| zi vs placebo | −91.82 ± 2.47 | separated |
+| maker vs zi | +162.95 ± 8.00 | separated |
+| roundtrip vs zi | +12.27 ± 2.51 | separated |
+
+The qualitative expectation held: −91.46 ± 0.71 of the −91.82 is `spread`, with adverse
+markout and carry each within two standard errors of zero, and every one of its 64 markets
+passes the health gate. Two things it says about the evaluator:
+
+- **Random is worse than dumb.** `roundtrip`, which only ever crosses the spread, loses about
+  12 a session less than `zi`, whose resting orders are filled when they are stale. Beating
+  `zi` is a low bar; beating the placebo is not the same bar.
+- **Put `zi` beside a candidate** (`/compare mine,zi`) and the paired row `mine vs zi` is the
+  question "did it beat chance on these seeds?". A candidate that does not separate from `zi`
+  has shown nothing, whatever its value against the placebo.
+
+`zi` is a built-in and never in a default line-up, so adding it moved no hash and no
+fingerprint. `test_arena` (`test_zi_floor`) checks that it trades, keeps to its budget on the
+path and not only at the close, replays, and leaves its markets healthy.
+
+## Sensitivity
+
+A result on the standard suite is a result about one market. `/compare NAME sensitivity`
+(`make compare CANDIDATES=a SUITE=sensitivity`, `suite_lab --suite=sensitivity`) asks whether it
+survives a change, along a **fixed grid**, so the question has one answer per strategy rather
+than whatever somebody happened to try:
+
+| condition | axis | what changes |
+|---|---|---|
+| `standard` | | nothing: the result being tested |
+| `delay-5us`, `delay-20us` | reaction delay | the seat's delay, 5,000 or 20,000 ns instead of 10,000 |
+| `thin`, `busy` | liquidity | the noise traders' timer, 20,000 or 5,000 ns instead of 10,000 (`busy` is the family) |
+| `no-momentum`, `no-rival` | line-up | the momentum trader, or the rival maker, taken out |
+
+Each condition is a suite of its own, with its own fingerprint, placebo arm and health gate,
+written to its own directory beside a `sensitivity.txt` table, and **never pooled**. For every
+comparison the run makes, the table gives each condition's paired mean, its verdict and its
+size as a share of standard's, then a line:
+
+- **sign HOLDS** if the comparison separates with standard's sign in every admissible
+  condition; otherwise it names each condition where it **flips** or **vanishes**;
+- **size**: the range of the conditions' means as a share of standard's, never averaged.
+
+Each condition is tested at 5% on its own. For the claim "the effect is there in every
+condition" that is correct without a correction: the claim fails if any one test fails (an
+intersection-union test). The opposite claim, "it is there in some condition", would need one,
+and the table does not make it. On the standard block (`suite --candidates=zi,maker
+--suite=sensitivity`, 52 s):
+
+| condition | zi vs placebo | maker vs placebo | maker vs zi |
+|---|---|---|---|
+| standard | −91.82 ± 2.47 | +71.13 ± 7.05 | +162.95 ± 8.00 |
+| delay-5us | −92.01 ± 2.39 | +72.32 ± 7.20 | +164.34 ± 8.18 |
+| delay-20us | −91.54 ± 2.44 | +70.97 ± 7.26 | +162.51 ± 8.20 |
+| thin | −94.61 ± 2.48 | +26.34 ± 7.02 | +120.95 ± 7.54 |
+| busy | −89.22 ± 2.50 | +141.17 ± 7.78 | +230.38 ± 8.74 |
+| no-momentum | −91.22 ± 2.38 | +70.51 ± 7.30 | +161.73 ± 8.12 |
+| no-rival | −96.91 ± 2.46 | +111.81 ± 7.78 | +208.73 ± 8.42 |
+| **sign** | holds in 6 of 6 | holds in 6 of 6 | holds in 6 of 6 |
+| **size** | 97% to 106% | 37% to 198% | 74% to 141% |
+
+All three hold in sign. Size is another matter: a third maker's +71 is a number about how much
+uninformed flow there is (37% of it in `thin`, 198% in `busy`) and about competition (157%
+with the rival gone), and hardly about its own delay between 5 and 20 µs. That is the
+project's negative result again, from a different direction. Every condition's reference
+market passes the health gate on all 64 standard seeds. The conditions' smoke fingerprints
+are pinned in `test_arena` (`kPinnedSensitivityFingerprints`), so changing one needs a version
+bump like any suite.
+
+**A condition that was not a market.** The line-up axis first added a third noise trader. Its
+placebo failed the health gate on 3 of 64 standard seeds (79, 94 and 105; the book came loose
+from the fundamental), so it is not in the grid. Removing the rival replaced it.
+
 ## Known weaknesses
 
 - **25 ms favours short-horizon logic.** `fader` is inert on all 64 seeds; inert seeds are
@@ -240,7 +513,9 @@ A directory without `status=complete` is incomplete. The verdicts are `not_admis
 - **The path is chaotic.** A 1 ns change in the seat's delay moved `imbalance` by −0.72 ± 1.57
   or +1.76 ± 1.76 (probe). A `separated` effect of a few currency units is weak evidence:
   `momentum` against the placebo is −2.36 ± 1.17, `separated`, with a per-seed range of
-  −24.40 to +26.60. [`CONTROLS.md`](CONTROLS.md) publishes the noise floor.
+  −24.40 to +26.60, and it does not survive the Holm correction across the three scenario
+  families ([`REPORT.md`](REPORT.md#many-comparisons)). [`CONTROLS.md`](CONTROLS.md)
+  publishes the noise floor.
 - **Tie order** is fair between candidates but works against the reference maker.
 - **The fixed delay can surprise an author** who reads their strategy's own `reaction_ns`.
 - **Installed strategies are not policed.** Replay catches `static` state but cannot prove its
@@ -273,22 +548,31 @@ A directory without `status=complete` is incomplete. The verdicts are `not_admis
 - **"The range straddles zero" alone as the test:** far more conservative than a paired
   standard error. Both are reported.
 - **Replaying only the first seed per arm:** misses state carried across later seeds.
-- **`--set`, `--param` or a free seed list:** the conditions would be whatever was typed.
+- **`--set`, `--param` or a free seed list:** the conditions would be whatever was typed. A
+  suite file says the same things, but once, in a file whose every line is a condition.
+- **A file suite fingerprinted by its condition lines alone:** `reproduce` rebuilds a file
+  suite from the run's own record, so an edited record agreed with itself and was re-run
+  instead of refused. `suitefile.digest` covers the whole definition; edit a line and the
+  record no longer matches its digest.
 - **Hashing all of `suite.cfg`:** an unrelated `RosterConfig` field would force a version bump.
 - **A Python runner:** ruled out by the project's constraints.
 - **A wrong premise, corrected:** the first plan assumed that adding a participant
   re-interleaves the session. For an appended inert seat it does not.
 
-Not built: a holdout block (seeds 1,000,000..1,000,063 were admissible in a probe) and showing
-a scored arm in the viewer.
+Not built: showing a scored arm in the viewer. A holdout block was on this list; it is built
+("The seeds").
 
 ## Where it lives
 
 - `arena/suite.hpp`: header-only and integer-only. Blocks, the gate, `SuiteDef`,
   `SeatOverride`, `run_arm`, the records, the writers and the fingerprint.
 - `arena/suite_report.hpp`: the only floating point, reading only a `RunRecord`.
+- `arena/suite_file.hpp`: the suite-file reader, its `suitefile.*` lines and digest, and
+  admission.
+- `examples/suites/slow_seat.cfg`: the worked example.
 - `arena/suite.cpp`: compiled into `suite` without `PX_ARENA_USER_STRATEGIES` and into
   `suite_lab` with it.
 - `arena/strategies/placebo.hpp`: the empty seat. The engine was not touched.
-- Tests: `tests/test_arena.cpp` (`test_placebo_is_inert`, `test_suite_*`), `make test-cli`
-  and `make test-lab`.
+- Tests: `tests/test_arena.cpp` (`test_placebo_is_inert`, `test_suite_*`, and
+  `test_suite_file`, whose checks each have a planted defect), `make test-cli` and
+  `make test-lab` (its suite-file checks).
