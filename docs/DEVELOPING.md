@@ -274,7 +274,11 @@ make test-lab                                              # the whole path, che
 
 - **The convention** is in `examples/strategies/imbalance.hpp`: `<name>.hpp` defines
   struct `<Name>` (CamelCase of the file name) in `px::arena::strategies`, with the
-  five members `arena/strategy.hpp` lists and no floating point. The name must not
+  five members `arena/strategy.hpp` lists and no floating point, and optionally a sixth,
+  `settings()`, naming the integer fields a run may set (`imbalance+ratio=5`; `docs/RUNNER.md`,
+  "A strategy's own settings"). Settings are lab-only, recorded as `setting.*` condition lines
+  and never fingerprinted; built-in strategies get no `settings()`, their fields stay
+  `set_roster_param()` names. The name must not
   collide with a built-in; the Makefile reads the built-in list from
   `kStrategyNames` so the two cannot drift.
 - **An installed strategy cannot reach the published evidence, by construction.**

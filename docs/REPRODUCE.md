@@ -54,7 +54,10 @@ Each file is marked identical or DIFFERENT, then the whole run is `REPRODUCED` (
    - the run was on a calibrated market whose file, `run.market_file`, has been calibrated
      again since; or
    - a single condition line differs. The refusal names the first difference, for example
-     `maker.quote_qty=40 in the run, maker.quote_qty=50 here`.
+     `maker.quote_qty=40 in the run, maker.quote_qty=50 here`. A candidate's settings are
+     rebuilt from `run.candidates`, so an edited setting line is refused this way:
+     `setting.imbalance+ratio_5.ratio=6 in the run, setting.imbalance+ratio_5.ratio=5 here`;
+     and a strategy that no longer takes a recorded setting cannot be built here.
 2. **Re-runs the suite** into the output directory exactly as `/compare` would, with its own
    replay and placebo checks.
 3. **Compares every file the run wrote**, byte for byte. `suite.cfg` is compared on its
@@ -75,6 +78,7 @@ Every `suite.cfg` holds four kinds of line:
 | The conditions | the suite, its version, the line-up, the session length, the seat, the health gate, the block, every session setting and every reference participant's parameter, under the names `--set=` takes | yes, with every placebo session hash |
 | What ran | `run.*`: the binary, the installed strategies it could see, each candidate's origin, declared delay and timer | no |
 | Which version of an installed strategy | `run.candidate.<name>.digest`: the `cksum` CRC of its header, computed by `/add` (`make strategy`). A built-in has no digest; its version is the commit | no |
+| A candidate's own settings | `setting.<id>.<key>=<value>`, one per setting given on its name (`imbalance+ratio=5`); `<id>` is the label with each `=` written as `_`. Only when a candidate has settings | no: they are conditions of the run, compared line by line, but they belong to the candidate, not to the market it faced |
 | Which build | `build.commit` (12 characters of `git rev-parse`), `build.dirty`, `build.compiler`, `build.platform`, `build.flags` | no |
 
 A run on a calibrated market (`/compare NAME market=M`) also records `calibration.*` lines:
@@ -113,5 +117,6 @@ exactly what a reproduction on another machine asks.
   are refused and write nothing, a changed raw file does not reproduce, `--reproduce` takes
   nothing but `--out` and refuses a directory with no run, and a run of every family
   reproduces family by family. `test-lab` checks that an installed strategy is recorded by
-  checksum, reproduces, is refused by `suite`, and is refused when its checksum changes.
+  checksum, reproduces, is refused by `suite`, and is refused when its checksum changes, and
+  that a run with a setting reproduces and is refused once its setting line is edited.
   `tests/test_arena.cpp` has `test_suite_cfg_reading`.
