@@ -11,7 +11,7 @@ in your editor and your shell, beside the app, never in it.
 ## What an agent is good for here
 
 - **Writing a strategy header.** The contract is small and written down: `arena/strategy.hpp`
-  lists the five members, and `examples/strategies/imbalance.hpp` shows the convention
+  lists the five members and the optional sixth, `settings()`, and `examples/strategies/imbalance.hpp` shows the convention
   (`<name>.hpp` defines struct `<Name>` in `px::arena::strategies`). `make strategy` checks the
   name and builds it, so a mistake comes back as a message, not as a wrong number.
 - **Running the standard path.** `make strategy`, `make compare ... BLOCK=smoke`, then the

@@ -105,6 +105,8 @@ Terms are grouped and sorted alphabetically within each group.
 
 **Strategy** — A plain C++ struct that receives a `MarketView` and returns an `ActionBatch`, compiled in and never loaded at runtime. *Where:* `arena/strategy.hpp`.
 
+**Strategy setting** — An integer field of a strategy of your own that a run may set on its name, `imbalance+ratio=5`, because the strategy lists it in its optional `settings()` member with the range it accepts. Recorded as a condition of the run, never fingerprinted; taken by the lab programs only. A built-in strategy's fields are `--set=` names instead. *Where:* `docs/RUNNER.md`.
+
 **Uninformed flow** — Trading by participants that cannot see the fundamental: the makers' income.
 
 **Zero intelligence (`zi`)** — The floor a candidate has to clear, after Gode and Sunder: random limit orders drawn uniformly around the mid, one at a time, within a position budget, with no view at all. It loses about 92 a session on the standard block, mostly in spread. *Where:* `arena/strategies/zi.hpp`, `docs/RUNNER.md`.

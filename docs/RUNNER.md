@@ -243,6 +243,62 @@ A directory without `status=complete` is incomplete. The verdicts are `not_admis
 `identical` (every difference 0), `separated` (the 95% interval excludes 0) and
 `not_separated`.
 
+## A strategy's own settings
+
+A strategy's numbers are fixed in its header: `imbalance.hpp` acts when the touch is 3 times
+lopsided. Asking about 5 used to need a second copy of the file. A strategy may now name the
+integer fields a run is allowed to set, with an optional sixth member:
+
+```cpp
+template <class F>
+void settings(F&& f) {
+    f("ratio", ratio, 1, 100);            // name, field, smallest and largest value
+    f("qty", qty, 1, 10'000);
+    f("max_position", max_position, 1, 100'000);
+}
+```
+
+The harness hands it a visitor and the strategy hands back each setting. The harness checks a
+value, never the strategy: it must be a whole number inside the range and inside the field's
+own integer type. A strategy without the member compiles and runs exactly as before, and
+refuses every setting. The built-in strategies have no member: their fields are `RosterConfig`
+fields under the names `--set=` takes, and stay one mechanism.
+
+**The syntax** puts the settings on the strategy's name, each after a `+`:
+
+```
+> /compare imbalance+ratio=5,imbalance           # the same strategy at two settings, paired
+> /sweep --strategies=maker,rival,informed,noise:2,momentum,imbalance --param=imbalance.ratio --values=3,5,8 --seeds=8
+```
+
+`make compare CANDIDATES=imbalance+ratio=5,imbalance` and `suite_lab --candidates=` take the
+same token; `sweep_lab --strategies=` takes it in a line-up, where `imbalance+ratio=5:2` is two
+of them. A comma still separates names and `:N` still repeats one. No name contains `+`, and a
+count is read from the right before any setting, so every spec that parsed before parses the
+same way. The keys are sorted into one label, `imbalance+qty=20+ratio=5` however they were
+typed, and the label is the arm's name in the report, the CSVs and `run.candidates`. In a sweep,
+`--param=NAME.KEY` sweeps a setting of the participant `NAME` and `--set=NAME.KEY=VALUE` fixes
+one; a name a built-in field takes (`maker.reaction_ns`) is always the field. The sweep then
+adds a paired table for that participant, because its maker-centred tables say nothing about it.
+
+**Refused, naming the token, exit 2:** an unknown key (`imbalance has no setting 'ratoi'; its
+settings: ratio qty max_position`), a value that is not a whole number or is out of range, a key
+given twice, a strategy with no settings member, a built-in strategy, and any setting given to
+an evidence program (`suite`, `sweep`, `arena`): `'zi+band_ticks=4': settings are taken by the
+lab programs only`. The tests and `controls` take no strategies.
+
+**Recorded, and not fingerprinted.** A run writes one condition line per setting,
+`setting.imbalance+ratio_5.ratio=5`, which `/reproduce` compares and refuses on
+([`REPRODUCE.md`](REPRODUCE.md)). The fingerprint does not include them: a setting belongs to
+the candidate, not to the market, and runs of different candidates on one market must keep one
+fingerprint. The run directory is named by the label with `=` written as `_`:
+`runs/imbalance+ratio_5-vs-imbalance-standard/`.
+
+On the standard block, `imbalance+ratio=5` is −15.87 ± 3.00 against the placebo, the same
+number as the copied header of [`LEARN.md`](LEARN.md)'s exercise 10, because it is the same
+strategy; `imbalance vs imbalance+ratio=5` is −19.05 ± 1.88. Setting `ratio=3`, the default,
+gives the session hash of no setting at all.
+
 ## The floor: `zi`
 
 A positive result needs something to be positive against. The placebo is zero by
