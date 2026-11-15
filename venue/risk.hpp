@@ -42,6 +42,7 @@ enum class RiskReject : std::uint8_t {
     TooManyOpenOrders,
     Throttled,
     Killed,
+    VenueOnly, // an auction request from a session: only the venue opens or uncrosses one
 };
 inline constexpr const char* kRiskRejectNames[] = {"none",          "order too large",       "value too large",
                                                    "price outside collar", "too many open orders", "throttled",
@@ -63,6 +64,8 @@ public:
     // May rewrite `req` (a market order under a collar). `resting` is the
     // venue's list of what rests, for the open-order cap.
     [[nodiscard]] RiskReject check(std::uint64_t in_seq, OrderRequest& req, const RestingBook& resting) {
+        // Opening an auction and uncrossing it are the venue's to do, never a session's.
+        if (req.type == ReqType::OpenAuction || req.type == ReqType::Uncross) return RiskReject::VenueOnly;
         if (req.type == ReqType::Cancel) return RiskReject::None;
         if (killed_.count(req.owner) != 0) return RiskReject::Killed;
         if (lim_.max_messages != 0) {
