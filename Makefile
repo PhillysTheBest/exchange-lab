@@ -294,6 +294,16 @@ $(REPL_BIN): $(ROBJ)/tools/repl.o $(LIB_REL)
 	$(call announce,linking,$@)
 	$(CXX) $(RELEASE_FLAGS) $^ -o $@ $(LDLIBS)
 
+# The one program with a socket in it (tools/netdemo.cpp): the venue's stages
+# behind TCP on the loopback address. A demonstration that checks itself; it is
+# deliberately not part of `all`, `test` or anything that produces evidence.
+.PHONY: netdemo test-net
+$(REL)/netdemo$(EXE): $(ROBJ)/tools/netdemo.o $(LIB_REL)
+	$(call announce,linking,$@)
+	$(CXX) $(RELEASE_FLAGS) $^ -o $@ $(LDLIBS)
+netdemo test-net: $(REL)/netdemo$(EXE)
+	./$<
+
 $(ARENA_BINS): $(REL)/%$(EXE): $(ROBJ)/arena/%.o $(LIB_REL)
 	$(call announce,linking,$@)
 	$(CXX) $(RELEASE_FLAGS) $^ -o $@ $(LDLIBS)

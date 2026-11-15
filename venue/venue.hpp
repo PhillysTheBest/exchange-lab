@@ -71,6 +71,13 @@ public:
         return cancels.size();
     }
 
+    // Cancel on disconnect: pulls an owner's resting orders without blocking it.
+    std::size_t pull_orders(OwnerId owner) {
+        const auto resting = durable_.resting().of_owner(owner);
+        for (const RestingOrder& o : resting) match(cancel_order(o.id, o.instr, o.owner));
+        return resting.size();
+    }
+
     [[nodiscard]] Sequencer& sequencer() noexcept { return seq_; }
     [[nodiscard]] RiskGate& risk() noexcept { return risk_; }
     [[nodiscard]] DurableEngine& durable() noexcept { return durable_; }
