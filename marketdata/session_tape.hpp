@@ -103,6 +103,7 @@ private:
                 return;
             case EventType::EndOfStream:
             case EventType::Amended: // never emitted here: nothing in this program sends an amend
+            case EventType::Phase:   // or runs an auction
                 return;
         }
     }

@@ -56,6 +56,8 @@ void print_event(const char* who, const ExecEvent& e) {
 struct Stats {
     std::uint64_t events = 0, trades = 0, self_trades = 0, book_full = 0, duplicates = 0, unknown_cancels = 0;
     std::uint64_t amends_kept = 0, amends_requeued = 0, amend_trades = 0, amend_book_full = 0;
+    std::uint64_t auctions = 0, uncrosses = 0, uncross_trades = 0, uncross_empty = 0, wrong_phase = 0;
+    std::uint64_t auction_rested = 0, biggest_uncross = 0;
     std::uint64_t max_depth = 0;
     std::uint64_t deep_level_removals = 0; // cancel emptied a level in the worse half of a >=500-level side
     std::uint64_t far_end_inserts = 0;     // GTC price behind every level of a >=500-level side
@@ -126,7 +128,7 @@ OrderRequest random_request(std::mt19937_64& rng, Profile profile, OrderId& next
 }
 
 bool run_seed(std::uint64_t seed, Profile profile, int commands, const EngineConfig& cfg, int invariant_every,
-              int ladder_every, int amend_pct, Stats& stats) {
+              int ladder_every, int amend_pct, int auction_per_mille, Stats& stats) {
     auto eng = std::make_unique<MatchingEngine>(cfg);
     test::ReferenceEngine ref(cfg);
     for (int i = 0; i < kInstruments; ++i) {
@@ -137,6 +139,10 @@ bool run_seed(std::uint64_t seed, Profile profile, int commands, const EngineCon
     }
 
     std::mt19937_64 rng(seed);
+    // The venue's own requests are drawn from a second generator, so a run without
+    // auctions draws exactly the commands it always did.
+    std::mt19937_64 venue_rng(seed * 0x9E3779B97F4A7C15ull + 1);
+    bool in_auction[kInstruments + 1] = {};
     std::vector<OrderId> recent;
     std::vector<std::pair<OrderId, OwnerId>> gtc; // the last 48 orders sent to rest, and whose they were
     std::size_t gtc_at = 0;
@@ -147,6 +153,13 @@ bool run_seed(std::uint64_t seed, Profile profile, int commands, const EngineCon
 
     for (int n = 0; n < commands; ++n) {
         OrderRequest req = random_request(rng, profile, next_id, recent, amend_pct);
+        if (auction_per_mille > 0 && static_cast<int>(venue_rng() % 1000) < auction_per_mille) {
+            // Usually the request the instrument is ready for; one in ten is the
+            // other one (refused), and one in fifty names no instrument at all.
+            const InstrumentId i = static_cast<InstrumentId>(venue_rng() % 50 == 0 ? kInstruments : venue_rng() % kInstruments);
+            const bool right = venue_rng() % 10 != 0;
+            req = (in_auction[i] == right) ? uncross(i) : open_auction(i);
+        }
         if (req.type == ReqType::Amend) {
             // A random id with a random owner is almost always refused, which tests the
             // refusal and little else. Three in four amends therefore aim at an order
@@ -184,6 +197,11 @@ bool run_seed(std::uint64_t seed, Profile profile, int commands, const EngineCon
             std::size_t depth = 0;
             if (ref.is_far_end_price(req.instr, req.side, req.price, depth) && depth >= 500) ++stats.far_end_inserts;
         }
+
+        // What an uncross is about to do, asked of the engine before it does it.
+        UncrossView told;
+        const bool uncrossing = req.type == ReqType::Uncross && req.instr < kInstruments && in_auction[req.instr];
+        if (uncrossing) told = eng->indicative(req.instr);
 
         got.clear();
         eng->process(req, sink);
@@ -235,7 +253,42 @@ bool run_seed(std::uint64_t seed, Profile profile, int commands, const EngineCon
             }
         }
 
+        if (uncrossing) {
+            // One price, the quantity the engine said beforehand, and the price on the closing event.
+            std::uint64_t traded = 0;
+            bool one_price = true;
+            for (const auto& e : got) {
+                if (e.type != EventType::Trade) continue;
+                traded += e.qty;
+                one_price &= e.price == told.price;
+            }
+            if (!one_price || traded != told.qty || got.empty() || got.back().type != EventType::Phase ||
+                got.back().price != told.price) {
+                std::printf("UNCROSS MISMATCH seed=%llu command=%d\n", static_cast<unsigned long long>(seed), n);
+                return false;
+            }
+            ++stats.uncrosses;
+            stats.uncross_trades += got.size() - 1;
+            stats.uncross_empty += got.size() == 1;
+            stats.biggest_uncross = std::max<std::uint64_t>(stats.biggest_uncross, got.size() - 1);
+            in_auction[req.instr] = false;
+        } else if (req.type == ReqType::OpenAuction && !got.empty() && got[0].type == EventType::Phase) {
+            ++stats.auctions;
+            in_auction[req.instr] = true;
+        }
+        for (InstrumentId i = 0; i < kInstruments; ++i) {
+            if (eng->in_auction(i) != in_auction[i]) {
+                std::printf("PHASE MISMATCH seed=%llu command=%d\n", static_cast<unsigned long long>(seed), n);
+                return false;
+            }
+        }
+        if (req.type == ReqType::New && req.instr < kInstruments && in_auction[req.instr] && got.size() == 1 &&
+            got[0].type == EventType::Ack) {
+            ++stats.auction_rested;
+        }
+
         for (const auto& e : got) {
+            stats.wrong_phase += e.type == EventType::Rejected && e.reason == static_cast<std::uint8_t>(RejectReason::WrongPhase);
             ++stats.events;
             stats.trades += e.type == EventType::Trade;
             stats.self_trades += e.type == EventType::Cancelled && e.reason == static_cast<std::uint8_t>(CancelReason::SelfTrade);
@@ -276,6 +329,7 @@ int main() {
         int invariant_every;
         int ladder_every;
         int amend_pct = 0;
+        int auction_per_mille = 0;
     } runs[] = {
         {"shallow", 1, Profile::Shallow, 100'000, &roomy, 1, 500},
         {"shallow", 2, Profile::Shallow, 100'000, &roomy, 64, 500},
@@ -288,6 +342,10 @@ int main() {
         {"tiny+amend", 9, Profile::Shallow, 100'000, &tiny, 1, 500, 30},
         {"deep+amend", 10, Profile::Deep, 60'000, &roomy, 256, 2000, 30},
         {"churn64+amend", 11, Profile::Churn64, 100'000, &churn, 64, 500, 30},
+        {"shallow+auction", 12, Profile::Shallow, 100'000, &roomy, 1, 500, 0, 20},
+        {"tiny+auction", 13, Profile::Shallow, 100'000, &tiny, 1, 500, 20, 20},
+        {"deep+auction", 14, Profile::Deep, 60'000, &roomy, 16, 2000, 20, 4},
+        {"churn64+auction", 15, Profile::Churn64, 100'000, &churn, 16, 500, 20, 8},
     };
 
     bool all_ok = true;
@@ -295,10 +353,11 @@ int main() {
     std::uint64_t churn_book_full = 0;
     for (const Run& r : runs) {
         Stats s;
-        const bool ok = run_seed(r.seed, r.profile, r.commands, *r.cfg, r.invariant_every, r.ladder_every, r.amend_pct, s);
+        const bool ok = run_seed(r.seed, r.profile, r.commands, *r.cfg, r.invariant_every, r.ladder_every, r.amend_pct,
+                                 r.auction_per_mille, s);
         PX_CHECK(ok);
         all_ok &= ok;
-        std::printf("  %-13s seed %2llu: %6d commands, %7llu events, %6llu trades, %5llu BookFull, deepest side %4llu "
+        std::printf("  %-15s seed %2llu: %6d commands, %7llu events, %6llu trades, %5llu BookFull, deepest side %4llu "
                     "levels, %5llu deep level removals, %5llu far-end inserts: %s\n",
                     r.name, static_cast<unsigned long long>(r.seed), r.commands,
                     static_cast<unsigned long long>(s.events), static_cast<unsigned long long>(s.trades),
@@ -318,6 +377,13 @@ int main() {
         total.amends_requeued += s.amends_requeued;
         total.amend_trades += s.amend_trades;
         total.amend_book_full += s.amend_book_full;
+        total.auctions += s.auctions;
+        total.uncrosses += s.uncrosses;
+        total.uncross_trades += s.uncross_trades;
+        total.uncross_empty += s.uncross_empty;
+        total.wrong_phase += s.wrong_phase;
+        total.auction_rested += s.auction_rested;
+        total.biggest_uncross = std::max(total.biggest_uncross, s.biggest_uncross);
         if (r.profile == Profile::Churn64) churn_book_full += s.book_full;
     }
     std::printf("fuzz_vs_reference: %zu runs, %llu events (%llu trades, %llu self-trade cancels, %llu BookFull, "
@@ -339,5 +405,13 @@ int main() {
                 static_cast<unsigned long long>(total.amend_trades), static_cast<unsigned long long>(total.amend_book_full));
     PX_CHECK(total.amends_kept > 2000 && total.amends_requeued > 10'000 && total.amend_trades > 2000);
     PX_CHECK(total.amend_book_full > 10); // an amend to a new price on a full side really is refused
+    std::printf("  auctions: %llu opened, %llu orders collected, %llu uncrossed (%llu with nothing to match), %llu trades "
+                "at the uncross price, %llu in the largest, %llu refused WrongPhase\n",
+                static_cast<unsigned long long>(total.auctions), static_cast<unsigned long long>(total.auction_rested),
+                static_cast<unsigned long long>(total.uncrosses), static_cast<unsigned long long>(total.uncross_empty),
+                static_cast<unsigned long long>(total.uncross_trades), static_cast<unsigned long long>(total.biggest_uncross),
+                static_cast<unsigned long long>(total.wrong_phase));
+    PX_CHECK(total.uncrosses > 1000 && total.uncross_trades > 10'000 && total.uncross_empty > 10);
+    PX_CHECK(total.biggest_uncross >= 50 && total.wrong_phase > 1000 && total.auction_rested > 10'000);
     PX_TEST_REPORT_AND_RETURN();
 }
