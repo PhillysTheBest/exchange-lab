@@ -11,6 +11,7 @@
 #include "venue/recovery.hpp"
 #include "venue/risk.hpp"
 #include "venue/sequencer.hpp"
+#include "venue/shards.hpp"
 #include "venue/venue.hpp"
 
 #include <cstdio>
@@ -582,6 +583,57 @@ void test_stage_stamps() {
     PX_CHECK(stamped && ordered);
 }
 
+void test_shards() {
+    sim::StreamConfig cfg;
+    cfg.orders = 120'000;
+    cfg.seed = 17;
+    cfg.instruments = 8;
+    const auto stream = sim::generate_order_stream(cfg);
+    auto whole = fresh(cfg);
+    (void)sim::run_direct(*whole, stream);
+
+    constexpr std::uint32_t kShards = 3;
+    ShardedEngines sharded(kShards, EngineConfig{}, [&cfg](MatchingEngine& e) { sim::add_instruments(e, cfg); });
+    for (const OrderRequest& r : stream) sharded.route(r);
+    sharded.finish();
+
+    std::uint64_t total = 0;
+    for (std::uint32_t k = 0; k < kShards; ++k) {
+        // The reference: this shard's requests, in order, on one thread.
+        auto alone = fresh(cfg);
+        EventHasher h;
+        std::uint64_t n = 0;
+        for (const OrderRequest& r : stream) {
+            if (sharded.shard_of(r.instr) != k) continue;
+            alone->process(r, hash_into(h));
+            ++n;
+        }
+        total += n;
+        PX_CHECK(sharded.processed(k) == n && n > 0);
+        PX_CHECK(sharded.event_hash(k) == h.value() && sharded.events(k) == h.count());
+        const char* why = nullptr;
+        PX_CHECK(sharded.engine(k).check_invariants(&why));
+    }
+    PX_CHECK(total == stream.size());
+
+    // Each instrument's book is what the single engine holding all of them has.
+    bool same = true;
+    for (InstrumentId i = 0; i < cfg.instruments; ++i) {
+        const MatchingEngine& e = sharded.engine(sharded.shard_of(i));
+        for (const Side s : {Side::Buy, Side::Sell}) {
+            same = same && e.depth(i, s) == whole->depth(i, s);
+            for (std::uint32_t r = 0; same && r < e.depth(i, s); ++r) {
+                const LevelView x = e.level(i, s, r), y = whole->level(i, s, r);
+                same = x.price == y.price && x.qty == y.qty && x.orders == y.orders;
+            }
+            // and a shard holds nothing for an instrument it does not own
+            for (std::uint32_t k = 0; k < kShards; ++k)
+                if (k != sharded.shard_of(i)) same = same && sharded.engine(k).depth(i, s) == 0;
+        }
+    }
+    PX_CHECK(same);
+}
+
 } // namespace
 
 int main() {
@@ -593,5 +645,6 @@ int main() {
     test_risk_gate();
     test_sequencer();
     test_stage_stamps();
+    test_shards();
     PX_TEST_REPORT_AND_RETURN();
 }
