@@ -8,6 +8,12 @@ Cite a tagged release, never `main` ([`CITATION.cff`](CITATION.cff)).
 
 ## Unreleased
 
+**Documentation only, on top of the venue work:** the README gains a twelve-step first-hour
+guide with a picture of each screen (`docs/screenshots/`), `docs/VENUE.md` describes the stages
+around the engine, and the engine, app, platform and contributing documents and the glossary
+cover amend, stage stamps and the loopback demonstration. No code and no hash changed in this
+step.
+
 Experiments a researcher can customise without weakening them: a strategy's own settings, and
 a suite defined in a file. Both are taken by the lab programs only, and with neither given
 every output is byte for byte what v1.0.0 wrote.
