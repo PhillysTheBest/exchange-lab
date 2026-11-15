@@ -43,8 +43,12 @@ InstrumentId MatchingEngine::add_instrument(std::string_view symbol, Price tick_
 void MatchingEngine::process(const OrderRequest& req, EventSink sink) noexcept {
     if (req.type == ReqType::New) {
         process_new(req, sink);
-    } else {
+    } else if (req.type == ReqType::Cancel) {
         process_cancel(req, sink);
+    } else if (req.type == ReqType::Amend) {
+        process_amend(req, sink);
+    } else {
+        process_auction(req, sink);
     }
 }
 
@@ -74,10 +78,13 @@ void MatchingEngine::process_new(const OrderRequest& req, EventSink sink) noexce
     if (req.order_id == kInvalidOrderId) return reject(req, RejectReason::InvalidOrderId, sink);
     if (ids_.find(req.order_id) != kNullSlot) return reject(req, RejectReason::DuplicateOrderId, sink);
 
+    const bool may_rest = !is_market && req.tif == Tif::GTC;
+    // An auction collects orders to match later: one that cannot wait has no place in it.
+    if (book.auction && !may_rest) return reject(req, RejectReason::WrongPhase, sink);
+
     // ---- admission: guarantee a GTC remainder a place to rest ----
     // Matching only ever touches the OPPOSITE side and only ever frees slots, so
     // this own-side lookup and these capacity checks stay valid through the sweep.
-    const bool may_rest = !is_market && req.tif == Tif::GTC;
     SortedLevels& own = book.side(req.side);
     const std::int64_t own_key = SortedLevels::key_of(req.side, req.price);
     SortedLevels::Position own_pos{0, false};
@@ -98,11 +105,19 @@ void MatchingEngine::process_new(const OrderRequest& req, EventSink sink) noexce
     ack.type = EventType::Ack;
     ack.side = req.side;
     sink(ack);
+    match_and_rest(req, book, is_market, may_rest, own_pos, sink);
+}
+
+void MatchingEngine::match_and_rest(const OrderRequest& req, Book& book, bool is_market, bool may_rest,
+                                    SortedLevels::Position own_pos, EventSink sink) noexcept {
+    SortedLevels& own = book.side(req.side);
+    const std::int64_t own_key = SortedLevels::key_of(req.side, req.price);
 
     // ---- match against the opposite side, best level first, FIFO within it ----
     Qty leaves = req.qty;
     SortedLevels& opp = book.side(opposite(req.side));
-    while (leaves > 0 && !opp.empty()) {
+    const bool matching = !book.auction; // in an auction the order only rests
+    while (matching && leaves > 0 && !opp.empty()) {
         const Slot ls = opp.best();
         PriceLevel& lvl = levels_[ls];
         if (!is_market && !crosses(req.side, req.price, lvl.price)) break;
@@ -227,6 +242,169 @@ void MatchingEngine::process_cancel(const OrderRequest& req, EventSink sink) noe
     remove_order(os, /*drop_empty_level=*/true);
 }
 
+void MatchingEngine::process_amend(const OrderRequest& req, EventSink sink) noexcept {
+    const Slot os = ids_.find(req.order_id);
+    // As with cancel, somebody else's order looks exactly like an unknown id.
+    if (os == kNullSlot || orders_[os].owner != req.owner) return reject(req, RejectReason::UnknownOrder, sink);
+    Order& o = orders_[os];
+    PriceLevel& lvl = levels_[o.level];
+    Book& book = books_[lvl.instr];
+    if (req.qty == 0) return reject(req, RejectReason::InvalidQty, sink);
+    if (req.price <= 0 || req.price > kMaxPrice || req.price % book.tick != 0) {
+        return reject(req, RejectReason::InvalidPrice, sink);
+    }
+
+    ExecEvent a;
+    a.order_id = o.id;
+    a.price = req.price;
+    a.qty = req.qty;
+    a.leaves = req.qty;
+    a.owner = o.owner;
+    a.instr = lvl.instr;
+    a.type = EventType::Amended;
+    a.side = lvl.side;
+
+    if (req.price == lvl.price && req.qty <= o.leaves) {
+        // Smaller at the same price: nobody behind it is disadvantaged, so it keeps its place.
+        lvl.total_qty -= o.leaves - req.qty;
+        o.leaves = req.qty;
+        a.seq = next_seq_++;
+        a.reason = static_cast<std::uint8_t>(AmendEffect::KeptPriority);
+        sink(a);
+        return;
+    }
+
+    // A new price or more quantity: to the back of the queue. Decide first that
+    // it will have somewhere to rest. Its own order slot comes free, and so does
+    // its level (and that level's place in the index) if it is alone there.
+    const Side side = lvl.side;
+    SortedLevels& own = book.side(side);
+    const bool frees_level = lvl.count == 1;
+    if (req.price != lvl.price && !own.locate(SortedLevels::key_of(side, req.price)).found &&
+        !frees_level && (levels_.full() || own.full())) {
+        return reject(req, RejectReason::BookFull, sink);
+    }
+
+    OrderRequest again = limit_order(o.id, lvl.instr, o.owner, side, req.price, req.qty);
+    remove_order(os, /*drop_empty_level=*/true);
+    a.seq = next_seq_++;
+    a.reason = static_cast<std::uint8_t>(AmendEffect::LostPriority);
+    sink(a);
+    match_and_rest(again, book, /*is_market=*/false, /*may_rest=*/true,
+                   own.locate(SortedLevels::key_of(side, again.price)), sink);
+}
+
+// The price at which the most quantity trades. Walks every price that is a level
+// on either side, lowest first, carrying the quantity bid at or above it and the
+// quantity offered at or below it; no memory beyond the two cursors.
+UncrossView MatchingEngine::indicative(InstrumentId id) const noexcept {
+    const Book& book = books_[id];
+    const std::uint32_t nb = book.bids.size();
+    const std::uint32_t na = book.asks.size();
+    UncrossView best;
+    if (nb == 0 || na == 0) return best;
+
+    std::uint64_t demand = 0; // bids at or above the price being tried
+    for (std::uint32_t r = 0; r < nb; ++r) demand += levels_[book.bids.at_rank(r)].total_qty;
+    std::uint64_t supply = 0; // asks at or below it
+    std::uint64_t best_gap = 0;
+
+    // Both cursors move up in price: bids from their worst rank, asks from their best.
+    std::uint32_t bids_left = nb; // bids at ranks [0, bids_left) are still at or above the price
+    std::uint32_t asks_in = 0;    // asks at ranks [0, asks_in) are at or below it
+    while (bids_left > 0) {       // above the best bid nothing is bid, so nothing trades
+        const Price next_bid = levels_[book.bids.at_rank(bids_left - 1)].price;
+        const Price p = asks_in < na ? std::min(next_bid, levels_[book.asks.at_rank(asks_in)].price) : next_bid;
+        while (asks_in < na && levels_[book.asks.at_rank(asks_in)].price <= p) {
+            supply += levels_[book.asks.at_rank(asks_in)].total_qty;
+            ++asks_in;
+        }
+        const std::uint64_t qty = std::min(demand, supply);
+        const std::uint64_t gap = demand > supply ? demand - supply : supply - demand;
+        if (qty > best.qty || (qty == best.qty && qty > 0 && gap < best_gap)) {
+            best.price = p;
+            best.qty = qty;
+            best_gap = gap;
+        }
+        // Past this price, the bids resting exactly at it no longer count.
+        while (bids_left > 0 && levels_[book.bids.at_rank(bids_left - 1)].price <= p) {
+            demand -= levels_[book.bids.at_rank(bids_left - 1)].total_qty;
+            --bids_left;
+        }
+    }
+    return best;
+}
+
+void MatchingEngine::process_auction(const OrderRequest& req, EventSink sink) noexcept {
+    if (req.instr >= books_.size()) return reject(req, RejectReason::UnknownInstrument, sink);
+    Book& book = books_[req.instr];
+    const bool opening = req.type == ReqType::OpenAuction;
+    if (opening == book.auction) return reject(req, RejectReason::WrongPhase, sink);
+
+    ExecEvent ph;
+    ph.instr = req.instr;
+    ph.type = EventType::Phase;
+    if (opening) {
+        book.auction = true;
+        ph.seq = next_seq_++;
+        ph.reason = static_cast<std::uint8_t>(BookPhase::Auction);
+        sink(ph);
+        return;
+    }
+
+    // ---- uncross: the best bid meets the best ask until the quantity is done ----
+    const UncrossView u = indicative(req.instr);
+    std::uint64_t left = u.qty;
+    while (left > 0) {
+        const Slot bls = book.bids.best();
+        const Slot als = book.asks.best();
+        PriceLevel& bl = levels_[bls];
+        PriceLevel& al = levels_[als];
+        Order& bid = orders_[bl.head];
+        Order& ask = orders_[al.head];
+        const Qty q = static_cast<Qty>(std::min<std::uint64_t>(left, std::min(bid.leaves, ask.leaves)));
+        left -= q;
+        bid.leaves -= q;
+        ask.leaves -= q;
+        bl.total_qty -= q;
+        al.total_qty -= q;
+        ExecEvent t;
+        t.seq = next_seq_++;
+        t.order_id = bid.id;
+        t.maker_id = ask.id;
+        t.price = u.price;
+        t.qty = q;
+        t.leaves = bid.leaves;
+        t.maker_leaves = ask.leaves;
+        t.owner = bid.owner;
+        t.maker_owner = ask.owner;
+        t.instr = req.instr;
+        t.type = EventType::Trade;
+        t.side = Side::Buy;
+        sink(t);
+        if (bid.leaves == 0) {
+            remove_order(bl.head, /*drop_empty_level=*/false);
+            if (bl.count == 0) {
+                book.bids.pop_best();
+                levels_.release(bls);
+            }
+        }
+        if (ask.leaves == 0) {
+            remove_order(al.head, /*drop_empty_level=*/false);
+            if (al.count == 0) {
+                book.asks.pop_best();
+                levels_.release(als);
+            }
+        }
+    }
+
+    book.auction = false;
+    ph.seq = next_seq_++;
+    ph.price = u.price;
+    ph.reason = static_cast<std::uint8_t>(BookPhase::Continuous);
+    sink(ph);
+}
+
 void MatchingEngine::remove_order(Slot os, bool drop_empty_level) noexcept {
     const Order& o = orders_[os];
     const Slot ls = o.level;
@@ -312,7 +490,7 @@ bool MatchingEngine::check_invariants(const char** why) const {
                 ++levels_seen;
             }
         }
-        if (!book.bids.empty() && !book.asks.empty() &&
+        if (!book.auction && !book.bids.empty() && !book.asks.empty() &&
             levels_[book.bids.best()].price >= levels_[book.asks.best()].price) {
             return fail("book crossed");
         }

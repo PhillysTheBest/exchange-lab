@@ -25,8 +25,18 @@ by `python bench/summarize_results.py`.
 
 ## What it does
 
-- **Order types:** limit (GTC or IOC), market (an IOC sweep with no price limit), and
-  cancel by order id (owner only).
+- **Order types:** limit (GTC or IOC), market (an IOC sweep with no price limit),
+  cancel by order id (owner only), and amend (owner only).
+- **Batch auction.** `open_auction` stops matching for one instrument so orders can cross;
+  `uncross` matches them all at the one price that trades the most quantity (then the smaller
+  imbalance, then the lower price), best price and oldest order first, with no self-trade
+  prevention. A `Phase` event marks each change, and the closing one carries the price. In an
+  auction an IOC or market order is refused with `WrongPhase`. See [`VENUE.md`](VENUE.md).
+- **Amend.** Making a resting order smaller at the same price changes it in place and keeps
+  its time priority. Changing its price or making it larger removes it and re-enters it at the
+  back of its new level under the same id, where it can trade like any incoming order. If the
+  amended order could not be given a place to rest, the whole request is refused and the order
+  is left untouched, so admission is still decided before anything changes.
 - **Several instruments per engine.** Each instrument has its own tick size, and order
   ids are unique across the whole exchange.
 - **Price-time priority.**
@@ -39,8 +49,9 @@ by `python bench/summarize_results.py`.
   bad instrument, quantity, price or tick, duplicate id, or a full book. An order is
   never partly executed and then rejected.
 - **Output is a stream of 64-byte events:** `Ack`, `Trade`, `Cancelled` (user / IOC
-  remainder / self-trade) and `Rejected` (reason), each numbered by one engine-wide
-  sequence. See [messages.hpp](../include/px/messages.hpp) for the exact protocol.
+  remainder / self-trade), `Rejected` (reason) and `Amended` (kept or lost its place in the
+  queue) and `Phase` (an auction opened or closed), each numbered by one engine-wide sequence. `Amended` was numbered after every
+  existing event type, so no existing value moved, and no pinned hash moved with it. See [messages.hpp](../include/px/messages.hpp) for the exact protocol.
 
 ## Design
 
@@ -119,6 +130,11 @@ before and after the fix, using the same seed-42 hash.
 - **What is not timed.** Time spent waiting in the inbound ring is excluded: this is
   the engine's *service time*, not a time from wire to wire. There is no network, no
   parsing and no network card.
+- **Stage stamps, kept apart.** `bench_matching_latency --stages` also stamps the moment
+  the gateway offers each order and reports, separately, how long orders waited for the
+  matcher and the two stages together. That comparison reads two cores' counters, so it needs
+  an invariant counter, and it is not part of the gate or of service time. Turning it on
+  changes nothing that is matched; `test_venue` checks the event hash with and without it.
 - **Timer floor.** The empty timestamp bracket costs about 32 ns. It is printed with
   every run and never subtracted.
 - **Workload** ([order_stream.hpp](../sim/order_stream.hpp)). A seeded, pre-generated
@@ -230,9 +246,18 @@ g++ 13.3, same commands; raw output in [results/wsl2/](../results/wsl2/).
 - **The honest claim for this machine:** unpaced, p99.9 < 2 µs on both platforms;
   paced at 50k orders/s, it is not.
 
+## Around the engine
+
+Sequencing many senders, pre-trade risk, the journal and crash recovery, a hot standby, the
+public feed, sharding across matcher threads and the order-entry protocol all live outside the
+engine, in `venue/`, and use it through `process()` alone. [`VENUE.md`](VENUE.md) is their
+design.
+
 ## Correctness
 
-- **Differential fuzzing** ([fuzz_vs_reference.cpp](../tests/fuzz_vs_reference.cpp)).
+- **Differential fuzzing** ([fuzz_vs_reference.cpp](../tests/fuzz_vs_reference.cpp)). The
+  reference engine implements amend and the auction by the same rules, and the fuzzer puts
+  both in the stream.
   - 7 seeded runs, 924k events, **0 mismatches** against a deliberately naive
     `std::map` + `std::deque` reference engine that implements the same event protocol
     and admission rule.

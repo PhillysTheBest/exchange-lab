@@ -92,7 +92,7 @@ LIB_DBG := $(LIB_SRC:%.cpp=$(DOBJ)/%.o)
 LIB_REL := $(LIB_SRC:%.cpp=$(ROBJ)/%.o)
 
 TESTS   := test_containers test_spsc_ring test_engine fuzz_vs_reference test_alloc_audit test_determinism \
-           test_arena test_app test_data
+           test_arena test_app test_data test_venue
 BENCHES := bench_engine bench_ring bench_matching_latency
 
 TEST_BINS  := $(TESTS:%=$(DBG)/%$(EXE))
@@ -293,6 +293,16 @@ $(BENCH_BINS): $(REL)/%$(EXE): $(ROBJ)/bench/%.o $(LIB_REL)
 $(REPL_BIN): $(ROBJ)/tools/repl.o $(LIB_REL)
 	$(call announce,linking,$@)
 	$(CXX) $(RELEASE_FLAGS) $^ -o $@ $(LDLIBS)
+
+# The one program with a socket in it (tools/netdemo.cpp): the venue's stages
+# behind TCP on the loopback address. A demonstration that checks itself; it is
+# deliberately not part of `all`, `test` or anything that produces evidence.
+.PHONY: netdemo test-net
+$(REL)/netdemo$(EXE): $(ROBJ)/tools/netdemo.o $(LIB_REL)
+	$(call announce,linking,$@)
+	$(CXX) $(RELEASE_FLAGS) $^ -o $@ $(LDLIBS)
+netdemo test-net: $(REL)/netdemo$(EXE)
+	./$<
 
 $(ARENA_BINS): $(REL)/%$(EXE): $(ROBJ)/arena/%.o $(LIB_REL)
 	$(call announce,linking,$@)

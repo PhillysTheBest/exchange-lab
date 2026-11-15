@@ -24,7 +24,7 @@
 //
 //   bench_matching_latency [--profile=thin|deep] [--seed=S] [--orders=N]
 //        [--warmup=N] [--instruments=K] [--repeat=K] [--rate=ORDERS_PER_SEC]
-//        [--outliers=PATH] [--csv=PATH] [--no-pin]
+//        [--outliers=PATH] [--csv=PATH] [--no-pin] [--stages]
 #include "px/histogram.hpp"
 #include "px/matching_engine.hpp"
 #include "px/platform.hpp"
@@ -101,6 +101,7 @@ int main(int argc, char** argv) {
     unsigned repeat = 1;
     double rate = 0;
     bool pin = true;
+    bool stages = false;
     const char* csv_path = nullptr;
     const char* outliers_path = nullptr;
     for (int i = 1; i < argc; ++i) {
@@ -115,6 +116,7 @@ int main(int argc, char** argv) {
         else if (flag(argv[i], "--csv", &v)) csv_path = v;
         else if (flag(argv[i], "--outliers", &v)) outliers_path = v;
         else if (std::strcmp(argv[i], "--no-pin") == 0) pin = false;
+        else if (std::strcmp(argv[i], "--stages") == 0) stages = true;
         else {
             std::fprintf(stderr, "unknown argument: %s\n", argv[i]);
             return 2;
@@ -189,6 +191,7 @@ int main(int argc, char** argv) {
         opt.pace_orders_per_sec = rate;
         opt.ticks_per_ns = clock.ticks_per_ns();
         opt.record_start_times = true;
+        opt.record_enqueue_times = stages;
         opt.hiccup_capacity = 1'000'000;
         opt.hiccup_threshold_ticks = clock.from_ns(kHiccupNs);
         opt.on_window_start = [] { g_allocs_at_start = sim::g_allocations.load(); };
@@ -223,6 +226,20 @@ int main(int argc, char** argv) {
                         engine->resting_orders(), engine->live_levels(), deepest, engine->config().levels_per_side);
             std::printf("\nrun 1 of %u, every recorded order, by kind of work:\n", repeat);
             print_percentiles("all recorded orders", s.all);
+            if (stages) {
+                // Not part of the gate, and not service time: how long each order waited
+                // between the gateway offering it and the matcher taking it, and the two
+                // together. Unpaced, the gateway runs ahead and the wait is the backlog.
+                LatencyRecorder wait(res.recorded), through(res.recorded);
+                for (std::size_t i = 0; i < res.recorded; ++i) {
+                    const Tsc w = res.start_tsc[i] > res.enqueue_tsc[i] ? res.start_tsc[i] - res.enqueue_tsc[i] : 0;
+                    wait.record(w);
+                    through.record(w + res.latency->at(i));
+                }
+                std::printf("\nstage stamps (two cores' counters compared: needs the invariant counter above):\n");
+                print_percentiles("waiting for the matcher", wait.summarize(clock));
+                print_percentiles("gateway offer -> last event", through.summarize(clock));
+            }
             std::vector<std::vector<std::uint32_t>> by_class(sim::kOrderClasses);
             for (std::size_t i = 0; i < res.classes.size(); ++i) {
                 by_class[res.classes[i]].push_back(static_cast<std::uint32_t>(i));

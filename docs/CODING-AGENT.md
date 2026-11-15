@@ -68,8 +68,9 @@ A strategy may be *written* by a model. It may not *call* one.
   give the same event stream, bit for bit, on every machine. A model's answer is sampled,
   depends on a version that changes under you, and is not reproducible from a seed. One call
   would make `/reproduce` fail and every fingerprint meaningless.
-- **It needs the network,** and nothing in exchange-lab has one. Data is read from disk; no
-  program opens a socket.
+- **It needs the network,** and nothing in a session has one. Data is read from disk; the
+  only socket in the repository is the venue's loopback demonstration, which is not a session
+  and never leaves the machine.
 - **It brings the wall clock in.** A session invents its nanoseconds. A call that takes real
   milliseconds either stops the simulated clock, which hides its cost, or leaks real time into
   simulated time, which makes the run depend on the machine.
