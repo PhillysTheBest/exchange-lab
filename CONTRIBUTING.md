@@ -36,7 +36,9 @@ and why.
   scripts in `bench/` that summarise committed evidence, and needs only the standard
   library.
 - **No network, no browser, no AI model** in anything the project builds. Data files are
-  read from disk, never fetched.
+  read from disk, never fetched. The single exception is `tools/netdemo.cpp`, the venue's
+  loopback demonstration: it binds to `127.0.0.1` only, produces no evidence and is not part
+  of `make all`. Do not add a second.
 - **Determinism is a contract.** If a change moves a hash, it changed behaviour. Say so in
   the pull request and say why it was intended. The suite fingerprints are pinned: moving
   one needs a suite version bump in `arena/suite.hpp`, never a silent re-pin.
