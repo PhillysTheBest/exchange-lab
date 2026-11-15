@@ -30,12 +30,12 @@ hash or fingerprint moved.
 ```bash
 make test                         # includes test_venue, which checks every stage below
 make test-net                     # the loopback demonstration: two clients, one venue, every step checked
-make repl && build/release/repl < tools/repl_demo.txt   # the hand-driven book, ending with two amends
+make repl && build/release/repl < tools/repl_demo.txt   # the hand-driven book, ending with two amends and an auction
 build/release/bench_matching_latency --stages           # the per-stage time stamps
 ```
 
 In the app, `/book` is the same hand-driven book, so `amend ID PRICE QTY as OWNER` works there
-too; type `help` inside it for the full list.
+too, and so do `auction SYM` and `uncross SYM`; type `help` inside it for the full list.
 
 ## The stages
 
@@ -125,6 +125,39 @@ could not be given a place to rest, the request is refused whole and the order i
 was. The naive reference engine implements the same rule, and the differential fuzz test
 compares the two with amends in the stream. Adding amend moved no pinned hash.
 
+### Batch auction (in the engine, with operator controls in the venue)
+
+A venue opens and sometimes reopens a market with an auction: orders are collected without
+matching, so the book may cross, and then everything trades at one price. The engine supports
+this per instrument.
+
+- **Opening and closing.** `open_auction` stops matching for one instrument and `uncross`
+  ends the auction. Each change of phase is reported as a `Phase` event, and the closing one
+  carries the price the auction traded at (zero if nothing matched). Afterwards the instrument
+  trades continuously again.
+- **During an auction** only resting limit orders are taken. An IOC or market order, or opening
+  or closing an auction out of turn, is refused with `WrongPhase`.
+- **One price.** The price is the one that trades the most quantity; if several do, the one
+  leaving the smaller imbalance; if several still tie, the lower price. The engine can report
+  this indicative price and quantity at any time while the auction runs, and `uncross` in the
+  hand-driven book prints it first.
+- **One price for everyone.** Every fill is at that price, best price first and oldest first
+  within a price. Self-trade prevention does not apply in an uncross: orders are matched as
+  they stand.
+- **Operator controls.** `Venue::open_auction` and `Venue::uncross` are the venue's own
+  controls and go through the journal like any request. The risk gate refuses them from an
+  ordinary session (`VenueOnly`).
+- **On the public feed** an auction shows as `AuctionOpen`, then `AuctionClose` carrying the
+  price, with each uncross trade as an `Exec` for the seller's resting order and a `Paired` for
+  the buyer's, which together are one trade. `FeedBook` tracks whether an auction is running and
+  the last uncross price.
+- **Recovery.** The snapshot format (`PXSNAP02`) records which instruments are in an auction
+  and restores them before their orders, so a snapshot taken mid-auction restores the same
+  crossed book, and the journal replays to the same event hash.
+
+Like amend, the naive reference engine implements the same rules and the differential fuzzer
+compares them. The auction moved no pinned hash or fingerprint.
+
 ### Per-stage time stamps (`sim/pipeline.hpp`, `bench_matching_latency --stages`)
 
 The engine's published measurement is service time: from taking an order off the inbound ring
@@ -170,7 +203,7 @@ tail; crash recovery against an uninterrupted run; that a snapshot is the book; 
 taking over, and stopping on a lost record; the public feed and private reports, with messages
 dropped on purpose; every risk check and the kill switch; the sequencer's resend, gap and
 fairness rules; that stage stamps change nothing; shards against single-threaded runs; the
-wire format byte by byte; and amend through the whole venue.
+wire format byte by byte; amend and auctions through the whole venue, including a snapshot taken mid-auction.
 
 ## What it does not change
 
