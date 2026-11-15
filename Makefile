@@ -92,7 +92,7 @@ LIB_DBG := $(LIB_SRC:%.cpp=$(DOBJ)/%.o)
 LIB_REL := $(LIB_SRC:%.cpp=$(ROBJ)/%.o)
 
 TESTS   := test_containers test_spsc_ring test_engine fuzz_vs_reference test_alloc_audit test_determinism \
-           test_arena test_app test_data
+           test_arena test_app test_data test_venue
 BENCHES := bench_engine bench_ring bench_matching_latency
 
 TEST_BINS  := $(TESTS:%=$(DBG)/%$(EXE))
