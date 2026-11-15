@@ -15,7 +15,8 @@ Terms are grouped and sorted alphabetically within each group.
 6. [Experiments and evaluation](#experiments-and-evaluation)
 7. [Market data](#market-data)
 8. [The engine and its measurements](#the-engine-and-its-measurements)
-9. [Words this project avoids](#words-this-project-avoids)
+9. [The venue](#the-venue)
+10. [Words this project avoids](#words-this-project-avoids)
 
 ## The app
 
@@ -27,6 +28,8 @@ Terms are grouped and sorted alphabetically within each group.
 
 ## Orders and the order book
 
+**Amend** — A request that changes a resting order's price or size under the same id. Smaller at the same price keeps its time priority; anything else sends it to the back of its level, where it may trade like a new order. Refused whole, with the order untouched, if the amended order could have nowhere to rest.
+
 **Ack** — The engine's acknowledgement that a new order passed admission, sent before any trade it causes.
 
 **Admission before matching** — Every rejection is decided before any state changes, so an order is never partly executed and then rejected.
@@ -34,6 +37,8 @@ Terms are grouped and sorted alphabetically within each group.
 **Aggressor and resting side** — The aggressor (taker) crossed the book; the resting side (maker) was already there and sets the fill price. This has nothing to do with the strategy named `maker`.
 
 **BookFull** — The rejection a GTC order gets when the engine cannot guarantee it a resting slot.
+
+**Auction (batch auction)** — A phase in which an instrument collects resting limit orders without matching, so its book may cross; `uncross` then trades them all at one price. IOC and market orders are refused meanwhile.
 
 **Cancel** — A request to remove a resting order by its id; only its owner may make it.
 
@@ -294,6 +299,48 @@ Terms are grouped and sorted alphabetically within each group.
 **Timer floor** — The cost of an empty timestamp bracket, about 32 ns, printed and never subtracted.
 
 **Zero allocation** — `process()` allocates nothing after construction; `arena/` is exempt.
+
+## The venue
+
+The stages around the engine, in `venue/`. *Where:* `docs/VENUE.md`.
+
+**Cancel on disconnect** — When a client's connection drops, the venue pulls that client's resting orders. Shown by the loopback demonstration.
+
+**Feed gap** — A missing number in the public feed. A listener that sees one refuses to carry on and catches up from a snapshot rather than keep a book that may be wrong.
+
+**Hot standby** — A second engine that follows the journal as it is written and can take over by being given requests. It stops if a record is missing.
+
+**Indicative price** — While an auction runs, the price and quantity an uncross would trade now: most quantity first, then the smaller imbalance, then the lower price.
+
+**Journal** — Every request the engine was given, numbered and checksummed, written before the engine sees it. A torn record at the end of the file is dropped, never replayed.
+
+**Kill switch** — Blocks one member and cancels every order that member has resting.
+
+**Loopback demonstration** — `make test-net`: the venue behind TCP on `127.0.0.1` with two clients in the same process. The only socket in the repository; it produces no evidence.
+
+**Order-entry protocol** — The binary messages a client sends and receives (`venue/wire.hpp`): logon, order, report, refusal, heartbeat, each with a length in front.
+
+**Price collar** — The furthest a limit price may be from the last trade. A market order is turned into a limit order at the collar.
+
+**Private report** — A message to one member about that member's own orders only. A fill never names the other side.
+
+**Public feed** — The anonymous, order-by-order record of the book (an order rested, was executed, deleted or reduced), numbered so gaps show. Orders are named by a reference the feed makes up.
+
+**Recovery** — Rebuilding a lost engine from the last snapshot and the journal after it. The result is the event stream the lost engine would have produced.
+
+**Risk gate** — The checks an order passes before it may reach the book: size and value, price collar, open orders, throttle and the kill switch. Cancels are never refused.
+
+**Sequencer** — The one place that decides the order of messages from many sessions. Drops resends, refuses skipped numbers and takes turns round-robin.
+
+**Shard** — One engine on its own thread holding a fixed set of instruments. A router sends each request to its instrument's shard.
+
+**Snapshot** — The resting orders in time order, plus the counters needed to resume. Restoring it rebuilds the same book with the same queues.
+
+**Stage stamps** — Time stamps at more than one stage of the pipeline (`--stages`), reported apart from service time and never part of the gate.
+
+**Throttle** — A cap on one member's messages per window, counted in venue messages rather than wall-clock time so a replay decides the same way.
+
+**Uncross** — The request that ends an auction and matches everything collected at one price, best price and oldest order first. There is no self-trade prevention in it.
 
 ## Words this project avoids
 
