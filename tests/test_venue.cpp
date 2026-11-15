@@ -9,6 +9,9 @@
 #include "venue/feed.hpp"
 #include "venue/journal.hpp"
 #include "venue/recovery.hpp"
+#include "venue/risk.hpp"
+#include "venue/sequencer.hpp"
+#include "venue/venue.hpp"
 
 #include <cstdio>
 #include <filesystem>
@@ -16,6 +19,7 @@
 #include <memory>
 #include <random>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace px;
@@ -370,6 +374,191 @@ void test_feed_and_reports() {
                 static_cast<unsigned long long>(ctx.trades));
 }
 
+void test_risk_gate() {
+    auto engine = std::make_unique<MatchingEngine>();
+    const InstrumentId x = engine->add_instrument("X", 100);
+    RiskLimits lim;
+    lim.max_order_qty = 500;
+    lim.max_order_value = 100 * kPriceScale * 400; // 400 units at 100.00
+    lim.collar = 50 * 100;                         // 50 ticks
+    lim.max_open_orders = 3;
+    lim.max_messages = 6;
+    lim.throttle_window = 100;
+    std::vector<Report> reports;
+    std::vector<FeedMsg> feed;
+    Venue v(*engine, 2, lim, "", [&feed](const FeedMsg& m) { feed.push_back(m); },
+            [&reports](const Report& r) { reports.push_back(r); });
+    std::uint64_t cs[2] = {0, 0};
+    OrderId id = 0;
+    const auto send = [&](std::uint32_t session, const OrderRequest& r) { return v.submit(session, ++cs[session], r); };
+    const Price px100 = 100 * kPriceScale;
+
+    // Before any trade there is no reference price, so the collar cannot bind.
+    PX_CHECK(send(0, limit_order(++id, x, 1, Side::Sell, px100, 100)).risk == RiskReject::None);
+    PX_CHECK(send(1, limit_order(++id, x, 2, Side::Buy, px100, 10)).risk == RiskReject::None); // trades at 100.00
+    PX_CHECK(send(1, limit_order(++id, x, 2, Side::Buy, px100, 501)).risk == RiskReject::OrderTooLarge);
+    PX_CHECK(send(1, limit_order(++id, x, 2, Side::Buy, px100, 450)).risk == RiskReject::ValueTooLarge);
+    PX_CHECK(send(1, limit_order(++id, x, 2, Side::Buy, px100 + 51 * 100, 10)).risk == RiskReject::PriceOutsideCollar);
+    PX_CHECK(send(1, limit_order(++id, x, 2, Side::Buy, px100 - 50 * 100, 10)).risk == RiskReject::None); // on the collar
+    PX_CHECK(engine->resting_orders() == 2);
+    PX_CHECK(!reports.empty() && reports.back().type == ReportType::Accepted);
+
+    // A market order may not trade beyond the collar: the far ask is left alone.
+    {
+        auto e = std::make_unique<MatchingEngine>();
+        const InstrumentId m = e->add_instrument("M", 100);
+        RiskLimits only_collar;
+        only_collar.collar = 50 * 100;
+        Venue vc(*e, 1, only_collar, "", nullptr, nullptr);
+        std::uint64_t c = 0;
+        vc.submit(0, ++c, limit_order(1, m, 1, Side::Sell, px100 + 80 * 100, 20)); // posted before any reference price
+        vc.submit(0, ++c, limit_order(2, m, 1, Side::Sell, px100, 10));
+        vc.submit(0, ++c, limit_order(3, m, 2, Side::Buy, px100, 10));             // trades: the reference is 100.00
+        vc.submit(0, ++c, limit_order(4, m, 1, Side::Sell, px100 + 30 * 100, 20));
+        PX_CHECK(e->depth(m, Side::Sell) == 2);
+        PX_CHECK(vc.submit(0, ++c, market_order(5, m, 2, Side::Buy, 100)).risk == RiskReject::None);
+        PX_CHECK(e->depth(m, Side::Sell) == 1 && e->level(m, Side::Sell, 0).price == px100 + 80 * 100);
+        PX_CHECK(e->resting_orders() == 1); // and the market order's remainder did not rest
+
+        // Planted defect: with no collar the same market order takes the far ask too.
+        auto e0 = std::make_unique<MatchingEngine>();
+        const InstrumentId m0 = e0->add_instrument("M", 100);
+        Venue v0(*e0, 1, RiskLimits{}, "", nullptr, nullptr);
+        c = 0;
+        v0.submit(0, ++c, limit_order(1, m0, 1, Side::Sell, px100 + 80 * 100, 20));
+        v0.submit(0, ++c, limit_order(4, m0, 1, Side::Sell, px100 + 30 * 100, 20));
+        v0.submit(0, ++c, market_order(5, m0, 2, Side::Buy, 100));
+        PX_CHECK(e0->depth(m0, Side::Sell) == 0);
+    }
+
+    // The throttle counts venue messages, so it decides the same way on replay.
+    {
+        auto e = std::make_unique<MatchingEngine>();
+        const InstrumentId t = e->add_instrument("T", 100);
+        RiskLimits th;
+        th.max_messages = 3;
+        th.throttle_window = 10;
+        Venue vt(*e, 1, th, "", nullptr, nullptr);
+        std::uint64_t c = 0;
+        int passed = 0, throttled = 0;
+        for (OrderId i = 1; i <= 9; ++i) {
+            const RiskReject r = vt.submit(0, ++c, limit_order(i, t, 1, Side::Buy, px100, 1)).risk;
+            passed += r == RiskReject::None;
+            throttled += r == RiskReject::Throttled;
+        }
+        PX_CHECK(passed == 3 && throttled == 6);
+        PX_CHECK(vt.submit(0, ++c, limit_order(10, t, 1, Side::Buy, px100, 1)).risk == RiskReject::None); // next window
+    }
+
+    // Open-order cap, and cancels are never refused.
+    auto e2 = std::make_unique<MatchingEngine>();
+    const InstrumentId y = e2->add_instrument("Y", 100);
+    RiskLimits cap;
+    cap.max_open_orders = 3;
+    cap.max_messages = 4;
+    cap.throttle_window = 1'000'000;
+    Venue v2(*e2, 1, cap, "", nullptr, nullptr);
+    std::uint64_t c2 = 0;
+    PX_CHECK(v2.submit(0, ++c2, limit_order(1, y, 7, Side::Buy, px100, 1)).risk == RiskReject::None);
+    PX_CHECK(v2.submit(0, ++c2, limit_order(2, y, 7, Side::Buy, px100, 1)).risk == RiskReject::None);
+    PX_CHECK(v2.submit(0, ++c2, limit_order(3, y, 7, Side::Buy, px100, 1)).risk == RiskReject::None);
+    PX_CHECK(v2.submit(0, ++c2, limit_order(4, y, 7, Side::Buy, px100, 1)).risk == RiskReject::TooManyOpenOrders);
+    PX_CHECK(v2.submit(0, ++c2, limit_order(5, y, 7, Side::Buy, px100, 1)).risk == RiskReject::Throttled);
+    PX_CHECK(v2.submit(0, ++c2, cancel_order(1, y, 7)).risk == RiskReject::None); // a cancel always passes
+    PX_CHECK(e2->resting_orders() == 2);
+
+    // Kill switch: resting orders pulled, new orders refused, cancels still pass.
+    PX_CHECK(v2.kill(7) == 2);
+    PX_CHECK(e2->resting_orders() == 0);
+    PX_CHECK(v2.submit(0, ++c2, limit_order(6, y, 7, Side::Buy, px100, 1)).risk == RiskReject::Killed);
+    v2.risk().revive(7);
+
+    // Planted defect: with no gate at all, the oversized order reaches the book.
+    auto e3 = std::make_unique<MatchingEngine>();
+    const InstrumentId z = e3->add_instrument("Z", 100);
+    Venue open(*e3, 1, RiskLimits{}, "", nullptr, nullptr);
+    PX_CHECK(open.submit(0, 1, limit_order(1, z, 1, Side::Buy, px100, 1'000'000)).risk == RiskReject::None);
+    PX_CHECK(e3->resting_orders() == 1);
+}
+
+void test_sequencer() {
+    // Session numbering: a resend is dropped, a skipped number is refused.
+    Sequencer s(2);
+    std::uint64_t n = 0;
+    PX_CHECK(s.admit(0, 1, n) == Admit::Accepted && n == 1);
+    PX_CHECK(s.admit(1, 1, n) == Admit::Accepted && n == 2);
+    PX_CHECK(s.admit(0, 1, n) == Admit::Duplicate);
+    PX_CHECK(s.admit(0, 3, n) == Admit::Gap);
+    PX_CHECK(s.expected(0) == 2);
+    PX_CHECK(s.admit(0, 2, n) == Admit::Accepted && n == 3);
+    PX_CHECK(s.admit(5, 1, n) == Admit::UnknownSession);
+
+    // A resent order cannot enter the book twice.
+    auto engine = std::make_unique<MatchingEngine>();
+    const InstrumentId x = engine->add_instrument("X", 100);
+    Venue v(*engine, 1, RiskLimits{}, "", nullptr, nullptr);
+    const OrderRequest o = limit_order(1, x, 1, Side::Buy, 100 * kPriceScale, 5);
+    PX_CHECK(v.submit(0, 1, o).admit == Admit::Accepted);
+    PX_CHECK(v.submit(0, 1, o).admit == Admit::Duplicate);
+    PX_CHECK(engine->resting_orders() == 1 && engine->next_seq() == 2);
+
+    // Fairness: with every ring full, each pass takes exactly one from each
+    // session, so a session with 10x the backlog gets no more than its turn.
+    {
+        MergeSequencer<64> m(3);
+        const std::size_t backlog[3] = {40, 4, 4};
+        for (std::uint32_t r = 0; r < 3; ++r)
+            for (std::size_t i = 0; i < backlog[r]; ++i) {
+                Inbound in;
+                in.client_seq = i + 1;
+                PX_CHECK(m.ring(r).try_push(in));
+            }
+        std::vector<std::uint32_t> order;
+        for (int pass = 0; pass < 4; ++pass) m.poll([&order](std::uint64_t, const Inbound& in) { order.push_back(in.session); });
+        std::size_t per[3] = {0, 0, 0};
+        for (const std::uint32_t sess : order) ++per[sess];
+        PX_CHECK(order.size() == 12 && per[0] == 4 && per[1] == 4 && per[2] == 4);
+    }
+
+    // Four producer threads, one sequencer thread: everything arrives once,
+    // numbered without a gap, and each session's own order is kept.
+    constexpr std::uint32_t kSessions = 4;
+    constexpr std::uint64_t kEach = 50'000;
+    MergeSequencer<> m(kSessions);
+    std::vector<std::thread> producers;
+    for (std::uint32_t sess = 0; sess < kSessions; ++sess) {
+        producers.emplace_back([&m, sess] {
+            for (std::uint64_t i = 1; i <= kEach; ++i) {
+                Inbound in;
+                in.client_seq = i;
+                in.req.order_id = (static_cast<std::uint64_t>(sess) << 32) | i;
+                while (!m.ring(sess).try_push(in)) std::this_thread::yield();
+                if (i % 1000 == 0) { // a client that retries: the same message again
+                    while (!m.ring(sess).try_push(in)) std::this_thread::yield();
+                }
+            }
+        });
+    }
+    std::uint64_t last_num = 0, received = 0;
+    std::uint64_t last_client[kSessions] = {0, 0, 0, 0};
+    bool gapless = true, in_order = true;
+    while (received < kSessions * kEach) {
+        m.poll([&](std::uint64_t num, const Inbound& in) {
+            gapless = gapless && num == last_num + 1;
+            last_num = num;
+            in_order = in_order && in.client_seq == last_client[in.session] + 1 &&
+                       in.req.order_id == ((static_cast<std::uint64_t>(in.session) << 32) | in.client_seq);
+            last_client[in.session] = in.client_seq;
+            ++received;
+        });
+    }
+    for (std::thread& t : producers) t.join();
+    while (m.poll([&](std::uint64_t, const Inbound&) { ++received; }) != 0) {} // the last resends
+    PX_CHECK(gapless && in_order);
+    PX_CHECK(received == kSessions * kEach);
+    PX_CHECK(m.duplicates() == kSessions * (kEach / 1000) && m.gaps() == 0);
+}
+
 } // namespace
 
 int main() {
@@ -378,5 +567,7 @@ int main() {
     test_snapshot_is_the_book();
     test_standby_takes_over();
     test_feed_and_reports();
+    test_risk_gate();
+    test_sequencer();
     PX_TEST_REPORT_AND_RETURN();
 }
