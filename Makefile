@@ -892,7 +892,7 @@ canonical: $(DBG)/test_determinism$(EXE) $(DBG)/test_arena$(EXE) $(REL)/sweep$(E
 	elif [ $$rc -eq 1 ]; then echo "canonical: differs from tests/canonical.txt (< recorded, > this build)"; exit 1; \
 	else echo "canonical: diff could not compare (exit $$rc): is diffutils installed?"; exit 1; fi
 
-# The rule in CLAUDE.md, as a target: the engine's object must call no memmove,
+# The rule in docs/DEVELOPING.md, as a target: the engine's object must call no memmove,
 # whichever compiler built it.
 .PHONY: memmove-check
 memmove-check: $(DOBJ)/src/matching_engine.o

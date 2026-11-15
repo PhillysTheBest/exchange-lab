@@ -1,7 +1,6 @@
 # Using a coding agent with exchange-lab
 
-An AI coding agent, such as Claude Code or any other that can read files and run commands,
-is a reasonable way to write a strategy for exchange-lab and to read what the report says
+Any AI coding agent that can read files and run commands is a reasonable way to write a strategy for exchange-lab and to read what the report says
 about it. This page says how to use one well, what to watch it for, and why no model may
 run **inside** a session, however it is used outside one.
 
@@ -29,7 +28,7 @@ Give the agent these files and this list before it writes anything:
 
 - `arena/strategy.hpp`, `examples/strategies/imbalance.hpp`, [`RUNNER.md`](RUNNER.md) and
   [`REPORT.md`](REPORT.md). For work on the project itself rather than a strategy, it should
-  read [`CLAUDE.md`](../CLAUDE.md) first.
+  read [`DEVELOPING.md`](DEVELOPING.md) first.
 - **No floating point** in the strategy: no `float`, no `double`, no `<cmath>`. Prices are
   integers in 1/10,000ths of a currency unit and a tick is `v.tick`.
 - **Include `arena/strategy.hpp` and nothing else from the project.** The engine, the session

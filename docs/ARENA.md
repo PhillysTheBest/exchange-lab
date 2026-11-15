@@ -30,7 +30,7 @@ Everything compiles into one binary, and nothing talks over a network.
 
 ## The rules, and which of them stop at the arena's edge
 
-The engine's rules in [`CLAUDE.md`](../CLAUDE.md) are about `process()`. Two of them stop
+The engine's rules in [`DEVELOPING.md`](DEVELOPING.md) are about `process()`. Two of them stop
 here, on purpose:
 
 - **Zero allocation does not apply.** `arena/` uses maps and vectors freely. The guarantee

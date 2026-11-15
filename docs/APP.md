@@ -1,7 +1,7 @@
 # The exchange-lab app
 
 One terminal program, `build/release/exchange-lab`, with a prompt and slash commands, in the
-spirit of Claude Code. It is how a student or a researcher meets the project. There is **no
+spirit of a coding agent's terminal. It is how a student or a researcher meets the project. There is **no
 browser whatsoever**: no web or desktop interface, no mouse, no network and no new
 dependency. There is no AI model in it either. Each command does one fixed thing, and plain
 text gets a pointer to `/help`.

@@ -47,7 +47,7 @@ and why.
   and every new command goes in [`docs/LEARN.md`](docs/LEARN.md) or the relevant document
   and must run as written.
 
-[`CLAUDE.md`](CLAUDE.md) holds the full set of rules the code depends on, including the
+[`docs/DEVELOPING.md`](docs/DEVELOPING.md) holds the full set of rules the code depends on, including the
 engine's own (single-threaded matching, zero allocation after construction, no C-runtime
 calls on the hot path).
 
@@ -67,7 +67,7 @@ make canonical     # every output that must match on every platform
 Run them one at a time: `test-app` and `test-data` both write under `runs/`. On Windows,
 also run `mingw32-make recipe-check`, because MSYS2's make silently drops whatever follows
 byte 8,191 of a command. For a change to the engine, add `make memmove-check` and the
-sanitizer build in [`CLAUDE.md`](CLAUDE.md).
+sanitizer build in [`docs/DEVELOPING.md`](docs/DEVELOPING.md).
 
 A clean build has zero warnings under `-Wall -Wextra -Wpedantic`, and should stay that way.
 

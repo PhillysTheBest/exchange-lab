@@ -66,7 +66,7 @@ project is built to show.
 | `/book` | an order book you drive by hand |
 | `/help [command]`, `/quit` | explain a command; leave |
 
-It feels like Claude Code: one prompt, tab completion and history. There is no AI model in
+It feels like a coding agent's terminal: one prompt, tab completion and history. There is no AI model in
 it, no browser and no network. Each command runs one of the project's programs, so the app
 can never show a number those programs would not print. `exchange-lab -c '/compare maker
 smoke'` runs a single command for scripts. [`docs/APP.md`](docs/APP.md) is the design.
