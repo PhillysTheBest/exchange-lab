@@ -12,7 +12,9 @@
 // sequence number applied and the engine's next event number. Restoring sends
 // the orders into a fresh engine in rest order. Nothing can trade, because a
 // book at rest is never crossed, so the result is the same book with the same
-// queue at every price. The restored engine numbers its events from a different
+// queue at every price. An instrument that was in an auction is put back into
+// one first, so its orders rest without matching even where its book crosses.
+// The restored engine numbers its events from a different
 // start, so the caller adds `seq_offset` to every event it emits afterwards.
 #pragma once
 
@@ -22,6 +24,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <map>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -52,11 +55,9 @@ public:
             break;
         case EventType::Trade: {
             leaves_ = e.leaves;
-            const auto it = by_id_.find(e.maker_id);
-            if (it != by_id_.end()) {
-                if (e.maker_leaves == 0) erase(it);
-                else by_rest_[it->second].leaves = e.maker_leaves;
-            }
+            fill(e.maker_id, e.maker_leaves);
+            // In an uncross both orders were resting; otherwise order_id is the incoming one.
+            if (cur_.type == ReqType::Uncross) fill(e.order_id, e.leaves);
             break;
         }
         case EventType::Cancelled: {
@@ -81,6 +82,10 @@ public:
             }
             break;
         }
+        case EventType::Phase:
+            if (static_cast<BookPhase>(e.reason) == BookPhase::Auction) auctions_.insert(e.instr);
+            else auctions_.erase(e.instr);
+            break;
         case EventType::EndOfStream:
             break;
         }
@@ -96,6 +101,11 @@ public:
     [[nodiscard]] std::uint32_t open_count(OwnerId owner) const {
         const auto it = open_.find(owner);
         return it == open_.end() ? 0 : it->second;
+    }
+
+    // The instruments in an auction, lowest id first.
+    [[nodiscard]] std::vector<InstrumentId> auctions() const {
+        return std::vector<InstrumentId>(auctions_.begin(), auctions_.end());
     }
 
     [[nodiscard]] std::size_t size() const noexcept { return by_rest_.size(); }
@@ -119,6 +129,12 @@ public:
     }
 
 private:
+    void fill(OrderId id, Qty leaves) {
+        const auto it = by_id_.find(id);
+        if (it == by_id_.end()) return;
+        if (leaves == 0) erase(it);
+        else by_rest_[it->second].leaves = leaves;
+    }
     void erase(std::unordered_map<OrderId, std::uint64_t>::iterator it) {
         --open_[by_rest_[it->second].owner];
         by_rest_.erase(it->second);
@@ -127,6 +143,7 @@ private:
     std::map<std::uint64_t, RestingOrder> by_rest_;
     std::unordered_map<OrderId, std::uint64_t> by_id_;
     std::unordered_map<OwnerId, std::uint32_t> open_;
+    std::set<InstrumentId> auctions_;
     std::uint64_t rest_no_ = 0;
     OrderRequest cur_;
     bool alive_ = false;
@@ -137,19 +154,21 @@ struct Snapshot {
     std::uint64_t in_seq = 0;      // last journal record already applied
     SeqNum next_event_seq = 1;     // the engine's next event number at that moment
     std::vector<RestingOrder> orders;
+    std::vector<InstrumentId> auctions; // instruments collecting orders, not matching them
 };
 
-inline constexpr char kSnapshotMagic[8] = {'P', 'X', 'S', 'N', 'A', 'P', '0', '1'};
+inline constexpr char kSnapshotMagic[8] = {'P', 'X', 'S', 'N', 'A', 'P', '0', '2'};
 
 // Written to a temporary name and renamed, so a crash mid-write leaves the
 // previous snapshot in place.
 [[nodiscard]] inline bool save_snapshot(const std::string& path, const Snapshot& s) {
-    std::vector<std::uint8_t> buf(sizeof(kSnapshotMagic) + 24 + s.orders.size() * 27 + 8);
+    std::vector<std::uint8_t> buf(sizeof(kSnapshotMagic) + 32 + s.orders.size() * 27 + s.auctions.size() * 2 + 8);
     std::uint8_t* p = buf.data();
     for (const char c : kSnapshotMagic) *p++ = static_cast<std::uint8_t>(c);
     detail::put(p, s.in_seq, 8);
     detail::put(p, s.next_event_seq, 8);
     detail::put(p, s.orders.size(), 8);
+    detail::put(p, s.auctions.size(), 8);
     for (const RestingOrder& o : s.orders) {
         detail::put(p, o.id, 8);
         detail::put(p, static_cast<std::uint64_t>(o.price), 8);
@@ -158,6 +177,7 @@ inline constexpr char kSnapshotMagic[8] = {'P', 'X', 'S', 'N', 'A', 'P', '0', '1
         detail::put(p, o.instr, 2);
         detail::put(p, static_cast<std::uint64_t>(o.side), 1);
     }
+    for (const InstrumentId i : s.auctions) detail::put(p, i, 2);
     detail::put(p, detail::fnv(buf.data(), buf.size() - 8), 8);
     const std::string tmp = path + ".tmp";
     std::FILE* f = std::fopen(tmp.c_str(), "wb");
@@ -177,7 +197,7 @@ inline constexpr char kSnapshotMagic[8] = {'P', 'X', 'S', 'N', 'A', 'P', '0', '1
     std::uint8_t chunk[4096];
     for (std::size_t n; (n = std::fread(chunk, 1, sizeof(chunk), f)) > 0;) buf.insert(buf.end(), chunk, chunk + n);
     std::fclose(f);
-    const std::size_t head = sizeof(kSnapshotMagic) + 24;
+    const std::size_t head = sizeof(kSnapshotMagic) + 32;
     if (buf.size() < head + 8) return false;
     for (std::size_t i = 0; i < sizeof(kSnapshotMagic); ++i)
         if (buf[i] != static_cast<std::uint8_t>(kSnapshotMagic[i])) return false;
@@ -185,8 +205,10 @@ inline constexpr char kSnapshotMagic[8] = {'P', 'X', 'S', 'N', 'A', 'P', '0', '1
     s.in_seq = detail::get(p, 8);
     s.next_event_seq = detail::get(p, 8);
     const std::uint64_t n = detail::get(p, 8);
-    if (buf.size() != head + n * 27 + 8) return false;
+    const std::uint64_t na = detail::get(p, 8);
+    if (n > buf.size() || na > buf.size() || buf.size() != head + n * 27 + na * 2 + 8) return false;
     s.orders.clear();
+    s.auctions.clear();
     for (std::uint64_t i = 0; i < n; ++i) {
         RestingOrder o;
         o.id = detail::get(p, 8);
@@ -197,6 +219,7 @@ inline constexpr char kSnapshotMagic[8] = {'P', 'X', 'S', 'N', 'A', 'P', '0', '1
         o.side = static_cast<Side>(detail::get(p, 1));
         s.orders.push_back(o);
     }
+    for (std::uint64_t i = 0; i < na; ++i) s.auctions.push_back(static_cast<InstrumentId>(detail::get(p, 2)));
     return detail::get(p, 8) == detail::fnv(buf.data(), buf.size() - 8);
 }
 

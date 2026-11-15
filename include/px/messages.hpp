@@ -13,6 +13,12 @@
 //                  quantity left. A GTC remainder rests silently: the `leaves`
 //                  field of the order's last event is what rested.
 //   Cancel      -> Cancelled(User) | Rejected(UnknownOrder)
+//   Amend       -> Amended(KeptPriority) | Amended(LostPriority), then whatever
+//                  a new order would emit after its Ack | Rejected(reason)
+//   OpenAuction -> Phase(Auction) | Rejected(reason)
+//   Uncross     -> one Trade per pair of orders matched, every one at the same
+//                  price, then Phase(Continuous) carrying that price
+//                  | Rejected(reason)
 // Every event carries the next engine sequence number and no timestamp, so the
 // same input stream always produces a bit-identical output stream.
 #pragma once
@@ -27,12 +33,24 @@ namespace px {
 // Amend: `order_id` names a live order of `owner`; `price` and `qty` are its new
 // price and its new remaining quantity. Same price and no more quantity keeps
 // the order's place in the queue; anything else sends it to the back.
-enum class ReqType : std::uint8_t { New = 0, Cancel = 1, Amend = 2 };
+//
+// OpenAuction and Uncross are the venue's own requests, not a participant's:
+// they name an instrument and nothing else. Between the two, orders on that
+// instrument collect without matching (px/matching_engine.hpp, "Auction").
+enum class ReqType : std::uint8_t { New = 0, Cancel = 1, Amend = 2, OpenAuction = 3, Uncross = 4 };
 enum class OrdType : std::uint8_t { Limit = 0, Market = 1 };
 enum class Tif : std::uint8_t { GTC = 0, IOC = 1 }; // Market orders are always IOC
 
-// Amended is numbered after EndOfStream so that no existing value moved when it was added.
-enum class EventType : std::uint8_t { Ack = 0, Trade = 1, Cancelled = 2, Rejected = 3, EndOfStream = 4, Amended = 5 };
+// Amended and Phase are numbered after EndOfStream so that no existing value moved when they were added.
+enum class EventType : std::uint8_t {
+    Ack = 0,
+    Trade = 1,
+    Cancelled = 2,
+    Rejected = 3,
+    EndOfStream = 4,
+    Amended = 5,
+    Phase = 6,
+};
 
 enum class RejectReason : std::uint8_t {
     None = 0,
@@ -43,11 +61,14 @@ enum class RejectReason : std::uint8_t {
     DuplicateOrderId, // id already belongs to a live order
     BookFull,         // a GTC order could not be guaranteed a resting slot
     UnknownOrder,     // cancel of an id that is not live (or not yours)
+    WrongPhase,       // an IOC or market order during an auction, or an auction request out of turn
 };
 
 enum class CancelReason : std::uint8_t { None = 0, User, IocRemainder, SelfTrade };
 // Amended events: did the order keep its place in the queue?
 enum class AmendEffect : std::uint8_t { KeptPriority = 0, LostPriority = 1 };
+// Phase events: what the instrument is doing from now on.
+enum class BookPhase : std::uint8_t { Continuous = 0, Auction = 1 };
 
 struct alignas(64) OrderRequest {
     OrderId order_id = 0;  // New: the new order's id. Cancel: the order to cancel.
@@ -75,7 +96,7 @@ struct alignas(64) ExecEvent {
     OwnerId maker_owner = 0;  // Trade only
     InstrumentId instr = 0;
     EventType type = EventType::Ack;
-    std::uint8_t reason = 0;  // RejectReason, CancelReason or AmendEffect, per `type`
+    std::uint8_t reason = 0;  // RejectReason, CancelReason, AmendEffect or BookPhase, per `type`
     Side side = Side::Buy;    // side of order_id
 };
 static_assert(sizeof(ExecEvent) == 64);
@@ -123,6 +144,20 @@ static_assert(std::is_trivially_copyable_v<ExecEvent>);
     r.owner = owner;
     r.instr = instr;
     r.type = ReqType::Amend;
+    return r;
+}
+
+[[nodiscard]] constexpr OrderRequest open_auction(InstrumentId instr) noexcept {
+    OrderRequest r;
+    r.instr = instr;
+    r.type = ReqType::OpenAuction;
+    return r;
+}
+
+[[nodiscard]] constexpr OrderRequest uncross(InstrumentId instr) noexcept {
+    OrderRequest r;
+    r.instr = instr;
+    r.type = ReqType::Uncross;
     return r;
 }
 

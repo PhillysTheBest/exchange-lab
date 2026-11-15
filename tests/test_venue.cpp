@@ -762,6 +762,119 @@ void test_amend_through_the_venue() {
     PX_CHECK(again.value() == all.value() && same_books(*engine, *replayed));
 }
 
+// An auction run through the venue's stages: instruments go in and out of
+// auctions while the stream runs; the public feed's book, the resting list and a
+// snapshot taken mid-auction all agree with the engine; the journal replays the
+// whole run, phases included; and a session cannot open or uncross one itself.
+void test_auction_through_the_venue() {
+    sim::StreamConfig cfg;
+    cfg.orders = 40'000;
+    cfg.seed = 43;
+    const auto base = sim::generate_order_stream(cfg);
+    const std::string jpath = tmp("auction.jrnl");
+    std::remove(jpath.c_str());
+
+    auto engine = fresh(cfg);
+    DurableEngine d(*engine, jpath);
+    FeedBook fb;
+    bool feed_ok = true;
+    Publisher pub([&](const FeedMsg& m) { feed_ok = feed_ok && fb.apply(m) == FeedBook::Result::Applied; }, nullptr);
+    EventHasher all;
+    struct Ctx {
+        Publisher* pub;
+        EventHasher* h;
+        std::uint64_t uncross_trades = 0, crossed_while_collecting = 0;
+        bool one_price = true;
+        Price close_price = 0;
+        bool in_uncross = false;
+    } ctx{&pub, &all};
+    const EventSink sink(&ctx, [](void* c, const ExecEvent& e) {
+        auto* x = static_cast<Ctx*>(c);
+        x->pub->on_event(e);
+        x->h->add(e);
+        if (x->in_uncross && e.type == EventType::Trade) {
+            ++x->uncross_trades;
+            if (x->close_price != 0 && e.price != x->close_price) x->one_price = false;
+            x->close_price = e.price;
+        }
+        if (x->in_uncross && e.type == EventType::Phase && x->close_price != 0 && e.price != x->close_price) {
+            x->one_price = false;
+        }
+    });
+    const auto run = [&](const OrderRequest& r) {
+        ctx.in_uncross = r.type == ReqType::Uncross;
+        ctx.close_price = 0;
+        pub.begin(r);
+        d.process(r, sink);
+        pub.end();
+    };
+
+    const InstrumentId n = static_cast<InstrumentId>(engine->instrument_count());
+    bool books_ok = true, restored_ok = true, uncrossed_clean = true, indicative_ok = true;
+    std::uint64_t auctions = 0;
+    for (std::size_t i = 0; i < base.size(); ++i) {
+        run(base[i]);
+        // Every 1,000 requests one instrument opens an auction; 400 later it uncrosses.
+        const InstrumentId k = static_cast<InstrumentId>((i / 1000) % n);
+        if (i % 1000 == 100) {
+            run(open_auction(k));
+            ++auctions;
+        }
+        if (i % 1000 == 400) {
+            for (InstrumentId j = 0; j < n; ++j) {
+                if (engine->depth(j, Side::Buy) > 0 && engine->depth(j, Side::Sell) > 0 &&
+                    engine->level(j, Side::Buy, 0).price >= engine->level(j, Side::Sell, 0).price) {
+                    ++ctx.crossed_while_collecting;
+                }
+            }
+            // Mid-auction: the snapshot puts a fresh engine in the same phase with the same (crossed) book.
+            if (i % 5000 == 400) {
+                auto copy = fresh(cfg);
+                DurableEngine dc(*copy, "");
+                restored_ok = restored_ok && dc.restore(d.snapshot()) && same_books(*engine, *copy) &&
+                              copy->in_auction(k) && copy->indicative(k).qty == engine->indicative(k).qty &&
+                              copy->indicative(k).price == engine->indicative(k).price;
+            }
+            const UncrossView u = engine->indicative(k);
+            const std::uint64_t before = ctx.uncross_trades;
+            run(uncross(k));
+            indicative_ok = indicative_ok && ctx.one_price && (u.qty == 0) == (ctx.uncross_trades == before);
+            // After an uncross the instrument's book is not crossed.
+            if (engine->depth(k, Side::Buy) > 0 && engine->depth(k, Side::Sell) > 0) {
+                uncrossed_clean = uncrossed_clean && engine->level(k, Side::Buy, 0).price < engine->level(k, Side::Sell, 0).price;
+            }
+            uncrossed_clean = uncrossed_clean && !engine->in_auction(k) && !fb.in_auction(k) &&
+                              fb.last_uncross(k) == u.price;
+        }
+        if (i % 2000 == 1999) {
+            books_ok = books_ok && feed_matches_engine(fb, *engine) && d.resting().size() == engine->resting_orders();
+        }
+    }
+    PX_CHECK(feed_ok && books_ok);
+    PX_CHECK(restored_ok && uncrossed_clean && indicative_ok);
+    PX_CHECK(auctions == 40 && ctx.uncross_trades > 200 && ctx.crossed_while_collecting > 10);
+
+    // The journal, phases included, replays to the same event stream and book.
+    auto replayed = fresh(cfg);
+    DurableEngine d3(*replayed, "");
+    EventHasher again;
+    JournalReader reader(jpath);
+    PX_CHECK(d3.follow(reader, hash_into(again)) == static_cast<long>(d.in_seq()));
+    PX_CHECK(again.value() == all.value() && same_books(*engine, *replayed));
+
+    // A session may not run the auction: the risk gate refuses it before the journal.
+    MatchingEngine e2;
+    const InstrumentId x = e2.add_instrument("X", 100);
+    Venue v(e2, 1, RiskLimits{}, "", nullptr, nullptr);
+    PX_CHECK(v.submit(0, 1, open_auction(x)).risk == RiskReject::VenueOnly);
+    v.open_auction(x);
+    PX_CHECK(e2.in_auction(x) && v.durable().in_seq() == 1);
+    PX_CHECK(v.submit(0, 2, uncross(x)).risk == RiskReject::VenueOnly && e2.in_auction(x));
+    std::printf("auction   %llu auctions, %llu trades at their uncross prices, %llu checks found a book crossed while collecting\n",
+                static_cast<unsigned long long>(auctions), static_cast<unsigned long long>(ctx.uncross_trades),
+                static_cast<unsigned long long>(ctx.crossed_while_collecting));
+}
+
 } // namespace
 
 int main() {
@@ -776,5 +889,6 @@ int main() {
     test_shards();
     test_wire();
     test_amend_through_the_venue();
+    test_auction_through_the_venue();
     PX_TEST_REPORT_AND_RETURN();
 }
