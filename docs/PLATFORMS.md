@@ -154,6 +154,12 @@ two; the third happens there too.
   job, fails if any command in the Makefile reaches 7,500 bytes. The cut-off was measured
   with the laptop's MSYS2 (GNU Make 4.4.1, bash 5.2.21), at the byte.
 
+## The loopback demonstration
+
+`make test-net` builds and runs `tools/netdemo.cpp`, the venue behind TCP on `127.0.0.1`
+([`VENUE.md`](VENUE.md)). It uses POSIX sockets, so it runs on Linux and macOS. On Windows it
+prints a notice and exits 0. It is not part of `make all` or the canonical record.
+
 ## Not done, and why
 
 - **A canonical simulation server** (running experiments remotely). It would put a network

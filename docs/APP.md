@@ -52,7 +52,7 @@ need the session code compiled twice anyway.
 | `/facts NAME` | the tape's stylised facts beside the standard market's and the calibrated one's: a diagnostic | `calibrate --facts=` |
 | `/replay NAME [STRATEGY] [reaction=T] [from=T] [for=T]` | plays an order-by-order tape back through the engine: the control alone, or one strategy in it | `replay` |
 | `/controls [smoke]` | the evaluator's own controls | `controls` |
-| `/book` | an order book driven by hand | `repl` |
+| `/book` | an order book driven by hand: buy, sell, market orders, cancel and amend (`help` inside lists them) | `repl` |
 | `/quit` (or `/exit`) | leaves | nothing |
 
 A run is named as `/runs` lists it, or given as a path. Names given to `/watch` join the
@@ -123,6 +123,7 @@ the prompt and during a sweep, `/watch` and back on `q`); that check is not auto
 
 - A browser, a web server, a desktop window or mouse support.
 - An AI model or natural-language commands.
-- Live trading or a network API of any kind.
+- Live trading or a network API of any kind. The venue's loopback demonstration
+  (`make test-net`, [`VENUE.md`](VENUE.md)) is a separate program the app does not run.
 - Paging long reports: `/report` prints the whole file and the terminal scrolls.
 - Changing what any existing program does.
