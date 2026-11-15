@@ -77,6 +77,12 @@ public:
         const std::uint64_t n = ++rest_no_;
         by_rest_[n] = RestingOrder{cur_.order_id, cur_.price, leaves_, cur_.owner, cur_.instr, cur_.side};
         by_id_[cur_.order_id] = n;
+        ++open_[cur_.owner];
+    }
+    // How many orders `owner` has resting.
+    [[nodiscard]] std::uint32_t open_count(OwnerId owner) const {
+        const auto it = open_.find(owner);
+        return it == open_.end() ? 0 : it->second;
     }
 
     [[nodiscard]] std::size_t size() const noexcept { return by_rest_.size(); }
@@ -101,11 +107,13 @@ public:
 
 private:
     void erase(std::unordered_map<OrderId, std::uint64_t>::iterator it) {
+        --open_[by_rest_[it->second].owner];
         by_rest_.erase(it->second);
         by_id_.erase(it);
     }
     std::map<std::uint64_t, RestingOrder> by_rest_;
     std::unordered_map<OrderId, std::uint64_t> by_id_;
+    std::unordered_map<OwnerId, std::uint32_t> open_;
     std::uint64_t rest_no_ = 0;
     OrderRequest cur_;
     bool alive_ = false;
