@@ -10,7 +10,10 @@
 //                     Add when an order comes to rest, Exec when a resting order
 //                     is filled, Delete when one is cancelled, Reduce when one
 //                     is amended smaller in place. An amend that sends an
-//                     order to the back is a Delete and a new Add. Orders are named
+//                     order to the back is a Delete and a new Add. An auction is
+//                     announced when it opens and when it closes, with the price
+//                     it uncrossed at; each of its trades is an Exec for the
+//                     seller's order and a Paired for the buyer's. Orders are named
 //                     by a reference number the feed makes up, never by the
 //                     client's order id, and no message has an owner in it: the
 //                     32-byte wire format has no field to put one in.
@@ -35,6 +38,7 @@
 #include <functional>
 #include <list>
 #include <map>
+#include <set>
 #include <unordered_map>
 #include <vector>
 
@@ -42,13 +46,21 @@ namespace px::venue {
 
 // ---- the public feed --------------------------------------------------------
 
-enum class FeedType : std::uint8_t { Add = 1, Exec = 2, Delete = 3, Reduce = 4 };
+enum class FeedType : std::uint8_t {
+    Add = 1,
+    Exec = 2,
+    Delete = 3,
+    Reduce = 4,
+    AuctionOpen = 5,  // the instrument stops matching and collects orders
+    AuctionClose = 6, // it uncrossed at `price` (0: nothing matched) and matches again
+    Paired = 7,       // uncross only: the resting order on the other side of the Exec before it
+};
 
 struct FeedMsg {
     std::uint64_t seq = 0;   // feed sequence number, gapless from 1
     std::uint64_t ref = 0;   // the feed's own name for a resting order
     Price price = 0;         // Add: the order's price. Exec: the execution price.
-    Qty qty = 0;             // Add: resting size. Exec: size filled. Reduce: new size. Delete: 0.
+    Qty qty = 0;             // Add: resting size. Exec, Paired: size filled. Reduce: new size. Delete: 0.
     InstrumentId instr = 0;
     FeedType type = FeedType::Add;
     Side side = Side::Buy;   // Add only
@@ -91,6 +103,7 @@ struct FeedOrder {
 struct FeedSnapshot {
     std::uint64_t seq = 0;
     std::vector<FeedOrder> orders;
+    std::vector<InstrumentId> auctions; // instruments in an auction at that moment
 };
 
 // ---- private reports --------------------------------------------------------
@@ -136,13 +149,9 @@ public:
             leaves_ = e.leaves;
             send_report(e.owner, ReportType::Filled, e.order_id, e.price, e.qty, e.leaves, 0);
             send_report(e.maker_owner, ReportType::Filled, e.maker_id, e.price, e.qty, e.maker_leaves, 0);
-            const auto it = ref_of_.find(e.maker_id);
-            if (it != ref_of_.end()) {
-                FeedOrder& o = resting_[it->second];
-                send_feed(FeedType::Exec, o.ref, o.instr, o.side, e.price, e.qty);
-                if (e.maker_leaves == 0) drop(it);
-                else o.qty = e.maker_leaves;
-            }
+            executed(e.maker_id, FeedType::Exec, e.price, e.qty, e.maker_leaves);
+            // In an uncross the buyer's order was resting too. It is one trade, so one Exec.
+            if (cur_.type == ReqType::Uncross) executed(e.order_id, FeedType::Paired, e.price, e.qty, e.leaves);
             break;
         }
         case EventType::Cancelled: {
@@ -174,6 +183,15 @@ public:
             }
             break;
         }
+        case EventType::Phase:
+            if (static_cast<BookPhase>(e.reason) == BookPhase::Auction) {
+                auctions_.insert(e.instr);
+                send_feed(FeedType::AuctionOpen, 0, e.instr, Side::Buy, 0, 0);
+            } else {
+                auctions_.erase(e.instr);
+                send_feed(FeedType::AuctionClose, 0, e.instr, Side::Buy, e.price, 0);
+            }
+            break;
         case EventType::EndOfStream:
             break;
         }
@@ -191,11 +209,20 @@ public:
         s.seq = feed_seq_;
         s.orders.reserve(resting_.size());
         for (const auto& [ref, o] : resting_) s.orders.push_back(o);
+        s.auctions.assign(auctions_.begin(), auctions_.end());
         return s;
     }
     [[nodiscard]] std::uint64_t feed_seq() const noexcept { return feed_seq_; }
 
 private:
+    void executed(OrderId id, FeedType as, Price price, Qty qty, Qty leaves) {
+        const auto it = ref_of_.find(id);
+        if (it == ref_of_.end()) return;
+        FeedOrder& o = resting_[it->second];
+        send_feed(as, o.ref, o.instr, o.side, price, qty);
+        if (leaves == 0) drop(it);
+        else o.qty = leaves;
+    }
     void drop(std::unordered_map<OrderId, std::uint64_t>::iterator it) {
         resting_.erase(it->second);
         ref_of_.erase(it);
@@ -229,6 +256,7 @@ private:
     std::map<std::uint64_t, FeedOrder> resting_;          // by ref, which is rest order
     std::unordered_map<OrderId, std::uint64_t> ref_of_;   // private: never leaves this class
     std::unordered_map<OwnerId, std::uint64_t> report_seq_;
+    std::set<InstrumentId> auctions_;
     std::uint64_t next_ref_ = 0;
     std::uint64_t feed_seq_ = 0;
     OrderRequest cur_;
@@ -255,15 +283,25 @@ public:
             if (orders_.count(m.ref) != 0) return Result::Corrupt;
             add(FeedOrder{m.ref, m.price, m.qty, m.instr, m.side});
             break;
-        case FeedType::Exec: {
+        case FeedType::Exec:
+        case FeedType::Paired: {
             const auto it = orders_.find(m.ref);
             if (it == orders_.end() || it->second->qty < m.qty) return Result::Corrupt;
-            ++trades_;
-            volume_ += m.qty;
+            if (m.type == FeedType::Exec) { // a Paired is the same trade seen from the other order
+                ++trades_;
+                volume_ += m.qty;
+            }
             if (it->second->qty == m.qty) remove(it);
             else it->second->qty -= m.qty;
             break;
         }
+        case FeedType::AuctionOpen:
+            if (!auctions_.insert(m.instr).second) return Result::Corrupt;
+            break;
+        case FeedType::AuctionClose:
+            if (auctions_.erase(m.instr) == 0) return Result::Corrupt;
+            last_uncross_[m.instr] = m.price;
+            break;
         case FeedType::Delete: {
             const auto it = orders_.find(m.ref);
             if (it == orders_.end()) return Result::Corrupt;
@@ -289,6 +327,8 @@ public:
         orders_.clear();
         levels_.clear();
         for (const FeedOrder& o : s.orders) add(o);
+        auctions_.clear();
+        auctions_.insert(s.auctions.begin(), s.auctions.end());
         seq_ = s.seq;
         stale_ = false;
     }
@@ -298,6 +338,12 @@ public:
     [[nodiscard]] std::size_t resting_orders() const noexcept { return orders_.size(); }
     [[nodiscard]] std::uint64_t trades() const noexcept { return trades_; }
     [[nodiscard]] std::uint64_t volume() const noexcept { return volume_; }
+    [[nodiscard]] bool in_auction(InstrumentId instr) const { return auctions_.count(instr) != 0; }
+    // The price of the instrument's last uncross that this listener saw, or 0.
+    [[nodiscard]] Price last_uncross(InstrumentId instr) const {
+        const auto it = last_uncross_.find(instr);
+        return it == last_uncross_.end() ? 0 : it->second;
+    }
 
     // Best price first, like MatchingEngine::level().
     [[nodiscard]] std::vector<LevelView> levels(InstrumentId instr, Side side) const {
@@ -342,6 +388,8 @@ private:
     std::uint64_t seq_ = 0;
     std::uint64_t trades_ = 0;
     std::uint64_t volume_ = 0;
+    std::set<InstrumentId> auctions_;
+    std::map<InstrumentId, Price> last_uncross_;
     bool stale_ = false;
 };
 

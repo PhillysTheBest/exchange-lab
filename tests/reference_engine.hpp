@@ -23,7 +23,7 @@ class ReferenceEngine {
 public:
     explicit ReferenceEngine(const EngineConfig& cfg) : cfg_(cfg) {}
 
-    void add_instrument(Price tick) { books_.push_back(Book{tick, {}, {}}); }
+    void add_instrument(Price tick) { books_.push_back(Book{tick, {}, {}, false}); }
 
     std::vector<ExecEvent> process(const OrderRequest& req) {
         out_.clear();
@@ -31,8 +31,12 @@ public:
             process_new(req);
         } else if (req.type == ReqType::Cancel) {
             process_cancel(req);
-        } else {
+        } else if (req.type == ReqType::Amend) {
             process_amend(req);
+        } else if (req.type == ReqType::OpenAuction) {
+            process_open_auction(req);
+        } else {
+            process_uncross(req);
         }
         return out_;
     }
@@ -129,6 +133,7 @@ private:
         Price tick;
         std::map<Price, Queue, std::greater<Price>> bids; // best (highest) first
         std::map<Price, Queue> asks;                      // best (lowest) first
+        bool auction;
     };
     struct Where {
         InstrumentId instr;
@@ -238,6 +243,7 @@ private:
         if (live_.count(req.order_id) != 0) return reject(req, RejectReason::DuplicateOrderId);
 
         const bool may_rest = !is_market && req.tif == Tif::GTC;
+        if (book.auction && !may_rest) return reject(req, RejectReason::WrongPhase);
         if (may_rest) {
             if (live_.size() >= cfg_.max_orders) return reject(req, RejectReason::BookFull);
             const bool level_exists = req.side == Side::Buy ? book.bids.count(req.price) != 0
@@ -261,7 +267,10 @@ private:
     }
 
     void match_and_rest(const OrderRequest& req, Book& book, bool is_market, bool may_rest) {
-        const Qty leaves = req.side == Side::Buy ? sweep(book.asks, req, is_market) : sweep(book.bids, req, is_market);
+        Qty leaves = req.qty;
+        if (!book.auction) {
+            leaves = req.side == Side::Buy ? sweep(book.asks, req, is_market) : sweep(book.bids, req, is_market);
+        }
         if (leaves == 0) return;
         if (!may_rest) {
             ExecEvent c = next(EventType::Cancelled);
@@ -379,6 +388,128 @@ private:
         a.reason = static_cast<std::uint8_t>(AmendEffect::LostPriority);
         out_.push_back(a);
         match_and_rest(limit_order(req.order_id, w.instr, req.owner, w.side, req.price, req.qty), book, false, true);
+    }
+
+    void process_open_auction(const OrderRequest& req) {
+        if (req.instr >= books_.size()) return reject(req, RejectReason::UnknownInstrument);
+        Book& book = books_[req.instr];
+        if (book.auction) return reject(req, RejectReason::WrongPhase);
+        book.auction = true;
+        ExecEvent e = next(EventType::Phase);
+        e.instr = req.instr;
+        e.reason = static_cast<std::uint8_t>(BookPhase::Auction);
+        out_.push_back(e);
+    }
+
+    // Written independently of the engine's uncross, and the slow way: try every
+    // price that is a level on either side, adding both sides up from scratch each
+    // time, and keep the one the rule in px/matching_engine.hpp prefers. Then take
+    // the buyers and the sellers the quantity belongs to in priority order, as two
+    // lists, and pair them off.
+    void process_uncross(const OrderRequest& req) {
+        if (req.instr >= books_.size()) return reject(req, RejectReason::UnknownInstrument);
+        Book& book = books_[req.instr];
+        if (!book.auction) return reject(req, RejectReason::WrongPhase);
+
+        std::vector<Price> prices;
+        for (const auto& [px, q] : book.bids) prices.push_back(px);
+        for (const auto& [px, q] : book.asks) prices.push_back(px);
+        std::sort(prices.begin(), prices.end());
+        Price at = 0;
+        std::uint64_t volume = 0, imbalance = 0;
+        for (const Price p : prices) {
+            std::uint64_t bought = 0, sold = 0;
+            for (const auto& [px, q] : book.bids)
+                if (px >= p)
+                    for (const Resting& r : q) bought += r.leaves;
+            for (const auto& [px, q] : book.asks)
+                if (px <= p)
+                    for (const Resting& r : q) sold += r.leaves;
+            const std::uint64_t v = std::min(bought, sold);
+            const std::uint64_t gap = bought > sold ? bought - sold : sold - bought;
+            if (v == 0) continue;
+            if (v > volume || (v == volume && gap < imbalance)) {
+                at = p;
+                volume = v;
+                imbalance = gap;
+            }
+        }
+
+        // Who trades: walk each side from its best order until `volume` is covered.
+        struct Part {
+            OrderId id;
+            OwnerId owner;
+            Qty fill;   // how much of it trades
+            Qty leaves; // what it had before
+        };
+        const auto pick = [volume](const auto& side_map) {
+            std::vector<Part> parts;
+            std::uint64_t need = volume;
+            for (const auto& [px, q] : side_map) {
+                for (const Resting& r : q) {
+                    if (need == 0) return parts;
+                    const Qty f = static_cast<Qty>(std::min<std::uint64_t>(need, r.leaves));
+                    parts.push_back(Part{r.id, r.owner, f, r.leaves});
+                    need -= f;
+                }
+            }
+            return parts;
+        };
+        std::vector<Part> buyers = pick(book.bids);
+        std::vector<Part> sellers = pick(book.asks);
+
+        std::size_t b = 0, s = 0;
+        while (b < buyers.size() && s < sellers.size()) {
+            Part& buy = buyers[b];
+            Part& sell = sellers[s];
+            const Qty q = std::min(buy.fill, sell.fill);
+            buy.fill -= q;
+            sell.fill -= q;
+            buy.leaves -= q;
+            sell.leaves -= q;
+            ExecEvent t = next(EventType::Trade);
+            t.order_id = buy.id;
+            t.maker_id = sell.id;
+            t.price = at;
+            t.qty = q;
+            t.leaves = buy.leaves;
+            t.maker_leaves = sell.leaves;
+            t.owner = buy.owner;
+            t.maker_owner = sell.owner;
+            t.instr = req.instr;
+            t.side = Side::Buy;
+            out_.push_back(t);
+            if (buy.fill == 0) ++b;
+            if (sell.fill == 0) ++s;
+        }
+
+        // Write what is left of each back into the book.
+        const auto settle = [this](auto& side_map, const std::vector<Part>& parts) {
+            for (const Part& part : parts) {
+                for (auto lvl = side_map.begin(); lvl != side_map.end(); ++lvl) {
+                    Queue& q = lvl->second;
+                    auto o = std::find_if(q.begin(), q.end(), [&](const Resting& r) { return r.id == part.id; });
+                    if (o == q.end()) continue;
+                    if (part.leaves == 0) {
+                        q.erase(o);
+                        live_.erase(part.id);
+                        if (q.empty()) side_map.erase(lvl);
+                    } else {
+                        o->leaves = part.leaves;
+                    }
+                    break;
+                }
+            }
+        };
+        settle(book.bids, buyers);
+        settle(book.asks, sellers);
+
+        book.auction = false;
+        ExecEvent e = next(EventType::Phase);
+        e.instr = req.instr;
+        e.price = at;
+        e.reason = static_cast<std::uint8_t>(BookPhase::Continuous);
+        out_.push_back(e);
     }
 
     EngineConfig cfg_;

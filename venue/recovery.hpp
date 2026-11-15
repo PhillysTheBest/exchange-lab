@@ -74,6 +74,7 @@ public:
         s.in_seq = in_seq_;
         s.next_event_seq = engine_.next_seq() + seq_offset_;
         s.orders = book_.in_rest_order();
+        s.auctions = book_.auctions();
         return s;
     }
 
@@ -82,6 +83,18 @@ public:
     [[nodiscard]] bool restore(const Snapshot& s) {
         if (in_seq_ != 0 || engine_.next_seq() != 1 || engine_.resting_orders() != 0) return false;
         bool ok = true;
+        // Auctions first: an order collected in one must rest, not match, when it is sent again.
+        for (const InstrumentId i : s.auctions) {
+            const OrderRequest req = open_auction(i);
+            Rebuild ctx{this, &ok};
+            book_.begin(req);
+            engine_.process(req, EventSink(&ctx, [](void* c, const ExecEvent& e) {
+                auto* r = static_cast<Rebuild*>(c);
+                if (e.type != EventType::Phase) *r->ok = false;
+                r->self->book_.on_event(e);
+            }));
+            book_.end();
+        }
         for (const RestingOrder& o : s.orders) {
             const OrderRequest req = limit_order(o.id, o.instr, o.owner, o.side, o.price, o.leaves);
             Rebuild ctx{this, &ok};

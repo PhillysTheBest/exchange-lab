@@ -78,6 +78,11 @@ public:
         return resting.size();
     }
 
+    // The operator's auction controls. Both go through the journal like any
+    // request, so a recovered venue is in the phase the lost one was in.
+    void open_auction(InstrumentId instr) { match(px::open_auction(instr)); }
+    void uncross(InstrumentId instr) { match(px::uncross(instr)); }
+
     [[nodiscard]] Sequencer& sequencer() noexcept { return seq_; }
     [[nodiscard]] RiskGate& risk() noexcept { return risk_; }
     [[nodiscard]] DurableEngine& durable() noexcept { return durable_; }

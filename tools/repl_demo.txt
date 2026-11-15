@@ -23,3 +23,12 @@ amend 8 10.05 20 as 2
 # ...and a new price sends it to the back, where it can trade like a new order
 amend 8 10.04 20 as 2
 book ACME
+# an auction: orders collect without matching, so the book may cross...
+auction ACME
+buy ACME 30 10.06 as 5
+buy ACME 25 10.05 as 6
+sell ACME 20 10.03 as 7
+book ACME
+# ...until the uncross matches them all at the one price that trades the most
+uncross ACME
+book ACME
