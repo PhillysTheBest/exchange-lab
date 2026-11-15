@@ -5,6 +5,8 @@
 //   > buy ACME 40 10.05 as 7    `as N` submits as participant N (default 1)
 //   > mbuy ACME 25              market order (mbuy / msell)
 //   > cancel 3                  cancel order #3 (only its owner may)
+//   > amend 3 10.03 80          change #3's price and size; smaller at the same price
+//                               keeps its place, anything else goes to the back
 //   > book ACME                 show the book, best prices nearest the middle line
 //
 // Prices are typed and shown in dollars; internally they are int64 fixed point
@@ -111,6 +113,13 @@ void print_event(void*, const ExecEvent& e) {
         case EventType::Rejected:
             std::printf("  reject  #%llu: %s\n", static_cast<unsigned long long>(e.order_id), reject_name(e.reason));
             break;
+        case EventType::Amended:
+            std::printf("  amend   #%llu now %s %u @ %s  (%s)\n", static_cast<unsigned long long>(e.order_id), side,
+                        e.qty, fmt_price(e.price).c_str(),
+                        static_cast<AmendEffect>(e.reason) == AmendEffect::KeptPriority
+                            ? "kept its place in the queue"
+                            : "to the back of the queue");
+            break;
         case EventType::EndOfStream:
             break;
     }
@@ -139,6 +148,7 @@ void help() {
                 "  buy|sell SYM QTY PRICE [ioc] [as OWNER]\n"
                 "  mbuy|msell SYM QTY [as OWNER]  market order\n"
                 "  cancel ID [as OWNER]\n"
+                "  amend ID PRICE QTY [as OWNER]  smaller at the same price keeps its place\n"
                 "  book SYM [DEPTH]\n"
                 "  help, quit\n");
 }
@@ -204,6 +214,10 @@ int main() {
                              sink);
             } else if (cmd == "cancel" && w.size() == 2) {
                 eng->process(cancel_order(std::stoull(w[1]), 0, owner), sink);
+            } else if (cmd == "amend" && w.size() == 4) {
+                Price px = 0;
+                if (!parse_price(w[2], px)) throw std::invalid_argument("bad price");
+                eng->process(amend_order(std::stoull(w[1]), 0, owner, px, static_cast<Qty>(std::stoul(w[3]))), sink);
             } else if (cmd == "book" && (w.size() == 2 || w.size() == 3)) {
                 const InstrumentId id = find_instrument(w[1]);
                 if (id == kInvalidInstrument) throw std::invalid_argument("unknown instrument");

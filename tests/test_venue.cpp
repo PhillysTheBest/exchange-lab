@@ -695,6 +695,73 @@ void test_wire() {
     PX_CHECK(!parse_order(shortf, cs, q));
 }
 
+// Amends through every stage that keeps its own picture of the book: the
+// resting list (so a snapshot is right), the public feed and the journal.
+void test_amend_through_the_venue() {
+    sim::StreamConfig cfg;
+    cfg.orders = 40'000;
+    cfg.seed = 41;
+    const auto base = sim::generate_order_stream(cfg);
+    const std::string jpath = tmp("amend.jrnl");
+    std::remove(jpath.c_str());
+
+    auto engine = fresh(cfg);
+    DurableEngine d(*engine, jpath);
+    FeedBook fb;
+    bool feed_ok = true;
+    std::uint64_t amended = 0, kept = 0;
+    Publisher pub([&](const FeedMsg& m) { feed_ok = feed_ok && fb.apply(m) == FeedBook::Result::Applied; }, nullptr);
+    EventHasher all;
+    struct Ctx {
+        Publisher* pub;
+        EventHasher* h;
+        std::uint64_t* amended;
+        std::uint64_t* kept;
+    } ctx{&pub, &all, &amended, &kept};
+    const EventSink sink(&ctx, [](void* c, const ExecEvent& e) {
+        auto* x = static_cast<Ctx*>(c);
+        x->pub->on_event(e);
+        x->h->add(e);
+        if (e.type == EventType::Amended) {
+            ++*x->amended;
+            *x->kept += e.reason == static_cast<std::uint8_t>(AmendEffect::KeptPriority);
+        }
+    });
+    const auto run = [&](const OrderRequest& r) {
+        pub.begin(r);
+        d.process(r, sink);
+        pub.end();
+    };
+    std::mt19937_64 rng(7);
+    bool books_ok = true;
+    for (std::size_t i = 0; i < base.size(); ++i) {
+        run(base[i]);
+        if (i % 5 == 4 && d.resting().size() > 0) {
+            const auto resting = d.resting().in_rest_order();
+            const RestingOrder& o = resting[rng() % resting.size()];
+            const Price step = static_cast<Price>(rng() % 7) - 3; // -3..+3 ticks; 0 keeps the price
+            const Qty q = rng() % 2 == 0 ? std::max<Qty>(1, o.leaves / 2) : o.leaves + 5;
+            run(amend_order(o.id, o.instr, o.owner, o.price + step * cfg.tick, q));
+        }
+        if (i % 2000 == 1999) books_ok = books_ok && feed_matches_engine(fb, *engine) && d.resting().size() == engine->resting_orders();
+    }
+    PX_CHECK(feed_ok && books_ok);
+    PX_CHECK(amended > 5000 && kept > 500 && kept < amended);
+
+    // A snapshot taken after all that restores the same book, and the journal
+    // (amends included) replays to the same event stream.
+    auto copy = fresh(cfg);
+    DurableEngine d2(*copy, "");
+    PX_CHECK(d2.restore(d.snapshot()));
+    PX_CHECK(same_books(*engine, *copy));
+    auto replayed = fresh(cfg);
+    DurableEngine d3(*replayed, "");
+    EventHasher again;
+    JournalReader reader(jpath);
+    PX_CHECK(d3.follow(reader, hash_into(again)) == static_cast<long>(d.in_seq()));
+    PX_CHECK(again.value() == all.value() && same_books(*engine, *replayed));
+}
+
 } // namespace
 
 int main() {
@@ -708,5 +775,6 @@ int main() {
     test_stage_stamps();
     test_shards();
     test_wire();
+    test_amend_through_the_venue();
     PX_TEST_REPORT_AND_RETURN();
 }

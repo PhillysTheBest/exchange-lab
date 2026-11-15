@@ -25,6 +25,7 @@
 #include <cstdio>
 #include <memory>
 #include <random>
+#include <utility>
 #include <vector>
 
 using namespace px;
@@ -54,6 +55,7 @@ void print_event(const char* who, const ExecEvent& e) {
 
 struct Stats {
     std::uint64_t events = 0, trades = 0, self_trades = 0, book_full = 0, duplicates = 0, unknown_cancels = 0;
+    std::uint64_t amends_kept = 0, amends_requeued = 0, amend_trades = 0, amend_book_full = 0;
     std::uint64_t max_depth = 0;
     std::uint64_t deep_level_removals = 0; // cancel emptied a level in the worse half of a >=500-level side
     std::uint64_t far_end_inserts = 0;     // GTC price behind every level of a >=500-level side
@@ -82,8 +84,11 @@ Price random_price(std::mt19937_64& rng, Profile profile, Side side) {
     return kTick;
 }
 
+// `amend_pct` is the share of commands that are amends. With 0 the generator
+// draws exactly what it drew before amends existed, so the original runs keep
+// the coverage they were tuned for.
 OrderRequest random_request(std::mt19937_64& rng, Profile profile, OrderId& next_id,
-                            const std::vector<OrderId>& recent) {
+                            const std::vector<OrderId>& recent, int amend_pct) {
     const auto roll = rng() % 100;
     const InstrumentId instr = static_cast<InstrumentId>(rng() % 100 == 0 ? kInstruments : rng() % kInstruments);
     const OwnerId owner = static_cast<OwnerId>(rng() % 6);
@@ -93,6 +98,19 @@ OrderRequest random_request(std::mt19937_64& rng, Profile profile, OrderId& next
         return cancel_order(recent[rng() % recent.size()], instr, owner);
     }
     if (roll < 32) return cancel_order(1'000'000'000 + rng() % 1000, instr, owner); // never existed
+    if (static_cast<int>(roll) >= 100 - amend_pct && !recent.empty()) {
+        // Amend a recently used id — live, gone or foreign-owned. A third keep the
+        // price (so smaller ones stay in place and larger ones go to the back);
+        // the rest move it, often through the market, with the usual bad fields.
+        Qty qty = static_cast<Qty>(1 + rng() % 40);
+        if (rng() % 100 == 0) qty = 0;
+        Price price = random_price(rng, profile, side);
+        if (rng() % 100 == 0) price += kTick / 2;
+        OrderRequest a = amend_order(recent[rng() % recent.size()], instr, owner, price, qty);
+        a.side = side; // carried only so the coverage code can ask for a same-price amend below
+        a.tif = rng() % 3 == 0 ? Tif::IOC : Tif::GTC; // IOC here means: keep the order's own price
+        return a;
+    }
 
     // New order. Ids are usually fresh; occasionally a recent one (duplicate if still live).
     OrderId id = next_id++;
@@ -108,7 +126,7 @@ OrderRequest random_request(std::mt19937_64& rng, Profile profile, OrderId& next
 }
 
 bool run_seed(std::uint64_t seed, Profile profile, int commands, const EngineConfig& cfg, int invariant_every,
-              int ladder_every, Stats& stats) {
+              int ladder_every, int amend_pct, Stats& stats) {
     auto eng = std::make_unique<MatchingEngine>(cfg);
     test::ReferenceEngine ref(cfg);
     for (int i = 0; i < kInstruments; ++i) {
@@ -120,13 +138,33 @@ bool run_seed(std::uint64_t seed, Profile profile, int commands, const EngineCon
 
     std::mt19937_64 rng(seed);
     std::vector<OrderId> recent;
+    std::vector<std::pair<OrderId, OwnerId>> gtc; // the last 48 orders sent to rest, and whose they were
+    std::size_t gtc_at = 0;
     OrderId next_id = 1;
     std::vector<ExecEvent> got;
     std::vector<test::ReferenceEngine::Top> ref_ladder;
     const EventSink sink(&got, [](void* c, const ExecEvent& e) { static_cast<std::vector<ExecEvent>*>(c)->push_back(e); });
 
     for (int n = 0; n < commands; ++n) {
-        const OrderRequest req = random_request(rng, profile, next_id, recent);
+        OrderRequest req = random_request(rng, profile, next_id, recent, amend_pct);
+        if (req.type == ReqType::Amend) {
+            // A random id with a random owner is almost always refused, which tests the
+            // refusal and little else. Three in four amends therefore aim at an order
+            // that was recently sent to rest, by its real owner.
+            if (!gtc.empty() && rng() % 4 != 0) {
+                const auto& [id, owner] = gtc[rng() % gtc.size()];
+                req.order_id = id;
+                req.owner = owner;
+            }
+            Price at = 0;
+            if (req.tif == Tif::IOC && ref.price_of(req.order_id, at)) req.price = at; // a same-price amend
+            req.tif = Tif::GTC;
+            req.side = Side::Buy;
+        }
+        if (req.type == ReqType::New && req.ord == OrdType::Limit && req.tif == Tif::GTC) {
+            if (gtc.size() < 48) gtc.emplace_back(req.order_id, req.owner);
+            else gtc[gtc_at++ % gtc.size()] = {req.order_id, req.owner};
+        }
         if (req.type == ReqType::New) {
             if (recent.size() < 256) {
                 recent.push_back(req.order_id);
@@ -142,7 +180,7 @@ bool run_seed(std::uint64_t seed, Profile profile, int commands, const EngineCon
                 rank >= depth / 2) {
                 ++stats.deep_level_removals; // counted even if the cancel is refused (foreign owner)
             }
-        } else if (req.ord == OrdType::Limit && req.tif == Tif::GTC) {
+        } else if (req.type == ReqType::New && req.ord == OrdType::Limit && req.tif == Tif::GTC) {
             std::size_t depth = 0;
             if (ref.is_far_end_price(req.instr, req.side, req.price, depth) && depth >= 500) ++stats.far_end_inserts;
         }
@@ -202,6 +240,12 @@ bool run_seed(std::uint64_t seed, Profile profile, int commands, const EngineCon
             stats.trades += e.type == EventType::Trade;
             stats.self_trades += e.type == EventType::Cancelled && e.reason == static_cast<std::uint8_t>(CancelReason::SelfTrade);
             stats.book_full += e.type == EventType::Rejected && e.reason == static_cast<std::uint8_t>(RejectReason::BookFull);
+            if (e.type == EventType::Amended) {
+                ++(e.reason == static_cast<std::uint8_t>(AmendEffect::KeptPriority) ? stats.amends_kept : stats.amends_requeued);
+            }
+            stats.amend_trades += req.type == ReqType::Amend && e.type == EventType::Trade;
+            stats.amend_book_full += req.type == ReqType::Amend && e.type == EventType::Rejected &&
+                                     e.reason == static_cast<std::uint8_t>(RejectReason::BookFull);
             stats.duplicates += e.type == EventType::Rejected && e.reason == static_cast<std::uint8_t>(RejectReason::DuplicateOrderId);
             stats.unknown_cancels += e.type == EventType::Rejected && e.reason == static_cast<std::uint8_t>(RejectReason::UnknownOrder);
         }
@@ -231,6 +275,7 @@ int main() {
         const EngineConfig* cfg;
         int invariant_every;
         int ladder_every;
+        int amend_pct = 0;
     } runs[] = {
         {"shallow", 1, Profile::Shallow, 100'000, &roomy, 1, 500},
         {"shallow", 2, Profile::Shallow, 100'000, &roomy, 64, 500},
@@ -239,6 +284,10 @@ int main() {
         {"deep", 5, Profile::Deep, 60'000, &roomy, 256, 2000},
         {"deep", 6, Profile::Deep, 60'000, &roomy, 256, 2000},
         {"churn64", 7, Profile::Churn64, 100'000, &churn, 64, 500},
+        {"shallow+amend", 8, Profile::Shallow, 100'000, &roomy, 1, 500, 30},
+        {"tiny+amend", 9, Profile::Shallow, 100'000, &tiny, 1, 500, 30},
+        {"deep+amend", 10, Profile::Deep, 60'000, &roomy, 256, 2000, 30},
+        {"churn64+amend", 11, Profile::Churn64, 100'000, &churn, 64, 500, 30},
     };
 
     bool all_ok = true;
@@ -246,10 +295,10 @@ int main() {
     std::uint64_t churn_book_full = 0;
     for (const Run& r : runs) {
         Stats s;
-        const bool ok = run_seed(r.seed, r.profile, r.commands, *r.cfg, r.invariant_every, r.ladder_every, s);
+        const bool ok = run_seed(r.seed, r.profile, r.commands, *r.cfg, r.invariant_every, r.ladder_every, r.amend_pct, s);
         PX_CHECK(ok);
         all_ok &= ok;
-        std::printf("  %-13s seed %llu: %6d commands, %7llu events, %6llu trades, %5llu BookFull, deepest side %4llu "
+        std::printf("  %-13s seed %2llu: %6d commands, %7llu events, %6llu trades, %5llu BookFull, deepest side %4llu "
                     "levels, %5llu deep level removals, %5llu far-end inserts: %s\n",
                     r.name, static_cast<unsigned long long>(r.seed), r.commands,
                     static_cast<unsigned long long>(s.events), static_cast<unsigned long long>(s.trades),
@@ -265,6 +314,10 @@ int main() {
         total.max_depth = std::max(total.max_depth, s.max_depth);
         total.deep_level_removals += s.deep_level_removals;
         total.far_end_inserts += s.far_end_inserts;
+        total.amends_kept += s.amends_kept;
+        total.amends_requeued += s.amends_requeued;
+        total.amend_trades += s.amend_trades;
+        total.amend_book_full += s.amend_book_full;
         if (r.profile == Profile::Churn64) churn_book_full += s.book_full;
     }
     std::printf("fuzz_vs_reference: %zu runs, %llu events (%llu trades, %llu self-trade cancels, %llu BookFull, "
@@ -281,5 +334,10 @@ int main() {
     PX_CHECK(churn_book_full > 1000); // the 64-level sides really were full
     PX_CHECK(total.deep_level_removals >= 1000);
     PX_CHECK(total.far_end_inserts >= 50); // each one shifts a whole 500+-level side
+    std::printf("  amends: %llu kept their place, %llu went to the back (%llu trades as they re-entered, %llu refused BookFull)\n",
+                static_cast<unsigned long long>(total.amends_kept), static_cast<unsigned long long>(total.amends_requeued),
+                static_cast<unsigned long long>(total.amend_trades), static_cast<unsigned long long>(total.amend_book_full));
+    PX_CHECK(total.amends_kept > 2000 && total.amends_requeued > 10'000 && total.amend_trades > 2000);
+    PX_CHECK(total.amend_book_full > 10); // an amend to a new price on a full side really is refused
     PX_TEST_REPORT_AND_RETURN();
 }

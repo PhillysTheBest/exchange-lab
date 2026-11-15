@@ -24,11 +24,15 @@
 
 namespace px {
 
-enum class ReqType : std::uint8_t { New = 0, Cancel = 1 };
+// Amend: `order_id` names a live order of `owner`; `price` and `qty` are its new
+// price and its new remaining quantity. Same price and no more quantity keeps
+// the order's place in the queue; anything else sends it to the back.
+enum class ReqType : std::uint8_t { New = 0, Cancel = 1, Amend = 2 };
 enum class OrdType : std::uint8_t { Limit = 0, Market = 1 };
 enum class Tif : std::uint8_t { GTC = 0, IOC = 1 }; // Market orders are always IOC
 
-enum class EventType : std::uint8_t { Ack = 0, Trade = 1, Cancelled = 2, Rejected = 3, EndOfStream = 4 };
+// Amended is numbered after EndOfStream so that no existing value moved when it was added.
+enum class EventType : std::uint8_t { Ack = 0, Trade = 1, Cancelled = 2, Rejected = 3, EndOfStream = 4, Amended = 5 };
 
 enum class RejectReason : std::uint8_t {
     None = 0,
@@ -42,6 +46,8 @@ enum class RejectReason : std::uint8_t {
 };
 
 enum class CancelReason : std::uint8_t { None = 0, User, IocRemainder, SelfTrade };
+// Amended events: did the order keep its place in the queue?
+enum class AmendEffect : std::uint8_t { KeptPriority = 0, LostPriority = 1 };
 
 struct alignas(64) OrderRequest {
     OrderId order_id = 0;  // New: the new order's id. Cancel: the order to cancel.
@@ -69,7 +75,7 @@ struct alignas(64) ExecEvent {
     OwnerId maker_owner = 0;  // Trade only
     InstrumentId instr = 0;
     EventType type = EventType::Ack;
-    std::uint8_t reason = 0;  // RejectReason or CancelReason, per `type`
+    std::uint8_t reason = 0;  // RejectReason, CancelReason or AmendEffect, per `type`
     Side side = Side::Buy;    // side of order_id
 };
 static_assert(sizeof(ExecEvent) == 64);
@@ -105,6 +111,18 @@ static_assert(std::is_trivially_copyable_v<ExecEvent>);
     r.owner = owner;
     r.instr = instr;
     r.type = ReqType::Cancel;
+    return r;
+}
+
+[[nodiscard]] constexpr OrderRequest amend_order(OrderId id, InstrumentId instr, OwnerId owner, Price new_price,
+                                                 Qty new_qty) noexcept {
+    OrderRequest r;
+    r.order_id = id;
+    r.price = new_price;
+    r.qty = new_qty;
+    r.owner = owner;
+    r.instr = instr;
+    r.type = ReqType::Amend;
     return r;
 }
 

@@ -29,8 +29,10 @@ public:
         out_.clear();
         if (req.type == ReqType::New) {
             process_new(req);
-        } else {
+        } else if (req.type == ReqType::Cancel) {
             process_cancel(req);
+        } else {
+            process_amend(req);
         }
         return out_;
     }
@@ -91,6 +93,14 @@ public:
         } else {
             find_in(books_[w.instr].asks);
         }
+        return true;
+    }
+
+    // The price a live order rests at. False if not live.
+    bool price_of(OrderId id, Price& price) const {
+        const auto it = live_.find(id);
+        if (it == live_.end()) return false;
+        price = it->second.price;
         return true;
     }
 
@@ -247,7 +257,10 @@ private:
         ack.instr = req.instr;
         ack.side = req.side;
         out_.push_back(ack);
+        match_and_rest(req, book, is_market, may_rest);
+    }
 
+    void match_and_rest(const OrderRequest& req, Book& book, bool is_market, bool may_rest) {
         const Qty leaves = req.side == Side::Buy ? sweep(book.asks, req, is_market) : sweep(book.bids, req, is_market);
         if (leaves == 0) return;
         if (!may_rest) {
@@ -296,6 +309,76 @@ private:
         const bool done = w.side == Side::Buy ? erase_from(book.bids) : erase_from(book.asks);
         if (!done) return reject(req, RejectReason::UnknownOrder);
         live_.erase(it);
+    }
+
+    // Written independently of the engine's process_amend, from the rule in
+    // px/matching_engine.hpp: smaller at the same price stays put; anything else
+    // leaves the book and comes back in as a new order at the back.
+    void process_amend(const OrderRequest& req) {
+        const auto it = live_.find(req.order_id);
+        if (it == live_.end()) return reject(req, RejectReason::UnknownOrder);
+        const Where w = it->second;
+        Book& book = books_[w.instr];
+        Resting* found = nullptr;
+        std::size_t queue_len = 0;
+        const auto look = [&](auto& side_map) {
+            Queue& q = side_map.find(w.price)->second;
+            queue_len = q.size();
+            for (Resting& r : q)
+                if (r.id == req.order_id) found = &r;
+        };
+        if (w.side == Side::Buy) look(book.bids);
+        else look(book.asks);
+        if (found == nullptr || found->owner != req.owner) return reject(req, RejectReason::UnknownOrder);
+        if (req.qty == 0) return reject(req, RejectReason::InvalidQty);
+        if (req.price <= 0 || req.price > kMaxPrice || req.price % book.tick != 0) {
+            return reject(req, RejectReason::InvalidPrice);
+        }
+
+        ExecEvent a;
+        a.order_id = req.order_id;
+        a.price = req.price;
+        a.qty = req.qty;
+        a.leaves = req.qty;
+        a.owner = req.owner;
+        a.instr = w.instr;
+        a.type = EventType::Amended;
+        a.side = w.side;
+
+        if (req.price == w.price && req.qty <= found->leaves) {
+            found->leaves = req.qty;
+            a.seq = seq_++;
+            a.reason = static_cast<std::uint8_t>(AmendEffect::KeptPriority);
+            out_.push_back(a);
+            return;
+        }
+
+        const bool level_exists = w.side == Side::Buy ? book.bids.count(req.price) != 0 : book.asks.count(req.price) != 0;
+        const std::size_t own_levels = w.side == Side::Buy ? book.bids.size() : book.asks.size();
+        const bool alone = queue_len == 1; // leaving frees its level
+        if (req.price != w.price && !level_exists && !alone &&
+            (total_levels() >= cfg_.max_levels || own_levels >= cfg_.levels_per_side)) {
+            return reject(req, RejectReason::BookFull);
+        }
+
+        const auto take_out = [&](auto& side_map) {
+            auto lvl = side_map.find(w.price);
+            Queue& q = lvl->second;
+            for (auto o = q.begin(); o != q.end(); ++o) {
+                if (o->id == req.order_id) {
+                    q.erase(o);
+                    break;
+                }
+            }
+            if (q.empty()) side_map.erase(lvl);
+        };
+        if (w.side == Side::Buy) take_out(book.bids);
+        else take_out(book.asks);
+        live_.erase(req.order_id);
+        a.seq = seq_++;
+        a.reason = static_cast<std::uint8_t>(AmendEffect::LostPriority);
+        out_.push_back(a);
+        match_and_rest(limit_order(req.order_id, w.instr, req.owner, w.side, req.price, req.qty), book, false, true);
     }
 
     EngineConfig cfg_;

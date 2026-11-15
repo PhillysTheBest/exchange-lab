@@ -102,6 +102,7 @@ private:
                 flush();
                 return;
             case EventType::EndOfStream:
+            case EventType::Amended: // never emitted here: nothing in this program sends an amend
                 return;
         }
     }

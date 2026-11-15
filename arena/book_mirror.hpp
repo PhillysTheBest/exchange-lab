@@ -103,6 +103,7 @@ public:
                 break;
             case EventType::Rejected:
             case EventType::EndOfStream:
+            case EventType::Amended: // never emitted here: nothing in this program sends an amend
                 break;
         }
     }

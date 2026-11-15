@@ -68,6 +68,19 @@ public:
         case EventType::Rejected:
             alive_ = false;
             break;
+        case EventType::Amended: {
+            const auto it = by_id_.find(e.order_id);
+            if (it == by_id_.end()) break;
+            if (static_cast<AmendEffect>(e.reason) == AmendEffect::KeptPriority) {
+                by_rest_[it->second].leaves = e.leaves;
+            } else { // to the back: it is an incoming order again, under the same id
+                erase(it);
+                cur_ = limit_order(e.order_id, e.instr, e.owner, e.side, e.price, e.leaves);
+                alive_ = true;
+                leaves_ = e.leaves;
+            }
+            break;
+        }
         case EventType::EndOfStream:
             break;
         }

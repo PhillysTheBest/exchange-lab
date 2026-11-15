@@ -8,7 +8,9 @@
 //                     who was on the other side. Numbered per owner.
 //   the public feed   anonymous and order by order (the shape of Nasdaq's ITCH):
 //                     Add when an order comes to rest, Exec when a resting order
-//                     is filled, Delete when one is cancelled. Orders are named
+//                     is filled, Delete when one is cancelled, Reduce when one
+//                     is amended smaller in place. An amend that sends an
+//                     order to the back is a Delete and a new Add. Orders are named
 //                     by a reference number the feed makes up, never by the
 //                     client's order id, and no message has an owner in it: the
 //                     32-byte wire format has no field to put one in.
@@ -40,13 +42,13 @@ namespace px::venue {
 
 // ---- the public feed --------------------------------------------------------
 
-enum class FeedType : std::uint8_t { Add = 1, Exec = 2, Delete = 3 };
+enum class FeedType : std::uint8_t { Add = 1, Exec = 2, Delete = 3, Reduce = 4 };
 
 struct FeedMsg {
     std::uint64_t seq = 0;   // feed sequence number, gapless from 1
     std::uint64_t ref = 0;   // the feed's own name for a resting order
     Price price = 0;         // Add: the order's price. Exec: the execution price.
-    Qty qty = 0;             // Add: resting size. Exec: size filled. Delete: 0.
+    Qty qty = 0;             // Add: resting size. Exec: size filled. Reduce: new size. Delete: 0.
     InstrumentId instr = 0;
     FeedType type = FeedType::Add;
     Side side = Side::Buy;   // Add only
@@ -93,7 +95,7 @@ struct FeedSnapshot {
 
 // ---- private reports --------------------------------------------------------
 
-enum class ReportType : std::uint8_t { Accepted, Rejected, Filled, Cancelled };
+enum class ReportType : std::uint8_t { Accepted, Rejected, Filled, Cancelled, Amended };
 
 struct Report {
     std::uint64_t seq = 0;  // per owner, gapless from 1
@@ -152,6 +154,23 @@ public:
                 drop(it);
             } else if (e.order_id == cur_.order_id) {
                 alive_ = false;
+            }
+            break;
+        }
+        case EventType::Amended: {
+            send_report(e.owner, ReportType::Amended, e.order_id, e.price, e.qty, e.leaves, e.reason);
+            const auto it = ref_of_.find(e.order_id);
+            if (it == ref_of_.end()) break;
+            FeedOrder& o = resting_[it->second];
+            if (static_cast<AmendEffect>(e.reason) == AmendEffect::KeptPriority) {
+                o.qty = e.leaves;
+                send_feed(FeedType::Reduce, o.ref, o.instr, o.side, o.price, e.leaves);
+            } else { // the old reference goes; if the order rests again it gets a new one
+                send_feed(FeedType::Delete, o.ref, o.instr, o.side, 0, 0);
+                drop(it);
+                cur_ = limit_order(e.order_id, e.instr, e.owner, e.side, e.price, e.leaves);
+                alive_ = true;
+                leaves_ = e.leaves;
             }
             break;
         }
@@ -249,6 +268,12 @@ public:
             const auto it = orders_.find(m.ref);
             if (it == orders_.end()) return Result::Corrupt;
             remove(it);
+            break;
+        }
+        case FeedType::Reduce: {
+            const auto it = orders_.find(m.ref);
+            if (it == orders_.end() || m.qty == 0 || m.qty > it->second->qty) return Result::Corrupt;
+            it->second->qty = m.qty;
             break;
         }
         default:

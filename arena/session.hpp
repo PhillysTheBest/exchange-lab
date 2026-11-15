@@ -634,6 +634,7 @@ private:
                     mark(own, account_of(e.owner));
                     break;
                 case EventType::EndOfStream:
+                case EventType::Amended: // never emitted here: nothing in this program sends an amend
                     break;
             }
 

@@ -16,3 +16,10 @@ cancel 1 as 2
 # participant 3 buying into its own resting ask: that ask is cancelled instead
 buy ACME 10 10.02 as 3
 book ACME
+# an amend: smaller at the same price keeps its place in the queue...
+sell ACME 60 10.05 as 2
+sell ACME 40 10.05 as 4
+amend 8 10.05 20 as 2
+# ...and a new price sends it to the back, where it can trade like a new order
+amend 8 10.04 20 as 2
+book ACME
