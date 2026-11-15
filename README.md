@@ -185,7 +185,9 @@ different participants (`as 2`, `as 3`) and watch the rules play out: the better
 first, then the older order; a market order's unfilled part is cancelled; a cancel from the
 wrong owner is refused; and an order that would trade with its owner's own resting order
 cancels that order instead. `amend ID PRICE QTY as OWNER` changes a resting order: smaller at
-the same price keeps its place in the queue, anything else sends it to the back. Type `help`
+the same price keeps its place in the queue, anything else sends it to the back. `auction SYM`
+stops matching so orders can cross, and `uncross SYM` then matches them all at the single
+price that trades the most. Type `help`
 inside for the full list, and `quit` to return.
 
 <img src="docs/screenshots/03-book.png" alt="A hand-driven order book session showing orders, fills, a refused cancel and the resulting book" width="100%">
@@ -318,7 +320,9 @@ engine's rules:
   would have produced, and **a hot standby** that follows the journal and can take over;
 - **a public market data feed** kept apart from each member's private reports, anonymous and
   order by order, numbered so a listener can detect a gap and recover from a snapshot;
-- **order amend**, keeping time priority only when an order is made smaller at the same price;
+- **order amend**, keeping time priority only when an order is made smaller at the same price,
+  and **a batch auction** that collects orders, then matches them all at the one price that
+  trades the most;
 - **instruments sharded** across matcher threads, each shard provably the same as running it
   alone;
 - **per-stage time stamps** in the benchmark, kept apart from the published service time;

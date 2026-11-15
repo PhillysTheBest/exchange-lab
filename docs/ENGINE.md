@@ -27,6 +27,11 @@ by `python bench/summarize_results.py`.
 
 - **Order types:** limit (GTC or IOC), market (an IOC sweep with no price limit),
   cancel by order id (owner only), and amend (owner only).
+- **Batch auction.** `open_auction` stops matching for one instrument so orders can cross;
+  `uncross` matches them all at the one price that trades the most quantity (then the smaller
+  imbalance, then the lower price), best price and oldest order first, with no self-trade
+  prevention. A `Phase` event marks each change, and the closing one carries the price. In an
+  auction an IOC or market order is refused with `WrongPhase`. See [`VENUE.md`](VENUE.md).
 - **Amend.** Making a resting order smaller at the same price changes it in place and keeps
   its time priority. Changing its price or making it larger removes it and re-enters it at the
   back of its new level under the same id, where it can trade like any incoming order. If the
@@ -45,7 +50,7 @@ by `python bench/summarize_results.py`.
   never partly executed and then rejected.
 - **Output is a stream of 64-byte events:** `Ack`, `Trade`, `Cancelled` (user / IOC
   remainder / self-trade), `Rejected` (reason) and `Amended` (kept or lost its place in the
-  queue), each numbered by one engine-wide sequence. `Amended` was numbered after every
+  queue) and `Phase` (an auction opened or closed), each numbered by one engine-wide sequence. `Amended` was numbered after every
   existing event type, so no existing value moved, and no pinned hash moved with it. See [messages.hpp](../include/px/messages.hpp) for the exact protocol.
 
 ## Design
@@ -251,8 +256,8 @@ design.
 ## Correctness
 
 - **Differential fuzzing** ([fuzz_vs_reference.cpp](../tests/fuzz_vs_reference.cpp)). The
-  reference engine implements amend by the same rule, and the fuzzer puts amends in the
-  stream.
+  reference engine implements amend and the auction by the same rules, and the fuzzer puts
+  both in the stream.
   - 7 seeded runs, 924k events, **0 mismatches** against a deliberately naive
     `std::map` + `std::deque` reference engine that implements the same event protocol
     and admission rule.

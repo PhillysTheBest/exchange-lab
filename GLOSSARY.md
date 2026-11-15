@@ -38,6 +38,8 @@ Terms are grouped and sorted alphabetically within each group.
 
 **BookFull** — The rejection a GTC order gets when the engine cannot guarantee it a resting slot.
 
+**Auction (batch auction)** — A phase in which an instrument collects resting limit orders without matching, so its book may cross; `uncross` then trades them all at one price. IOC and market orders are refused meanwhile.
+
 **Cancel** — A request to remove a resting order by its id; only its owner may make it.
 
 **Event (`ExecEvent`)** — A 64-byte record of what the engine did (`Ack`, `Trade`, `Cancelled`, `Rejected`), sequence-numbered and without a timestamp. It is the only thing a participant learns the market from.
@@ -308,6 +310,8 @@ The stages around the engine, in `venue/`. *Where:* `docs/VENUE.md`.
 
 **Hot standby** — A second engine that follows the journal as it is written and can take over by being given requests. It stops if a record is missing.
 
+**Indicative price** — While an auction runs, the price and quantity an uncross would trade now: most quantity first, then the smaller imbalance, then the lower price.
+
 **Journal** — Every request the engine was given, numbered and checksummed, written before the engine sees it. A torn record at the end of the file is dropped, never replayed.
 
 **Kill switch** — Blocks one member and cancels every order that member has resting.
@@ -335,6 +339,8 @@ The stages around the engine, in `venue/`. *Where:* `docs/VENUE.md`.
 **Stage stamps** — Time stamps at more than one stage of the pipeline (`--stages`), reported apart from service time and never part of the gate.
 
 **Throttle** — A cap on one member's messages per window, counted in venue messages rather than wall-clock time so a replay decides the same way.
+
+**Uncross** — The request that ends an auction and matches everything collected at one price, best price and oldest order first. There is no self-trade prevention in it.
 
 ## Words this project avoids
 
