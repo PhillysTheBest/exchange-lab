@@ -13,7 +13,9 @@
 #include "venue/sequencer.hpp"
 #include "venue/shards.hpp"
 #include "venue/venue.hpp"
+#include "venue/wire.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <map>
@@ -634,6 +636,65 @@ void test_shards() {
     PX_CHECK(same);
 }
 
+void test_wire() {
+    // A stream of mixed messages, delivered one byte at a time, then in odd chunks.
+    std::vector<std::uint8_t> bytes;
+    const OrderRequest o = limit_order(77, 3, 9, Side::Sell, 1234500, 250, Tif::IOC);
+    Report rep;
+    rep.seq = 5;
+    rep.order_id = 77;
+    rep.price = 1234500;
+    rep.qty = 100;
+    rep.leaves = 150;
+    rep.type = ReportType::Filled;
+    frame_logon(bytes, 2, 9);
+    frame_order(bytes, 41, o);
+    frame_heartbeat(bytes);
+    frame_logon_ack(bytes, 42);
+    frame_not_taken(bytes, 40, static_cast<std::uint8_t>(Admit::Duplicate));
+    frame_report(bytes, rep);
+
+    for (const std::size_t chunk : {std::size_t{1}, std::size_t{7}, bytes.size()}) {
+        FrameReader r;
+        std::vector<Frame> got;
+        for (std::size_t i = 0; i < bytes.size(); i += chunk) {
+            r.feed(bytes.data() + i, std::min(chunk, bytes.size() - i));
+            Frame f;
+            while (r.next(f)) got.push_back(f);
+        }
+        PX_CHECK(got.size() == 6 && !r.broken());
+        if (got.size() != 6) continue;
+        std::uint32_t session = 0;
+        OwnerId owner = 0;
+        PX_CHECK(parse_logon(got[0], session, owner) && session == 2 && owner == 9);
+        std::uint64_t cs = 0;
+        OrderRequest back;
+        PX_CHECK(parse_order(got[1], cs, back) && cs == 41 && back.order_id == 77 && back.instr == 3 && back.owner == 9 &&
+                 back.side == Side::Sell && back.price == 1234500 && back.qty == 250 && back.tif == Tif::IOC);
+        PX_CHECK(got[2].type == 'H' && got[2].body.empty());
+        std::uint64_t v = 0;
+        PX_CHECK(parse_u64(got[3], 'A', v) && v == 42);
+        PX_CHECK(parse_u64(got[4], 'N', v) && v == 40);
+        Report rb;
+        PX_CHECK(parse_report(got[5], rb) && rb.seq == 5 && rb.order_id == 77 && rb.qty == 100 && rb.leaves == 150 &&
+                 rb.type == ReportType::Filled);
+    }
+
+    // A length no message can have: the reader gives up, and stays given up.
+    FrameReader bad;
+    const std::uint8_t junk[4] = {0xff, 0xff, 'O', 0};
+    bad.feed(junk, sizeof(junk));
+    Frame f;
+    PX_CHECK(!bad.next(f) && bad.broken());
+    // A message of the wrong size for its type is not parsed.
+    Frame shortf;
+    shortf.type = 'O';
+    shortf.body.assign(10, 0);
+    std::uint64_t cs = 0;
+    OrderRequest q;
+    PX_CHECK(!parse_order(shortf, cs, q));
+}
+
 } // namespace
 
 int main() {
@@ -646,5 +707,6 @@ int main() {
     test_sequencer();
     test_stage_stamps();
     test_shards();
+    test_wire();
     PX_TEST_REPORT_AND_RETURN();
 }
