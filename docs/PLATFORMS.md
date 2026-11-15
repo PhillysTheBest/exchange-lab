@@ -11,7 +11,7 @@ to be wrong, this document says so.
 |---|---|---|
 | Linux x86-64, GCC 13 | supported | CI (`linux-gcc`), and locally under WSL2 |
 | Windows x86-64, MSYS2 UCRT64 GCC 13 | supported | CI (`windows`), and the development laptop |
-| macOS ARM64, Apple clang 15 and libc++ | supported | CI only (`macos-arm64`): nobody here has a Mac |
+| macOS ARM64, Apple clang and libc++ | supported | CI only (`macos-arm64`): nobody here has a Mac |
 | Linux x86-64, clang 18 and libc++ | checked, not promised | CI (`linux-clang-libcxx`) |
 | Linux ARM64, GCC | experimental: passes, never blocks a run | CI (`linux-arm64`) |
 | Windows ARM64, Intel macOS | not supported | nothing |
@@ -117,7 +117,7 @@ clang 18 and libc++ 18 on Linux, and with Apple's libc++ on macOS.
 | `linux-gcc` | Ubuntu 24.04, x86-64 | `test`, `test-cli`, `test-lab`, `test-app`, `test-data`, `memmove-check`, `canonical`, the benchmarks starting, and the sanitizer build |
 | `linux-clang-libcxx` | Ubuntu 24.04, x86-64 | `test`, `memmove-check`, `canonical` |
 | `windows` | Windows, MSYS2 UCRT64 | `recipe-check`, and what `linux-gcc` runs, except the sanitizers |
-| `macos-arm64` | macOS 14, ARM64 | `test`, `test-app`, `test-data`, `canonical`, the benchmarks starting |
+| `macos-arm64` | macOS 15, ARM64 | `test`, `test-app`, `test-data`, `canonical`, the benchmarks starting |
 | `linux-arm64` | Ubuntu 24.04, ARM64 | `test`, `canonical`. It never fails the run. |
 | `compare` | after all of them | each job's canonical record against `tests/canonical.txt`, naming the target and the line |
 
