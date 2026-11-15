@@ -272,6 +272,8 @@ private:
                 if (e.owner == kBook && static_cast<RejectReason>(e.reason) == RejectReason::BookFull) ++st_.book_full;
                 break;
             case EventType::EndOfStream: break;
+            case EventType::Amended: break; // never emitted here: nothing in this program sends an amend
+            case EventType::Phase: break;   // or runs an auction
         }
     }
     void reduce(OrderId id, Qty n) {

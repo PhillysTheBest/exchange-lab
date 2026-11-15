@@ -32,7 +32,9 @@ an entry there.
 **The app is the front door (decided 2026-10-22).** One terminal program,
 `build/release/exchange-lab`, with a prompt and slash commands in the spirit of a coding agent's terminal.
 **No browser whatsoever**: no web or desktop interface, no mouse, no network, and no AI model
-in it. It runs the existing programs as children and links none of the market
+in it. (The one socket in the repository is `tools/netdemo.cpp`, the venue's loopback
+demonstration, allowed by decision on 2026-11-15; `venue/` and `docs/VENUE.md` describe the
+stages around the engine.) It runs the existing programs as children and links none of the market
 (`docs/APP.md` says why), so it cannot move a hash. Document new features as app commands
 first, with the raw `make` target beside them.
 

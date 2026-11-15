@@ -5,6 +5,10 @@
 //   > buy ACME 40 10.05 as 7    `as N` submits as participant N (default 1)
 //   > mbuy ACME 25              market order (mbuy / msell)
 //   > cancel 3                  cancel order #3 (only its owner may)
+//   > amend 3 10.03 80          change #3's price and size; smaller at the same price
+//                               keeps its place, anything else goes to the back
+//   > auction ACME              stop matching ACME and collect orders (its book may cross)
+//   > uncross ACME              match what was collected at one price, then trade on
 //   > book ACME                 show the book, best prices nearest the middle line
 //
 // Prices are typed and shown in dollars; internally they are int64 fixed point
@@ -76,6 +80,7 @@ const char* reject_name(std::uint8_t r) {
         case RejectReason::DuplicateOrderId: return "duplicate order id";
         case RejectReason::BookFull: return "book full";
         case RejectReason::UnknownOrder: return "unknown order (or not yours)";
+        case RejectReason::WrongPhase: return "not now: an auction takes resting limit orders only, and opens or uncrosses once";
         case RejectReason::None: break;
     }
     return "?";
@@ -111,6 +116,22 @@ void print_event(void*, const ExecEvent& e) {
         case EventType::Rejected:
             std::printf("  reject  #%llu: %s\n", static_cast<unsigned long long>(e.order_id), reject_name(e.reason));
             break;
+        case EventType::Amended:
+            std::printf("  amend   #%llu now %s %u @ %s  (%s)\n", static_cast<unsigned long long>(e.order_id), side,
+                        e.qty, fmt_price(e.price).c_str(),
+                        static_cast<AmendEffect>(e.reason) == AmendEffect::KeptPriority
+                            ? "kept its place in the queue"
+                            : "to the back of the queue");
+            break;
+        case EventType::Phase:
+            if (static_cast<BookPhase>(e.reason) == BookPhase::Auction) {
+                std::printf("  auction open: orders rest without matching until `uncross`\n");
+            } else if (e.price == 0) {
+                std::printf("  uncrossed: nothing to match; trading continuously again\n");
+            } else {
+                std::printf("  uncrossed at %s; trading continuously again\n", fmt_price(e.price).c_str());
+            }
+            break;
         case EventType::EndOfStream:
             break;
     }
@@ -139,6 +160,8 @@ void help() {
                 "  buy|sell SYM QTY PRICE [ioc] [as OWNER]\n"
                 "  mbuy|msell SYM QTY [as OWNER]  market order\n"
                 "  cancel ID [as OWNER]\n"
+                "  amend ID PRICE QTY [as OWNER]  smaller at the same price keeps its place\n"
+                "  auction SYM | uncross SYM     collect orders, then match them at one price\n"
                 "  book SYM [DEPTH]\n"
                 "  help, quit\n");
 }
@@ -204,6 +227,21 @@ int main() {
                              sink);
             } else if (cmd == "cancel" && w.size() == 2) {
                 eng->process(cancel_order(std::stoull(w[1]), 0, owner), sink);
+            } else if (cmd == "amend" && w.size() == 4) {
+                Price px = 0;
+                if (!parse_price(w[2], px)) throw std::invalid_argument("bad price");
+                eng->process(amend_order(std::stoull(w[1]), 0, owner, px, static_cast<Qty>(std::stoul(w[3]))), sink);
+            } else if ((cmd == "auction" || cmd == "uncross") && w.size() == 2) {
+                const InstrumentId id = find_instrument(w[1]);
+                if (id == kInvalidInstrument) throw std::invalid_argument("unknown instrument");
+                if (cmd == "uncross" && eng->in_auction(id)) {
+                    const UncrossView u = eng->indicative(id);
+                    if (u.qty > 0) {
+                        std::printf("  indicative: %llu @ %s\n", static_cast<unsigned long long>(u.qty),
+                                    fmt_price(u.price).c_str());
+                    }
+                }
+                eng->process(cmd == "auction" ? open_auction(id) : uncross(id), sink);
             } else if (cmd == "book" && (w.size() == 2 || w.size() == 3)) {
                 const InstrumentId id = find_instrument(w[1]);
                 if (id == kInvalidInstrument) throw std::invalid_argument("unknown instrument");

@@ -102,7 +102,7 @@ jobs:
           if-no-files-found: ignore
 
   macos-arm64:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - run: g++ --version && make --version | head -1
