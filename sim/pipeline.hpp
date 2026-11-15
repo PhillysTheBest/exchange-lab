@@ -59,6 +59,14 @@ struct PipelineOptions {
     double ticks_per_ns = 0; // TSC rate, required when pacing
     // Keep each recorded order's dequeue timestamp (for outlier forensics).
     bool record_start_times = false;
+    // Stage stamps: the gateway also stamps each recorded order just before it
+    // offers it to the inbound ring. Dequeue minus that stamp is the time the
+    // order waited before the matcher took it, which the service time leaves
+    // out by definition. The two stamps come from different cores, so the
+    // difference is only meaningful with an invariant, synchronised counter;
+    // the benchmark prints whether it has one. One store per order on the
+    // gateway thread, nothing on the matcher's timed path.
+    bool record_enqueue_times = false;
     // Idle hiccup meter: while the matcher polls an empty inbound ring inside the
     // recorded window, a gap between consecutive polls longer than the threshold
     // means the core was taken away (interrupt, DPC, preemption). Up to
@@ -87,6 +95,7 @@ struct PipelineResult {
     std::unique_ptr<LatencyRecorder> latency; // one sample per recorded request, in stream order
     std::vector<std::uint8_t> classes;        // OrderClass per sample
     std::vector<Tsc> start_tsc;               // dequeue TSC per sample (if record_start_times)
+    std::vector<Tsc> enqueue_tsc;             // gateway's stamp per sample (if record_enqueue_times)
     struct Hiccup {
         Tsc start;
         Tsc duration;
@@ -146,7 +155,8 @@ inline void push_event(void* c, const ExecEvent& e) {
     // pre-faults it) here, before any thread starts.
     res.latency = std::make_unique<LatencyRecorder>(res.recorded);
     res.classes.assign(res.recorded, 0);
-    if (opt.record_start_times) res.start_tsc.assign(res.recorded, 0);
+    if (opt.record_start_times || opt.record_enqueue_times) res.start_tsc.assign(res.recorded, 0);
+    if (opt.record_enqueue_times) res.enqueue_tsc.assign(res.recorded, 0);
     res.hiccups.assign(opt.hiccup_capacity, {}); // filled, not reserved: a first touch would itself be a hiccup
     std::size_t hiccups_kept = 0;
     auto inbound = std::make_unique<InboundRing>();
@@ -202,6 +212,7 @@ inline void push_event(void* c, const ExecEvent& e) {
                 const Tsc due = schedule_start + static_cast<Tsc>(static_cast<double>(i - warmup) * interval);
                 while (tsc_now() < due) cpu_relax();
             }
+            if (opt.record_enqueue_times && i >= warmup) res.enqueue_tsc[i - warmup] = tsc_now();
             while (!inbound->try_push(stream[i])) cpu_relax();
         }
     });
@@ -248,7 +259,7 @@ inline void push_event(void* c, const ExecEvent& e) {
 
             if (i >= warmup) {
                 lat.record(t1 - t0);
-                if (opt.record_start_times) res.start_tsc[i - warmup] = t0;
+                if (!res.start_tsc.empty()) res.start_tsc[i - warmup] = t0;
                 const OrderClass cls = detail::classify(req, ctx);
                 res.classes[i - warmup] = static_cast<std::uint8_t>(cls);
                 ++res.class_counts[static_cast<std::size_t>(cls)];
