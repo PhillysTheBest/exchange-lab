@@ -559,6 +559,29 @@ void test_sequencer() {
     PX_CHECK(m.duplicates() == kSessions * (kEach / 1000) && m.gaps() == 0);
 }
 
+void test_stage_stamps() {
+    sim::StreamConfig cfg;
+    cfg.orders = 50'000;
+    cfg.seed = 3;
+    const auto stream = sim::generate_order_stream(cfg);
+    auto direct = fresh(cfg);
+    const EventHasher want = sim::run_direct(*direct, stream);
+    auto engine = fresh(cfg);
+    sim::PipelineOptions opt;
+    opt.warmup = 1000;
+    opt.pin_threads = false;
+    opt.record_enqueue_times = true;
+    const sim::PipelineResult res = sim::run_pipeline(*engine, stream, opt);
+    PX_CHECK(res.event_hash == want.value()); // stamping changes nothing that is matched
+    PX_CHECK(res.enqueue_tsc.size() == res.recorded && res.start_tsc.size() == res.recorded);
+    bool stamped = true, ordered = true;
+    for (std::size_t i = 0; i < res.recorded; ++i) {
+        stamped = stamped && res.enqueue_tsc[i] != 0 && res.start_tsc[i] != 0;
+        if (i > 0) ordered = ordered && res.enqueue_tsc[i] >= res.enqueue_tsc[i - 1] && res.start_tsc[i] >= res.start_tsc[i - 1];
+    }
+    PX_CHECK(stamped && ordered);
+}
+
 } // namespace
 
 int main() {
@@ -569,5 +592,6 @@ int main() {
     test_feed_and_reports();
     test_risk_gate();
     test_sequencer();
+    test_stage_stamps();
     PX_TEST_REPORT_AND_RETURN();
 }
