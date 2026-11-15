@@ -43,8 +43,10 @@ InstrumentId MatchingEngine::add_instrument(std::string_view symbol, Price tick_
 void MatchingEngine::process(const OrderRequest& req, EventSink sink) noexcept {
     if (req.type == ReqType::New) {
         process_new(req, sink);
-    } else {
+    } else if (req.type == ReqType::Cancel) {
         process_cancel(req, sink);
+    } else {
+        process_amend(req, sink);
     }
 }
 
@@ -98,6 +100,13 @@ void MatchingEngine::process_new(const OrderRequest& req, EventSink sink) noexce
     ack.type = EventType::Ack;
     ack.side = req.side;
     sink(ack);
+    match_and_rest(req, book, is_market, may_rest, own_pos, sink);
+}
+
+void MatchingEngine::match_and_rest(const OrderRequest& req, Book& book, bool is_market, bool may_rest,
+                                    SortedLevels::Position own_pos, EventSink sink) noexcept {
+    SortedLevels& own = book.side(req.side);
+    const std::int64_t own_key = SortedLevels::key_of(req.side, req.price);
 
     // ---- match against the opposite side, best level first, FIFO within it ----
     Qty leaves = req.qty;
@@ -225,6 +234,58 @@ void MatchingEngine::process_cancel(const OrderRequest& req, EventSink sink) noe
     c.side = lvl.side;
     sink(c);
     remove_order(os, /*drop_empty_level=*/true);
+}
+
+void MatchingEngine::process_amend(const OrderRequest& req, EventSink sink) noexcept {
+    const Slot os = ids_.find(req.order_id);
+    // As with cancel, somebody else's order looks exactly like an unknown id.
+    if (os == kNullSlot || orders_[os].owner != req.owner) return reject(req, RejectReason::UnknownOrder, sink);
+    Order& o = orders_[os];
+    PriceLevel& lvl = levels_[o.level];
+    Book& book = books_[lvl.instr];
+    if (req.qty == 0) return reject(req, RejectReason::InvalidQty, sink);
+    if (req.price <= 0 || req.price > kMaxPrice || req.price % book.tick != 0) {
+        return reject(req, RejectReason::InvalidPrice, sink);
+    }
+
+    ExecEvent a;
+    a.order_id = o.id;
+    a.price = req.price;
+    a.qty = req.qty;
+    a.leaves = req.qty;
+    a.owner = o.owner;
+    a.instr = lvl.instr;
+    a.type = EventType::Amended;
+    a.side = lvl.side;
+
+    if (req.price == lvl.price && req.qty <= o.leaves) {
+        // Smaller at the same price: nobody behind it is disadvantaged, so it keeps its place.
+        lvl.total_qty -= o.leaves - req.qty;
+        o.leaves = req.qty;
+        a.seq = next_seq_++;
+        a.reason = static_cast<std::uint8_t>(AmendEffect::KeptPriority);
+        sink(a);
+        return;
+    }
+
+    // A new price or more quantity: to the back of the queue. Decide first that
+    // it will have somewhere to rest. Its own order slot comes free, and so does
+    // its level (and that level's place in the index) if it is alone there.
+    const Side side = lvl.side;
+    SortedLevels& own = book.side(side);
+    const bool frees_level = lvl.count == 1;
+    if (req.price != lvl.price && !own.locate(SortedLevels::key_of(side, req.price)).found &&
+        !frees_level && (levels_.full() || own.full())) {
+        return reject(req, RejectReason::BookFull, sink);
+    }
+
+    OrderRequest again = limit_order(o.id, lvl.instr, o.owner, side, req.price, req.qty);
+    remove_order(os, /*drop_empty_level=*/true);
+    a.seq = next_seq_++;
+    a.reason = static_cast<std::uint8_t>(AmendEffect::LostPriority);
+    sink(a);
+    match_and_rest(again, book, /*is_market=*/false, /*may_rest=*/true,
+                   own.locate(SortedLevels::key_of(side, again.price)), sink);
 }
 
 void MatchingEngine::remove_order(Slot os, bool drop_empty_level) noexcept {

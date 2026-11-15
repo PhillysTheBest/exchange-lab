@@ -16,7 +16,9 @@
 //   kill switch        blocks an owner and hands back a cancel for every order
 //                      the owner has resting
 //
-// Cancels are never refused: a member must always be able to get out.
+// Cancels are never refused: a member must always be able to get out. An amend
+// is checked like a new limit order at its new price and size, except against
+// the open-order cap, since it adds no order.
 //
 // Everything here is integer and deterministic. The gate is given the inbound
 // sequence number and the list of resting orders; it reads no clock.
@@ -84,7 +86,7 @@ public:
         if (lim_.max_order_value != 0 && req.ord == OrdType::Limit &&
             req.price * static_cast<std::int64_t>(req.qty) > lim_.max_order_value)
             return RiskReject::ValueTooLarge;
-        if (lim_.max_open_orders != 0 && req.tif == Tif::GTC && req.ord == OrdType::Limit &&
+        if (lim_.max_open_orders != 0 && req.type == ReqType::New && req.tif == Tif::GTC && req.ord == OrdType::Limit &&
             resting.open_count(req.owner) >= lim_.max_open_orders)
             return RiskReject::TooManyOpenOrders;
         return RiskReject::None;
