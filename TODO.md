@@ -15,7 +15,7 @@ Only you can do these, because they happen in GitHub's settings or on another si
 
 - [ ] **Branch protection on `main`**: pull requests only, CI must pass, owner approval required.
 - [x] **Push the branch and the tag.** Done 2026-10-27: merged in #7, and `v1.0.0` moved onto
-      the merge commit `4cb384e` and pushed.
+      the merge commit `9496946` and pushed.
 - [ ] **A DOI.** Connect the repository to Zenodo, publish a GitHub release for `v1.0.0`, and
       add the DOI Zenodo gives to `CITATION.cff` (`doi:`) and the README.
 

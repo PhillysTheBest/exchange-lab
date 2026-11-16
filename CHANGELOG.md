@@ -87,7 +87,7 @@ No change. A setting's label (`imbalance+ratio=5`) is an arm's name in the repor
 ## v1.0.0 (2026-10-26)
 
 The first tagged release. It starts from `main` at the merge of pull requests #2 and #1
-(`6886cea`, 2026-10-26), which held the finished engine, the arena and its published negative
+(`eee549e`, 2026-10-26), which held the finished engine, the arena and its published negative
 result, the strategy research platform (interface, standard runner, report, the evaluator's
 controls, one-command reproduction), market data (importers, calibration, replay), the terminal
 app, and the five-target CI. This entry lists what changed since that merge.
@@ -157,7 +157,7 @@ No change.
 
 - `report.txt`: a Holm section when there is more than one value comparison; a `confirmatory`
   line on the holdout block. **Consequence, checked:** a smoke run of `maker,momentum` made at
-  `6886cea` reproduces under v1.0.0 in every file but `report.txt`, which lacks the Holm
+  `eee549e` reproduces under v1.0.0 in every file but `report.txt`, which lacks the Holm
   section, so `/reproduce` says NOT REPRODUCED. A one-candidate run reproduces in every file.
   Re-run a multi-candidate run on v1.0.0 before reporting it.
 - `families.txt`: a Holm section.

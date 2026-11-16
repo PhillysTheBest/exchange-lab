@@ -18,8 +18,8 @@ also paired against the first. To compare two versions of one strategy, install 
 two names, since a strategy's name is its file name.
 
 **Where the numbers in this file come from.** Numbers marked "runner" are the runner's own
-output at `e504824` (Linux, g++ 13.3, `-O3`). Numbers marked "probe" needed conditions the
-suite forbids and came from scratch probes at `6ffdbc3`. Suite sessions last 25 ms, not the
+output at `493cf66` (Linux, g++ 13.3, `-O3`). Numbers marked "probe" needed conditions the
+suite forbids and came from scratch probes at `40f5d5a`. Suite sessions last 25 ms, not the
 published 200,000 requests, so their numbers never go in `results/`.
 
 ## Running it without the app

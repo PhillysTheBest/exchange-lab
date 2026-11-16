@@ -39,7 +39,7 @@ stages around the engine.) It runs the existing programs as children and links n
 first, with the raw `make` target beside them.
 
 **History.** This was a Kalshi prediction-market trading system; the live stack was
-deleted at `07b3be0` and is not coming back. Nothing in the tree depends on an exchange
+deleted at `cb07ff9` and is not coming back. Nothing in the tree depends on an exchange
 account, an API or a network. Do not reintroduce a market-data client, or put a trading
 strategy in the engine: strategies live in `arena/strategies/`, never in `include/px/` or
 `src/`.

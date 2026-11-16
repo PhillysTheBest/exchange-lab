@@ -1,7 +1,7 @@
 arena evidence
 label:    wsl2
 date:     2026-10-04T19:59:38Z
-commit:   75b566d
+commit:   12fc5de
 dirty:    2 files
 compiler: g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
 binary:   build-linux/release/sweep
