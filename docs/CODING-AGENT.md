@@ -1,7 +1,6 @@
 # Using a coding agent with exchange-lab
 
-An AI coding agent that can read files and run commands,
-is a reasonable way to write a strategy for exchange-lab and to read what the report says
+Any AI coding agent that can read files and run commands is a reasonable way to write a strategy for exchange-lab and to read what the report says
 about it. This page says how to use one well, what to watch it for, and why no model may
 run **inside** a session, however it is used outside one.
 

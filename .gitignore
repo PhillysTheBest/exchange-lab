@@ -11,9 +11,6 @@ build*/
 __pycache__/
 *.pyc
 
-# Per-machine agent settings
-.agent/settings.local.json
-
 # Strategies installed with `make strategy STRATEGY=...`. Only the .gitkeep is
 # tracked: a strategy of your own stays yours.
 arena/strategies/user/*.hpp

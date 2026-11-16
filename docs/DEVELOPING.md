@@ -1,4 +1,4 @@
-# Developer guide
+# Developing exchange-lab
 
 How to work in this repository: what it is, how to build and test it, and the rules the code depends on.
 
@@ -500,10 +500,9 @@ loose from the fundamental is not a market and nothing read off one counts.
 
 ## Conventions
 
-- **Commits and pull requests carry no tool attribution.** `.agent/settings.json`
-  is checked in and sets both `attribution` strings to empty, so the rule travels with
-  the repository rather than living in one machine's `settings.local.json`. Existing
-  history keeps the trailers it already has; do not rewrite it.
+- **Commits and pull requests carry no tool attribution**: no co-author or generated-by
+  trailer. The history records the person accountable for the code. Existing history keeps
+  the trailers it already has; do not rewrite it.
 - Work on a branch, commit in coherent steps whose message says what changed and what
   the evidence was, and never commit a state where `mingw32-make test` fails.
 - Plan before building anything substantial, in a markdown file, not in chat. When the

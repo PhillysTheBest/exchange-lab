@@ -5,7 +5,7 @@
 
 The engine's claims regenerate from results/ through summarize_results.py, and
 until this existed the arena's did not: its numbers were read off the CSVs by
-hand, which is exactly what DEVELOPING.md forbids. Everything printed here is
+hand, which is exactly what docs/DEVELOPING.md forbids. Everything printed here is
 computed from the committed CSVs, so a number in the documentation that this
 script does not print is a number with no evidence behind it.
 
